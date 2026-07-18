@@ -38,7 +38,16 @@ when you intentionally want a different state location.  The design-tool boundar
 are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).  Each
 submitted turn first snapshots the project through KiCad's local-history system, and the panel can
 restore that complete pre-turn state.  The initial native `project` and `inspect` calls expose
-project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation.
+project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation;
+the `pcb` call exposes the exact protobuf field schema and connects directly to the open PCB Editor
+through KiCad 10's protobuf IPC API for bounded live reads and snapshot-gated, native undoable
+transactions.
+
+For an opt-in transaction proof, first open a disposable project copy in the installed PCB Editor,
+then run `tools/smoke-kichad-live-ipc.sh --allow-mutation PROJECT_DIRECTORY BOARD_FILE`.  The smoke
+test creates, field-mask updates, and deletes one temporary trace through the official KiCad 10 IPC
+transaction API; it is never run implicitly by the build.
+
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.
 

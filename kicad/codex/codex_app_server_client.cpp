@@ -288,23 +288,33 @@ void CODEX_APP_SERVER_CLIENT::dispatchLine( const std::string& aLine )
         return;
     }
 
-    if( message.contains( "id" ) && !message.contains( "method" ) && message["id"].is_number_integer() )
+    try
     {
-        int64_t requestId = message["id"].get<int64_t>();
-        auto    pending = m_pendingRequests.find( requestId );
-
-        if( pending != m_pendingRequests.end() )
+        if( message.contains( "id" ) && !message.contains( "method" )
+            && message["id"].is_number_integer() )
         {
-            RESPONSE_HANDLER handler = std::move( pending->second );
-            m_pendingRequests.erase( pending );
-            handler( message );
+            int64_t requestId = message["id"].get<int64_t>();
+            auto    pending = m_pendingRequests.find( requestId );
+
+            if( pending != m_pendingRequests.end() )
+            {
+                RESPONSE_HANDLER handler = std::move( pending->second );
+                m_pendingRequests.erase( pending );
+                handler( message );
+            }
+
+            return;
         }
 
-        return;
+        if( m_messageHandler )
+            m_messageHandler( message );
     }
-
-    if( m_messageHandler )
-        m_messageHandler( message );
+    catch( const std::exception& error )
+    {
+        setState( IsRunning(), _( "Codex app-server returned an invalid protocol message." ) );
+        wxLogTrace( wxS( "KICHAD_CODEX" ), wxS( "Invalid app-server message: %s (%s)" ),
+                    wxString::FromUTF8( aLine ), wxString::FromUTF8( error.what() ) );
+    }
 }
 
 

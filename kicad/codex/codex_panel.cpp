@@ -21,7 +21,12 @@
 #include <wx/statline.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
+#include <wx/thread.h>
 #include <wx/utils.h>
+
+
+wxDECLARE_EVENT( KICHAD_CODEX_TOOL_COMPLETED, wxThreadEvent );
+wxDEFINE_EVENT( KICHAD_CODEX_TOOL_COMPLETED, wxThreadEvent );
 
 
 CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider,
@@ -42,6 +47,8 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_sendButton( nullptr ),
         m_stopButton( nullptr ),
         m_revertButton( nullptr ),
+        m_shuttingDown( false ),
+        m_nextToolTaskId( 1 ),
         m_initialized( false ),
         m_authenticated( false ),
         m_threadLoaded( false )
@@ -103,6 +110,7 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     m_stopButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onStop, this );
     m_revertButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onRevertTurn, this );
     m_modelChoice->Bind( wxEVT_CHOICE, &CODEX_PANEL::onModelChanged, this );
+    Bind( KICHAD_CODEX_TOOL_COMPLETED, &CODEX_PANEL::onToolCompleted, this );
 
     m_client.SetMessageHandler( [this]( const JSON& aMessage ) { onAppServerMessage( aMessage ); } );
     m_client.SetStateHandler(
@@ -118,8 +126,25 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
 
 CODEX_PANEL::~CODEX_PANEL()
 {
+    m_shuttingDown.store( true );
     m_client.SetMessageHandler( {} );
     m_client.SetStateHandler( {} );
+
+    // Synchronize with the worker's final shutdown check before wxPanel destruction begins.
+    {
+        std::lock_guard<std::mutex> lock( m_toolEventMutex );
+    }
+
+    for( auto& entry : m_toolWorkers )
+    {
+        if( entry.second.joinable() )
+            entry.second.join();
+    }
+
+    m_toolWorkers.clear();
+    m_toolRequestIds.clear();
+    DeletePendingEvents();
+    Unbind( KICHAD_CODEX_TOOL_COMPLETED, &CODEX_PANEL::onToolCompleted, this );
 }
 
 
@@ -545,6 +570,16 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
     }
     else if( method == "item/tool/call" && aMessage.contains( "id" ) )
     {
+        if( !aMessage.contains( "params" ) || !aMessage["params"].is_object()
+            || !aMessage["params"].contains( "tool" )
+            || !aMessage["params"]["tool"].is_string() )
+        {
+            m_client.SendError( aMessage["id"], -32602,
+                                "Native KiChad tool parameters are invalid" );
+            appendTranscript( _( "[tool result: invalid request]\n" ) );
+            return;
+        }
+
         const JSON& params = aMessage["params"];
         std::string tool = params.value( "tool", "" );
         JSON arguments = params.value( "arguments", JSON::object() );
@@ -552,11 +587,124 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
                                             wxString::FromUTF8( tool ),
                                             wxString::FromUTF8( arguments.dump() ) ) );
 
-        JSON result = m_toolRegistry.Handle( tool, arguments );
-        m_client.SendResponse( aMessage["id"], result );
+        // Serialize design operations so concurrent model calls cannot observe or mutate
+        // partially overlapping project state.
+        if( !m_toolWorkers.empty() )
+        {
+            m_client.SendError( aMessage["id"], -32001,
+                                "Another native KiChad tool call is still running" );
+            appendTranscript( _( "[tool result: executor busy]\n" ) );
+            return;
+        }
+
+        const int taskId = m_nextToolTaskId++;
+        JSON      requestId = aMessage["id"];
+        wxString  activeProject =
+                m_projectPathProvider ? m_projectPathProvider() : wxString();
+        bool mutationAvailable = !m_turnSnapshotHash.IsEmpty();
+
+        try
+        {
+            auto worker = m_toolWorkers.try_emplace( taskId ).first;
+            m_toolRequestIds.emplace( taskId, requestId );
+
+            worker->second = std::thread(
+                            [this, taskId, tool = std::move( tool ),
+                             arguments = std::move( arguments ),
+                             activeProject = std::move( activeProject ), mutationAvailable]()
+                            {
+                                std::string serialized;
+
+                                try
+                                {
+                                    JSON result = m_toolRegistry.HandleWithContext(
+                                            tool, arguments, activeProject, mutationAvailable );
+                                    serialized = result.dump();
+                                }
+                                catch( const std::exception& )
+                                {
+                                    JSON error = { { "ok", false },
+                                                   { "error",
+                                                     { { "code", "tool_failed" },
+                                                       { "message",
+                                                         "Native tool result could not be serialized" } } } };
+                                    JSON result = {
+                                        { "contentItems",
+                                          JSON::array( { { { "type", "inputText" },
+                                                           { "text", error.dump() } } } ) },
+                                        { "success", false }
+                                    };
+                                    serialized = result.dump();
+                                }
+
+                                std::lock_guard<std::mutex> lock( m_toolEventMutex );
+
+                                if( !m_shuttingDown.load() )
+                                {
+                                    wxThreadEvent* event =
+                                            new wxThreadEvent( KICHAD_CODEX_TOOL_COMPLETED );
+                                    event->SetInt( taskId );
+                                    event->SetString( wxString::FromUTF8( serialized.data(),
+                                                                         serialized.size() ) );
+                                    wxQueueEvent( this, event );
+                                }
+                            } );
+        }
+        catch( const std::exception& error )
+        {
+            m_toolWorkers.erase( taskId );
+            m_toolRequestIds.erase( taskId );
+            m_client.SendError( aMessage["id"], -32000,
+                                std::string( "Could not start native tool worker: " ) + error.what() );
+            appendTranscript( _( "[tool result: failed to start worker]\n" ) );
+        }
+    }
+}
+
+
+void CODEX_PANEL::onToolCompleted( wxThreadEvent& aEvent )
+{
+    JSON requestId;
+    auto request = m_toolRequestIds.find( aEvent.GetInt() );
+
+    if( request != m_toolRequestIds.end() )
+    {
+        requestId = std::move( request->second );
+        m_toolRequestIds.erase( request );
+    }
+
+    auto worker = m_toolWorkers.find( aEvent.GetInt() );
+
+    if( worker != m_toolWorkers.end() )
+    {
+        if( worker->second.joinable() )
+            worker->second.join();
+
+        m_toolWorkers.erase( worker );
+    }
+
+    try
+    {
+        JSON result = JSON::parse( std::string( aEvent.GetString().ToUTF8() ) );
+
+        if( requestId.is_null() )
+        {
+            appendTranscript( _( "[tool result could not be delivered: request ID was lost]\n" ) );
+            return;
+        }
+
+        m_client.SendResponse( requestId, result );
         appendTranscript( wxString::Format( _( "[tool result: %s]\n" ),
                                             result.value( "success", false ) ? _( "success" )
                                                                              : _( "failed" ) ) );
+    }
+    catch( const JSON::exception& error )
+    {
+        if( !requestId.is_null() )
+            m_client.SendError( requestId, -32000, "Native KiChad tool result could not be decoded" );
+
+        appendTranscript( wxString::Format( _( "[tool result could not be decoded: %s]\n" ),
+                                            wxString::FromUTF8( error.what() ) ) );
     }
 }
 

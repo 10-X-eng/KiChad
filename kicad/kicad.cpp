@@ -188,6 +188,17 @@ bool PGM_KICAD::OnPgmInit()
     if( !InitPgm( false, skipPythonInit ) )
         return false;
 
+#ifdef KICAD_IPC_API
+    // KiChad's native Codex PCB tool talks directly to editor processes through KiCad's supported
+    // protobuf IPC API.  Persist this before any first-run dialog can block initialization and
+    // before the project manager launches editor children.
+    if( !Pgm().GetCommonSettings()->m_Api.enable_server )
+    {
+        Pgm().GetCommonSettings()->m_Api.enable_server = true;
+        Pgm().GetSettingsManager().Save( Pgm().GetCommonSettings() );
+    }
+#endif
+
 
     m_bm.InitSettings( new KICAD_SETTINGS );
     GetSettingsManager().RegisterSettings( PgmSettings() );

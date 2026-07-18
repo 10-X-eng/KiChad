@@ -21,6 +21,7 @@
         "KICAD_BUILD_I18N": "ON",
         "KICAD_BUILD_QA_TESTS": "ON",
         "KICAD_CONFIG_DIR": "kichad",
+        "KICAD_IPC_API": "ON",
         "KICAD_VERSION_EXTRA": "KiChad"
       }
     }

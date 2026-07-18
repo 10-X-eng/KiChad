@@ -312,6 +312,7 @@ HANDLER_RESULT<DeleteItemsResponse> API_HANDLER_EDITOR::handleDeleteItems(
         ItemDeletionResult result;
         result.mutable_id()->set_value( id.AsStdString() );
         result.set_status( status );
+        response.mutable_deleted_items()->Add( std::move( result ) );
     }
 
     response.set_status( kiapi::common::types::ItemRequestStatus::IRS_OK );

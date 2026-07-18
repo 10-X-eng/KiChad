@@ -12,8 +12,12 @@
 #ifndef KICHAD_CODEX_PANEL_H
 #define KICHAD_CODEX_PANEL_H
 
+#include <atomic>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -28,6 +32,7 @@ class wxButton;
 class wxChoice;
 class wxStaticText;
 class wxTextCtrl;
+class wxThreadEvent;
 
 
 /** Native docked Codex conversation surface owned by the KiChad project manager. */
@@ -59,6 +64,7 @@ private:
 
     void onAppServerMessage( const JSON& aMessage );
     void onAppServerState( bool aRunning, const wxString& aDetail );
+    void onToolCompleted( wxThreadEvent& aEvent );
     void onLogin( wxCommandEvent& aEvent );
     void onSend( wxCommandEvent& aEvent );
     void onStop( wxCommandEvent& aEvent );
@@ -86,6 +92,11 @@ private:
     wxString                  m_threadProjectPath;
     std::string               m_turnId;
     wxString                  m_turnSnapshotHash;
+    std::map<int, std::thread> m_toolWorkers;
+    std::map<int, JSON>       m_toolRequestIds;
+    std::mutex                m_toolEventMutex;
+    std::atomic<bool>         m_shuttingDown;
+    int                       m_nextToolTaskId;
     bool                      m_initialized;
     bool                      m_authenticated;
     bool                      m_threadLoaded;

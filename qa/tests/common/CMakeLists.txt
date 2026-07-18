@@ -139,6 +139,9 @@ set( QA_COMMON_SRCS
     test_job_sch_erc.cpp
     test_jobs_runner.cpp
     test_jobs_output_archive.cpp
+    test_kicad_ipc_client.cpp
+
+    ${CMAKE_SOURCE_DIR}/kicad/codex/kicad_ipc_client.cpp
 )
 
 if( KICAD_TEST_DATABASE_LIBRARIES )
@@ -169,6 +172,8 @@ target_link_libraries( qa_common
     gal
     pads_common
     qa_utils
+    kinng
+    kiapi
     Boost::headers
     Boost::unit_test_framework
     ${wxWidgets_LIBRARIES}

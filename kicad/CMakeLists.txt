@@ -1,4 +1,8 @@
 # Add all the warnings to the files
+if( NOT KICAD_IPC_API )
+    message( FATAL_ERROR "KiChad requires KICAD_IPC_API for native Codex PCB tools" )
+endif()
+
 if( COMPILER_SUPPORTS_WARNINGS )
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${WARN_FLAGS_CXX}")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${WARN_FLAGS_C}")
@@ -18,6 +22,7 @@ include_directories(
 
 set( KICAD_SRCS
     codex/codex_app_server_client.cpp
+    codex/kicad_ipc_client.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp
     codex/codex_thread_store.cpp
@@ -164,6 +169,8 @@ if( APPLE )
         common
         pads_common
         kicommon
+        kinng
+        kiapi
         core
         ${wxWidgets_LIBRARIES}
         )
@@ -187,6 +194,8 @@ else()
         common      #repeated due to a circular dependency between gal and common
         pads_common
         kicommon
+        kinng
+        kiapi
         core
         ${wxWidgets_LIBRARIES}
         )

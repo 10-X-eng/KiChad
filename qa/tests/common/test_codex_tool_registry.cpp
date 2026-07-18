@@ -13,7 +13,13 @@
 
 #include <kicad/codex/codex_tool_registry.h>
 
+#include <atomic>
+#include <import_export.h>
+#include <api/board/board_types.pb.h>
+#include <api/common/envelope.pb.h>
+#include <api/common/commands/editor_commands.pb.h>
 #include <kiid.h>
+#include <kinng.h>
 #include <filesystem>
 #include <wx/ffile.h>
 #include <wx/filename.h>
@@ -102,9 +108,37 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     CODEX_TOOL_REGISTRY registry( []() { return wxString(); } );
     JSON                specs = registry.Specs();
 
-    BOOST_REQUIRE_EQUAL( specs.size(), 2 );
+    BOOST_REQUIRE_EQUAL( specs.size(), 3 );
     BOOST_CHECK_EQUAL( specs[0]["name"].get<std::string>(), "project" );
     BOOST_CHECK_EQUAL( specs[1]["name"].get<std::string>(), "inspect" );
+    BOOST_CHECK_EQUAL( specs[2]["name"].get<std::string>(), "pcb" );
+}
+
+
+BOOST_AUTO_TEST_CASE( DescribesExactPcbProtobufJsonFieldsWithoutAnEditor )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); } );
+
+    JSON root = registry.Handle( "pcb", { { "operation", "describe" },
+                                           { "path", "design.kicad_pcb" },
+                                           { "itemType", "footprint" } } );
+    BOOST_REQUIRE_MESSAGE( root.at( "success" ).get<bool>(), root.dump() );
+    JSON rootSchema = envelope( root )["data"]["schema"];
+    BOOST_CHECK_EQUAL( rootSchema["messageType"].get<std::string>(),
+                       "kiapi.board.types.FootprintInstance" );
+
+    JSON nested = registry.Handle( "pcb", { { "operation", "describe" },
+                                             { "path", "design.kicad_pcb" },
+                                             { "itemType", "trace" },
+                                             { "messagePath", "start" } } );
+    BOOST_REQUIRE_MESSAGE( nested.at( "success" ).get<bool>(), nested.dump() );
+    JSON nestedSchema = envelope( nested )["data"]["schema"];
+    BOOST_CHECK_EQUAL( nestedSchema["messageType"].get<std::string>(),
+                       "kiapi.common.types.Vector2" );
+    BOOST_CHECK_EQUAL( nestedSchema["fields"][0]["name"].get<std::string>(), "xNm" );
+    BOOST_CHECK_EQUAL( nestedSchema["fields"][0]["jsonEncoding"].get<std::string>(),
+                       "decimal string" );
 }
 
 
@@ -212,6 +246,206 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedArgumentsAndDocuments )
     BOOST_CHECK( !result.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
                        "format_mismatch" );
+
+    result = registry.Handle( "pcb", { { "operation", "status" },
+                                        { "path", "design.kicad_pro" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(), "invalid_path" );
+
+    result = registry.Handle( "pcb", { { "operation", "mutate" },
+                                        { "path", "design.kicad_pcb" },
+                                        { "itemType", "trace" },
+                                        { "action", "delete" },
+                                        { "ids", JSON::array( { KIID().AsStdString() } ) } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "snapshot_required" );
+}
+
+
+BOOST_AUTO_TEST_CASE( CreatesPcbItemsInsideAnIpcTransaction )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName socketPath( fixture.Root(), wxS( "api-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-tool-token";
+    const std::string commitId = KIID().AsStdString();
+    const std::string createdId = KIID().AsStdString();
+    std::atomic<int> beginCount( 0 );
+    std::atomic<int> commitCount( 0 );
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else if( request.message().Is<kiapi::common::commands::BeginCommit>() )
+                {
+                    if( ++beginCount == 1 )
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                        response.mutable_status()->set_error_message(
+                                "an earlier commit response was lost" );
+                    }
+                    else
+                    {
+                        kiapi::common::commands::BeginCommitResponse begin;
+                        begin.mutable_id()->set_value( commitId );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( begin );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::CreateItems>() )
+                {
+                    kiapi::common::commands::CreateItems create;
+                    kiapi::board::types::Track track;
+
+                    if( request.header().kicad_token() == token
+                        && request.message().UnpackTo( &create ) && create.items_size() == 1
+                        && create.items( 0 ).UnpackTo( &track ) )
+                    {
+                        track.mutable_id()->set_value( createdId );
+                        kiapi::common::commands::CreateItemsResponse created;
+                        created.mutable_header()->CopyFrom( create.header() );
+                        created.set_status( kiapi::common::types::IRS_OK );
+                        auto* item = created.add_created_items();
+                        item->mutable_status()->set_code( kiapi::common::commands::ISC_OK );
+                        item->mutable_item()->PackFrom( track );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( created );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::UpdateItems>() )
+                {
+                    kiapi::common::commands::UpdateItems update;
+                    kiapi::board::types::Track track;
+
+                    if( request.message().UnpackTo( &update ) && update.items_size() == 1
+                        && update.items( 0 ).UnpackTo( &track )
+                        && track.id().value() == createdId
+                        && update.header().field_mask().paths_size() == 1 )
+                    {
+                        kiapi::common::commands::UpdateItemsResponse updated;
+                        updated.mutable_header()->CopyFrom( update.header() );
+                        updated.set_status( kiapi::common::types::IRS_OK );
+                        auto* item = updated.add_updated_items();
+                        item->mutable_status()->set_code( kiapi::common::commands::ISC_OK );
+                        item->mutable_item()->PackFrom( track );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( updated );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::DeleteItems>() )
+                {
+                    kiapi::common::commands::DeleteItems remove;
+
+                    if( request.message().UnpackTo( &remove ) && remove.item_ids_size() == 1
+                        && remove.item_ids( 0 ).value() == createdId )
+                    {
+                        kiapi::common::commands::DeleteItemsResponse deleted;
+                        deleted.mutable_header()->CopyFrom( remove.header() );
+                        deleted.set_status( kiapi::common::types::IRS_OK );
+                        auto* item = deleted.add_deleted_items();
+                        item->mutable_id()->set_value( createdId );
+                        item->set_status( kiapi::common::commands::IDS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( deleted );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::EndCommit>() )
+                {
+                    kiapi::common::commands::EndCommit end;
+
+                    if( request.message().UnpackTo( &end ) && end.id().value() == commitId
+                        && end.action() == kiapi::common::commands::CMA_COMMIT )
+                    {
+                        ++commitCount;
+                    }
+
+                    kiapi::common::commands::EndCommitResponse ended;
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( ended );
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; },
+                                  [&fixture]() { return fixture.Root(); } );
+    JSON result = registry.Handle(
+            "pcb", { { "operation", "mutate" }, { "path", "design.kicad_pcb" },
+                     { "itemType", "trace" }, { "action", "create" },
+                     { "commitMessage", "Route QA trace" },
+                     { "items",
+                       JSON::array( { { { "start", { { "xNm", "1000000" },
+                                                       { "yNm", "2000000" } } },
+                                        { "end", { { "xNm", "3000000" },
+                                                     { "yNm", "4000000" } } },
+                                        { "width", { { "valueNm", "250000" } } },
+                                        { "layer", "BL_F_Cu" },
+                                        { "net", { { "name", "GND" } } } } } ) } } );
+
+    BOOST_REQUIRE_MESSAGE( result.at( "success" ).get<bool>(), result.dump() );
+    JSON data = envelope( result ).at( "data" );
+    BOOST_CHECK_EQUAL( data.at( "transaction" ).get<std::string>(), "committed" );
+    BOOST_REQUIRE_EQUAL( data.at( "itemIds" ).size(), 1 );
+    BOOST_CHECK_EQUAL( data["itemIds"][0].get<std::string>(), createdId );
+    BOOST_CHECK_EQUAL( beginCount.load(), 2 );
+    BOOST_CHECK_EQUAL( commitCount.load(), 1 );
+
+    result = registry.Handle(
+            "pcb", { { "operation", "mutate" }, { "path", "design.kicad_pcb" },
+                     { "itemType", "trace" }, { "action", "update" },
+                     { "fieldMask", JSON::array( { "width" } ) },
+                     { "items",
+                       JSON::array( { { { "id", { { "value", createdId } } },
+                                        { "width", { { "valueNm", "300000" } } } } } ) } } );
+    BOOST_REQUIRE_MESSAGE( result.at( "success" ).get<bool>(), result.dump() );
+    BOOST_CHECK_EQUAL( envelope( result )["data"]["transaction"].get<std::string>(),
+                       "committed" );
+
+    result = registry.Handle(
+            "pcb", { { "operation", "mutate" }, { "path", "design.kicad_pcb" },
+                     { "itemType", "trace" }, { "action", "delete" },
+                     { "ids", JSON::array( { createdId } ) } } );
+    BOOST_REQUIRE_MESSAGE( result.at( "success" ).get<bool>(), result.dump() );
+    BOOST_CHECK_EQUAL( envelope( result )["data"]["affectedItems"].get<size_t>(), 1 );
+    BOOST_CHECK_EQUAL( beginCount.load(), 4 );
+    BOOST_CHECK_EQUAL( commitCount.load(), 3 );
+    server.Stop();
 }
 
 

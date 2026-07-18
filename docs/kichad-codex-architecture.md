@@ -33,11 +33,26 @@ The panel's **Revert turn** action closes open editors through the normal KiCad 
 that exact pre-turn state.  If a snapshot cannot be established, mutating native tools stay locked;
 read-only conversation and inspection can continue.
 
-The first two advertised native tools are `project` and `inspect`.  `project` reports the active
-design context and snapshot gate.  `inspect` parses KiCad 10 schematic, board, symbol, and footprint
-s-expressions in-process and returns structural summaries or bounded matching expressions.  It
-accepts only existing project-relative paths, resolves symlinks before enforcing the project root,
-checks the file extension against the document root, caps input/output sizes, and never writes.
+The first three advertised native tools are `project`, `inspect`, and `pcb`.  `project` reports the
+active design context and snapshot gate.  `inspect` parses KiCad 10 schematic, board, symbol, and
+footprint s-expressions in-process and returns structural summaries or bounded matching expressions.
+It accepts only existing project-relative paths, resolves symlinks before enforcing the project
+root, checks the file extension against the document root, caps input/output sizes, and never writes.
+`pcb` discovers the matching open board and instance token through KiCad 10's supported protobuf IPC
+API.  Its bounded `describe` operation exposes exact protobuf JSON fields and nested enum values, so
+the model does not infer message shapes.  It can read typed live items and create, field-mask update,
+or delete footprints, traces, vias, arcs, zones, graphics, and text.  Each mutation requires the
+pre-turn snapshot and is enclosed by KiCad `BeginCommit`/`EndCommit`; any validation, item-status,
+transport, or commit failure drops the pending commit.  IPC requests have bounded timeouts and
+execute off the wxWidgets UI thread; socket paths and instance tokens are not returned to the model.
+KiChad persists the required API-enabled setting in its isolated configuration before it launches
+editor children.  If a previous transaction response was lost, the next mutation first drops that
+client's orphaned commit and retries `BeginCommit` once.
+
+`tools/smoke-kichad-live-ipc.sh` provides an explicit, opt-in integration proof against an already
+open disposable board copy.  It creates, commits, field-mask updates, commits, deletes, and commits a
+temporary trace while checking per-item statuses and preservation of unmasked geometry.  Normal
+builds and test runs never invoke this mutating smoke test.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for

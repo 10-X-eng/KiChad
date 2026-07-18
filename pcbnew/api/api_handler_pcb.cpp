@@ -52,6 +52,7 @@
 
 #include <api/common/types/base_types.pb.h>
 #include <connectivity/connectivity_data.h>
+#include <google/protobuf/util/field_mask_util.h>
 #include <widgets/appearance_controls.h>
 #include <widgets/report_severity.h>
 
@@ -59,6 +60,120 @@ using namespace kiapi::common::commands;
 using types::CommandStatus;
 using types::DocumentType;
 using types::ItemRequestStatus;
+
+
+namespace
+{
+
+std::unique_ptr<google::protobuf::Message> unpackAnyMessage(
+        const google::protobuf::Any& aAny )
+{
+    const std::string& typeUrl = aAny.type_url();
+    size_t             separator = typeUrl.rfind( '/' );
+    std::string        typeName = separator == std::string::npos
+                                          ? typeUrl
+                                          : typeUrl.substr( separator + 1 );
+    const google::protobuf::Descriptor* descriptor =
+            google::protobuf::DescriptorPool::generated_pool()->FindMessageTypeByName( typeName );
+
+    if( !descriptor )
+        return {};
+
+    const google::protobuf::Message* prototype =
+            google::protobuf::MessageFactory::generated_factory()->GetPrototype( descriptor );
+
+    if( !prototype )
+        return {};
+
+    std::unique_ptr<google::protobuf::Message> message( prototype->New() );
+
+    if( !aAny.UnpackTo( message.get() ) )
+        return {};
+
+    return message;
+}
+
+
+std::optional<KIID> itemIdFromAny( const google::protobuf::Any& aAny )
+{
+    std::unique_ptr<google::protobuf::Message> message = unpackAnyMessage( aAny );
+
+    if( !message )
+        return std::nullopt;
+
+    const google::protobuf::FieldDescriptor* idField =
+            message->GetDescriptor()->FindFieldByName( "id" );
+
+    if( !idField || idField->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE )
+        return std::nullopt;
+
+    const google::protobuf::Message& idMessage =
+            message->GetReflection()->GetMessage( *message, idField );
+    const google::protobuf::FieldDescriptor* valueField =
+            idMessage.GetDescriptor()->FindFieldByName( "value" );
+
+    if( !valueField || valueField->cpp_type()
+                              != google::protobuf::FieldDescriptor::CPPTYPE_STRING )
+    {
+        return std::nullopt;
+    }
+
+    std::string value = idMessage.GetReflection()->GetString( idMessage, valueField );
+
+    if( !KIID::SniffTest( wxString::FromUTF8( value ) ) )
+        return std::nullopt;
+
+    return KIID( value );
+}
+
+
+bool mergeItemUpdate( const google::protobuf::Any& aUpdate,
+                      const google::protobuf::Any& aExisting,
+                      const google::protobuf::FieldMask& aMask,
+                      google::protobuf::Any& aMerged, std::string& aError )
+{
+    if( aUpdate.type_url() != aExisting.type_url() )
+    {
+        aError = "the update protobuf type does not match the existing board item";
+        return false;
+    }
+
+    std::unique_ptr<google::protobuf::Message> update = unpackAnyMessage( aUpdate );
+    std::unique_ptr<google::protobuf::Message> existing = unpackAnyMessage( aExisting );
+
+    if( !update || !existing )
+    {
+        aError = "the update protobuf message could not be decoded";
+        return false;
+    }
+
+    for( const std::string& path : aMask.paths() )
+    {
+        if( path == "id" || path.starts_with( "id." ) )
+        {
+            aError = "an item's UUID cannot be changed by an update";
+            return false;
+        }
+
+        if( !google::protobuf::util::FieldMaskUtil::GetFieldDescriptors(
+                    update->GetDescriptor(), path, nullptr ) )
+        {
+            aError = fmt::format( "the field-mask path {} is invalid for {}", path,
+                                  update->GetDescriptor()->full_name() );
+            return false;
+        }
+    }
+
+    google::protobuf::util::FieldMaskUtil::MergeOptions options;
+    options.set_replace_message_fields( true );
+    options.set_replace_repeated_fields( true );
+    google::protobuf::util::FieldMaskUtil::MergeMessageTo(
+            *update, aMask, options, existing.get() );
+    aMerged.PackFrom( *existing );
+    return true;
+}
+
+} // namespace
 
 
 API_HANDLER_PCB::API_HANDLER_PCB( PCB_EDIT_FRAME* aFrame ) :
@@ -439,6 +554,49 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
             }
         }
 
+        google::protobuf::Any itemToDeserialize = anyItem;
+        std::optional<BOARD_ITEM*> optItem;
+
+        if( !aCreate )
+        {
+            std::optional<KIID> id = itemIdFromAny( anyItem );
+
+            if( !id )
+            {
+                status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                status.set_error_message( "an update item must contain a valid UUID" );
+                aItemHandler( status, anyItem );
+                continue;
+            }
+
+            optItem = getItemById( *id );
+
+            if( !optItem )
+            {
+                status.set_code( ItemStatusCode::ISC_NONEXISTENT );
+                status.set_error_message( fmt::format( "an item with UUID {} does not exist",
+                                                       id->AsStdString() ) );
+                aItemHandler( status, anyItem );
+                continue;
+            }
+
+            if( aHeader.field_mask().paths_size() > 0 )
+            {
+                google::protobuf::Any existingItem;
+                ( *optItem )->Serialize( existingItem );
+                std::string mergeError;
+
+                if( !mergeItemUpdate( anyItem, existingItem, aHeader.field_mask(),
+                                      itemToDeserialize, mergeError ) )
+                {
+                    status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                    status.set_error_message( mergeError );
+                    aItemHandler( status, anyItem );
+                    continue;
+                }
+            }
+        }
+
         HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>> creationResult =
                 createItemForType( *type, container );
 
@@ -452,7 +610,7 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
 
         std::unique_ptr<BOARD_ITEM> item( std::move( *creationResult ) );
 
-        if( !item->Deserialize( anyItem ) )
+        if( !item->Deserialize( itemToDeserialize ) )
         {
             e.set_status( ApiStatusCode::AS_BAD_REQUEST );
             e.set_error_message( fmt::format( "could not unpack {} from request",
@@ -460,7 +618,8 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
             return tl::unexpected( e );
         }
 
-        std::optional<BOARD_ITEM*> optItem = getItemById( item->m_Uuid );
+        if( aCreate )
+            optItem = getItemById( item->m_Uuid );
 
         if( aCreate && optItem )
         {
@@ -470,15 +629,6 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
             aItemHandler( status, anyItem );
             continue;
         }
-        else if( !aCreate && !optItem )
-        {
-            status.set_code( ItemStatusCode::ISC_NONEXISTENT );
-            status.set_error_message( fmt::format( "an item with UUID {} does not exist",
-                                                   item->m_Uuid.AsStdString() ) );
-            aItemHandler( status, anyItem );
-            continue;
-        }
-
         if( aCreate && !( board->GetEnabledLayers() & item->GetLayerSet() ).any() )
         {
             status.set_code( ItemStatusCode::ISC_INVALID_DATA );

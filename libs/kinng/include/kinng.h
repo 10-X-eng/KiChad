@@ -22,10 +22,31 @@
 #define KICAD_KINNG_H
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <thread>
+
+
+struct KINNG_REQUEST_RESULT
+{
+    bool        success = false;
+    int         errorCode = 0;
+    std::string response;
+    std::string errorMessage;
+};
+
+
+/** Bounded synchronous request transport intended to be called from a worker thread. */
+class KINNG_REQUEST_CLIENT
+{
+public:
+    static KINNG_REQUEST_RESULT Request( const std::string& aSocketUrl,
+                                         const std::string& aRequest,
+                                         std::chrono::milliseconds aTimeout );
+};
 
 
 class KINNG_REQUEST_SERVER
@@ -41,7 +62,7 @@ public:
 
     bool Running() const;
 
-    void SetCallback( std::function<void(std::string*)> aFunc ) { m_callback = aFunc; }
+    void SetCallback( std::function<void(std::string*)> aFunc );
 
     void Reply( const std::string& aReply );
 

@@ -26,20 +26,28 @@ public:
     using JSON = nlohmann::json;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
-                                  std::function<bool()> aMutationGuard = {} );
+                                  std::function<bool()> aMutationGuard = {},
+                                  std::function<wxString()> aIpcSocketDirectoryProvider = {} );
 
     JSON Specs() const;
     JSON Handle( const std::string& aTool, const JSON& aArguments ) const;
+    JSON HandleWithContext( const std::string& aTool, const JSON& aArguments,
+                            const wxString& aProjectPath, bool aMutationAvailable,
+                            const wxString& aIpcSocketDirectory = wxString() ) const;
 
 private:
-    JSON handleProject( const JSON& aArguments ) const;
-    JSON handleInspect( const JSON& aArguments ) const;
+    JSON handleProject( const JSON& aArguments, const wxString& aProjectPath,
+                        bool aMutationAvailable ) const;
+    JSON handleInspect( const JSON& aArguments, const wxString& aProjectPath ) const;
+    JSON handlePcb( const JSON& aArguments, const wxString& aProjectPath,
+                    bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
     JSON success( const JSON& aPayload ) const;
     JSON failure( const std::string& aCode, const std::string& aMessage ) const;
     wxString projectPath() const;
 
     std::function<wxString()> m_projectPathProvider;
     std::function<bool()>     m_mutationGuard;
+    std::function<wxString()> m_ipcSocketDirectoryProvider;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

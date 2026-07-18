@@ -164,6 +164,49 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
                         limit: { type: "integer", minimum: 1, maximum: 50 }
                     }
                 }
+            },
+            {
+                type: "function",
+                name: "pcb",
+                description: "Use KiCad 10 IPC for the live PCB Editor.",
+                inputSchema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["operation", "path"],
+                    properties: {
+                        operation: {
+                            type: "string",
+                            enum: ["status", "describe", "get", "mutate"]
+                        },
+                        path: { type: "string", maxLength: 4096 },
+                        itemType: {
+                            type: "string",
+                            enum: ["footprint", "trace", "via", "arc", "zone", "shape", "text"]
+                        },
+                        messagePath: { type: "string", maxLength: 512 },
+                        action: { type: "string", enum: ["create", "update", "delete"] },
+                        items: {
+                            type: "array",
+                            minItems: 1,
+                            maxItems: 200,
+                            items: { type: "object" }
+                        },
+                        ids: {
+                            type: "array",
+                            minItems: 1,
+                            maxItems: 500,
+                            items: { type: "string", maxLength: 36 }
+                        },
+                        fieldMask: {
+                            type: "array",
+                            maxItems: 32,
+                            items: { type: "string", maxLength: 128 },
+                            description: "Protobuf protoName paths; UUID fields are immutable."
+                        },
+                        limit: { type: "integer", minimum: 1, maximum: 200 },
+                        commitMessage: { type: "string", maxLength: 256 }
+                    }
+                }
             }
         ]
     }
