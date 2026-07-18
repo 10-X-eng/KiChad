@@ -18,8 +18,10 @@
 #include <wx/utils.h>
 
 
-CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider ) :
-        m_projectPathProvider( std::move( aProjectPathProvider ) )
+CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
+                                          std::function<bool()> aMutationGuard ) :
+        m_projectPathProvider( std::move( aProjectPathProvider ) ),
+        m_mutationGuard( std::move( aMutationGuard ) )
 {}
 
 
@@ -84,7 +86,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleProject( const JSON& aArgum
         { "projectPath", std::string( path.ToUTF8() ) },
         { "kicadVersion", std::string( GetBuildVersion().ToUTF8() ) },
         { "files", std::move( files ) },
-        { "mutationAvailable", false }
+        { "mutationAvailable", m_mutationGuard && m_mutationGuard() }
     };
 
     return success( payload );
@@ -114,9 +116,6 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::failure( const std::string& aCode
 wxString CODEX_TOOL_REGISTRY::projectPath() const
 {
     wxString path = m_projectPathProvider ? m_projectPathProvider() : wxString();
-
-    if( path.IsEmpty() )
-        path = wxGetCwd();
 
     return path;
 }

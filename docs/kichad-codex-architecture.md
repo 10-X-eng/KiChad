@@ -16,7 +16,9 @@ middleware daemon, tool-server process, or web UI.  The app-server process is ne
 arbitrary KiChad tool that executes shell commands or drives the GUI.  Unrecognized tool calls are
 rejected with a structured JSON-RPC error.  The owned process starts with MCP, shell, unified exec,
 apps, browser/computer use, image generation, plugins, and multi-agent features disabled, so it
-cannot inherit broader tools or MCP connectors from the user's global Codex configuration.
+cannot inherit broader tools or MCP connectors from the user's global Codex configuration.  Live
+Codex web search remains enabled solely for component, datasheet, availability, and design-evidence
+research; it is not GUI browser automation and cannot mutate the project.
 
 Set `KICHAD_CODEX_EXECUTABLE` when `codex` is not on `PATH`.  The executable is an installation
 prerequisite, not a linked build dependency.  The owned child uses an isolated Codex home at
@@ -24,6 +26,12 @@ prerequisite, not a linked build dependency.  The owned child uses an isolated C
 plugins, or sessions from leaking into the design agent.  Codex stores the panel's native ChatGPT
 authentication there; KiChad never stores access tokens in a project or its settings.  Set
 `KICHAD_CODEX_HOME` to override that state location.
+
+Before each submitted Codex turn, the project manager asks KiCad's registered schematic, board,
+and project savers for a coherent incremental-history snapshot and records its commit identifier.
+The panel's **Revert turn** action closes open editors through the normal KiCad flow and restores
+that exact pre-turn state.  If a snapshot cannot be established, mutating native tools stay locked;
+read-only conversation and inspection can continue.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for

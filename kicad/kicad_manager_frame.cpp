@@ -247,7 +247,25 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
     if( m_showHistoryPanel )
         m_auimgr.GetPane( m_historyPane ).Show();
 
-    m_codexPanel = new CODEX_PANEL( this, [this]() { return Prj().GetProjectPath(); } );
+    m_codexPanel = new CODEX_PANEL(
+            this, [this]() { return Prj().GetProjectPath(); },
+            [this]( const wxString& aTitle )
+            {
+                const wxString path = Prj().GetProjectPath();
+
+                if( path.IsEmpty() )
+                    return wxString();
+
+                LOCAL_HISTORY& history = Kiway().LocalHistory();
+                history.WaitForPendingSave();
+
+                if( !history.RunRegisteredSaversAndCommit( path, aTitle ) )
+                    history.CommitFullProjectSnapshot( path, aTitle );
+
+                history.WaitForPendingSave();
+                return history.GetHeadHash( path );
+            },
+            [this]( const wxString& aHash ) { return RestoreCommitFromHistory( aHash ); } );
     m_auimgr.AddPane( m_codexPanel,
                       EDA_PANE().Palette().Name( "Codex" ).Right().Layer( 1 )
                                 .Caption( _( "Codex" ) ).PaneBorder( true )
@@ -1519,12 +1537,15 @@ bool KICAD_MANAGER_FRAME::CodexPanelShown()
 }
 
 
-void KICAD_MANAGER_FRAME::RestoreCommitFromHistory( const wxString& aHash )
+bool KICAD_MANAGER_FRAME::RestoreCommitFromHistory( const wxString& aHash )
 {
     if( !Kiway().PlayersClose( true ) )
-        return;
+        return false;
 
-    if( Kiway().LocalHistory().RestoreCommit( Prj().GetProjectPath(), aHash, this ) )
+    const bool restored =
+            Kiway().LocalHistory().RestoreCommit( Prj().GetProjectPath(), aHash, this );
+
+    if( restored )
     {
         m_restoredFromHistory = true;  // Mark editors dirty when they reopen
     }
@@ -1532,6 +1553,7 @@ void KICAD_MANAGER_FRAME::RestoreCommitFromHistory( const wxString& aHash )
     m_projectTreePane->ReCreateTreePrj();
     m_openSavedWindows = true;
     m_historyPane->RefreshHistory( Prj().GetProjectPath() );
+    return restored;
 }
 
 

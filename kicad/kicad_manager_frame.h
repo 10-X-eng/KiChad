@@ -58,7 +58,7 @@ public:
 
     void UnarchiveFiles();
     void RestoreLocalHistory();
-    void RestoreCommitFromHistory( const wxString& aHash );
+    bool RestoreCommitFromHistory( const wxString& aHash );
     void ToggleLocalHistory();
     bool HistoryPanelShown();
     void ToggleCodexPanel();

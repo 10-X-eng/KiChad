@@ -25,7 +25,8 @@ class CODEX_TOOL_REGISTRY
 public:
     using JSON = nlohmann::json;
 
-    explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider );
+    explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
+                                  std::function<bool()> aMutationGuard = {} );
 
     JSON Specs() const;
     JSON Handle( const std::string& aTool, const JSON& aArguments ) const;
@@ -37,6 +38,7 @@ private:
     wxString projectPath() const;
 
     std::function<wxString()> m_projectPathProvider;
+    std::function<bool()>     m_mutationGuard;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

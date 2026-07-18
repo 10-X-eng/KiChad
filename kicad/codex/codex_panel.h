@@ -34,7 +34,11 @@ class wxTextCtrl;
 class CODEX_PANEL : public wxPanel
 {
 public:
-    explicit CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider );
+    using SNAPSHOT_PROVIDER = std::function<wxString( const wxString& )>;
+    using RESTORE_HANDLER = std::function<bool( const wxString& )>;
+
+    explicit CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider,
+                          SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler );
     ~CODEX_PANEL() override;
 
 private:
@@ -58,9 +62,12 @@ private:
     void onLogin( wxCommandEvent& aEvent );
     void onSend( wxCommandEvent& aEvent );
     void onStop( wxCommandEvent& aEvent );
+    void onRevertTurn( wxCommandEvent& aEvent );
     void onModelChanged( wxCommandEvent& aEvent );
 
     std::function<wxString()> m_projectPathProvider;
+    SNAPSHOT_PROVIDER         m_snapshotProvider;
+    RESTORE_HANDLER           m_restoreHandler;
     CODEX_TOOL_REGISTRY       m_toolRegistry;
     CODEX_THREAD_STORE        m_threadStore;
     CODEX_APP_SERVER_CLIENT   m_client;
@@ -73,10 +80,12 @@ private:
     wxTextCtrl*               m_input;
     wxButton*                 m_sendButton;
     wxButton*                 m_stopButton;
+    wxButton*                 m_revertButton;
     std::vector<JSON>         m_models;
     std::string               m_threadId;
     wxString                  m_threadProjectPath;
     std::string               m_turnId;
+    wxString                  m_turnSnapshotHash;
     bool                      m_initialized;
     bool                      m_authenticated;
     bool                      m_threadLoaded;

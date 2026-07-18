@@ -24,10 +24,14 @@
 #include <wx/utils.h>
 
 
-CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider ) :
+CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider,
+                          SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler ) :
         wxPanel( aParent ),
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
-        m_toolRegistry( m_projectPathProvider ),
+        m_snapshotProvider( std::move( aSnapshotProvider ) ),
+        m_restoreHandler( std::move( aRestoreHandler ) ),
+        m_toolRegistry( m_projectPathProvider,
+                        [this]() { return !m_turnSnapshotHash.IsEmpty(); } ),
         m_status( nullptr ),
         m_processStatus( nullptr ),
         m_loginButton( nullptr ),
@@ -37,6 +41,7 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_input( nullptr ),
         m_sendButton( nullptr ),
         m_stopButton( nullptr ),
+        m_revertButton( nullptr ),
         m_initialized( false ),
         m_authenticated( false ),
         m_threadLoaded( false )
@@ -79,10 +84,13 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     root->Add( m_input, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
 
     wxBoxSizer* actionRow = new wxBoxSizer( wxHORIZONTAL );
+    m_revertButton = new wxButton( this, wxID_ANY, _( "Revert turn" ) );
     m_stopButton = new wxButton( this, wxID_ANY, _( "Stop" ) );
     m_sendButton = new wxButton( this, wxID_ANY, _( "Send" ) );
+    m_revertButton->Disable();
     m_stopButton->Disable();
     m_sendButton->Disable();
+    actionRow->Add( m_revertButton );
     actionRow->AddStretchSpacer();
     actionRow->Add( m_stopButton, 0, wxRIGHT, FromDIP( 6 ) );
     actionRow->Add( m_sendButton );
@@ -93,6 +101,7 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     m_loginButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onLogin, this );
     m_sendButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onSend, this );
     m_stopButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onStop, this );
+    m_revertButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onRevertTurn, this );
     m_modelChoice->Bind( wxEVT_CHOICE, &CODEX_PANEL::onModelChanged, this );
 
     m_client.SetMessageHandler( [this]( const JSON& aMessage ) { onAppServerMessage( aMessage ); } );
@@ -281,7 +290,8 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "baseInstructions",
           "You are the KiChad electronics design agent. Use only the native KiChad dynamic tools "
           "advertised by the host for design work. Never use shell, arbitrary code execution, GUI "
-          "automation, MCP, or direct ad-hoc file rewriting." },
+          "automation, MCP, or direct ad-hoc file rewriting. Use live web search only to verify "
+          "components, manufacturer data, datasheets, availability, and other design evidence." },
         { "config",
           { { "features",
               { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
@@ -290,7 +300,7 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
                 { "plugins", false }, { "enable_mcp_apps", false }, { "hooks", false },
                 { "skill_mcp_dependency_install", false },
                 { "workspace_dependencies", false } } },
-            { "mcp_servers", JSON::object() }, { "web_search", "disabled" } } }
+            { "mcp_servers", JSON::object() }, { "web_search", "live" } } }
     };
 
     params["dynamicTools"] = m_toolRegistry.Specs();
@@ -452,6 +462,7 @@ void CODEX_PANEL::setBusy( bool aBusy )
 {
     m_sendButton->Enable( !aBusy && m_initialized && m_authenticated );
     m_stopButton->Enable( aBusy );
+    m_revertButton->Enable( !aBusy && !m_turnSnapshotHash.IsEmpty() );
     m_input->Enable( !aBusy );
 }
 
@@ -484,6 +495,8 @@ void CODEX_PANEL::selectProjectThread()
     m_threadProjectPath = activePath;
     m_threadId = m_threadStore.Load( activePath );
     m_turnId.clear();
+    m_turnSnapshotHash.clear();
+    m_revertButton->Disable();
     m_threadLoaded = false;
 
     if( !m_threadId.empty() )
@@ -620,6 +633,23 @@ void CODEX_PANEL::onSend( wxCommandEvent& aEvent )
 
     m_input->Clear();
     appendTranscript( wxString::Format( _( "\nYou: %s\n" ), message ) );
+
+    m_turnSnapshotHash.clear();
+
+    if( m_snapshotProvider )
+    {
+        m_turnSnapshotHash = m_snapshotProvider( _( "Before Codex turn" ) );
+
+        const wxString activeProject =
+                m_projectPathProvider ? m_projectPathProvider() : wxString();
+
+        if( m_turnSnapshotHash.IsEmpty() && !activeProject.IsEmpty() )
+        {
+            appendTranscript( _( "[A turn snapshot could not be created; mutating tools will "
+                                 "remain unavailable.]\n" ) );
+        }
+    }
+
     setBusy( true );
 
     std::string utf8Message( message.ToUTF8() );
@@ -640,6 +670,27 @@ void CODEX_PANEL::onStop( wxCommandEvent& aEvent )
 
     m_client.SendRequest( "turn/interrupt", { { "threadId", m_threadId }, { "turnId", m_turnId } } );
     setStatus( _( "Stopping Codex turn..." ) );
+}
+
+
+void CODEX_PANEL::onRevertTurn( wxCommandEvent& aEvent )
+{
+    if( m_turnSnapshotHash.IsEmpty() || !m_restoreHandler )
+        return;
+
+    const wxString snapshot = m_turnSnapshotHash;
+    m_revertButton->Disable();
+
+    if( m_restoreHandler( snapshot ) )
+    {
+        appendTranscript( _( "\n[Reverted the project to its pre-turn snapshot.]\n" ) );
+        m_turnSnapshotHash.clear();
+    }
+    else
+    {
+        appendTranscript( _( "\n[The pre-turn snapshot was not restored.]\n" ) );
+        m_revertButton->Enable();
+    }
 }
 
 

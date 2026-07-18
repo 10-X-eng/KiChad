@@ -133,7 +133,7 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
                 workspace_dependencies: false
             },
             mcp_servers: {},
-            web_search: "disabled"
+            web_search: "live"
         },
         dynamicTools: [{
             type: "function",
