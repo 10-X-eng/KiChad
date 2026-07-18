@@ -29,8 +29,8 @@ fast-forward-only pulls.
 
 ```sh
 build/install/bin/kichad-cli version
-KICAD_RUN_FROM_BUILD_DIR=1 build/release/kicad/kicad --version
 ctest --preset kichad-release
+./tools/run-kichad.sh  # GUI smoke check; close the window after startup.
 ```
 
 `tools/build-kichad.sh` always uses the tracked `kichad-release` preset, installs only after a
