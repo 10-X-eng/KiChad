@@ -1,0 +1,52 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "kichad-release",
+      "displayName": "KiChad Linux development build",
+      "description": "RelWithDebInfo build with QA, translations, ccache, and isolated settings",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "installDir": "${sourceDir}/build/install",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "KICAD_BUILD_I18N": "ON",
+        "KICAD_BUILD_QA_TESTS": "ON",
+        "KICAD_CONFIG_DIR": "kichad",
+        "KICAD_VERSION_EXTRA": "KiChad"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "kichad-release",
+      "displayName": "Build KiChad",
+      "configurePreset": "kichad-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "kichad-release",
+      "displayName": "Test KiChad",
+      "configurePreset": "kichad-release",
+      "environment": {
+        "KICAD_RUN_FROM_BUILD_DIR": "1"
+      },
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
+    }
+  ]
+}

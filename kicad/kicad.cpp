@@ -94,7 +94,7 @@ PGM_KICAD& PgmTop()
 
 bool PGM_KICAD::OnPgmInit()
 {
-    App().SetAppDisplayName( wxT( "KiCad" ) );
+    App().SetAppDisplayName( wxT( "KiChad" ) );
 
 #if defined(DEBUG)
     wxString absoluteArgv0 = wxStandardPaths::Get().GetExecutablePath();
@@ -259,7 +259,7 @@ bool PGM_KICAD::OnPgmInit()
 
     if( appType == KICAD_MAIN_FRAME_T )
     {
-        managerFrame = new KICAD_MANAGER_FRAME( nullptr, wxT( "KiCad" ), wxDefaultPosition,
+        managerFrame = new KICAD_MANAGER_FRAME( nullptr, wxT( "KiChad" ), wxDefaultPosition,
                                                 wxWindow::FromDIP( wxSize( 775, -1 ), NULL ) );
         frame = managerFrame;
 
@@ -676,4 +676,3 @@ PROJECT& Prj()
 {
     return Kiway.Prj();
 }
-

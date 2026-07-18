@@ -119,7 +119,7 @@ CMakeSettings.json
 .vscode/
 compile_commands.json
 /vcpkg_installed
-CMakePresets.json
+# KiChad tracks CMakePresets.json as its reproducible downstream build entry point.
 
 # Sublime Text
 *.sublime-*
