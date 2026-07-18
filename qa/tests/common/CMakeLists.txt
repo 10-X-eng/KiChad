@@ -40,6 +40,7 @@ set( QA_COMMON_SRCS
     test_collector.cpp
     test_color4d.cpp
     test_commit.cpp
+    test_codex_tool_registry.cpp
     test_coroutine.cpp
     test_eda_shape.cpp
     test_eda_text.cpp
@@ -91,6 +92,7 @@ set( QA_COMMON_SRCS
     test_wx_filename.cpp
 
     ${CMAKE_SOURCE_DIR}/kicad/codex/lossless_sexpr_document.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
 
     libeval/test_numeric_evaluator.cpp
 

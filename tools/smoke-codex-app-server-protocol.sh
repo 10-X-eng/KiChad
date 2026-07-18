@@ -135,19 +135,37 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
             mcp_servers: {},
             web_search: "live"
         },
-        dynamicTools: [{
-            type: "function",
-            name: "project",
-            description: "Read KiChad project context.",
-            inputSchema: {
-                type: "object",
-                additionalProperties: false,
-                required: ["operation"],
-                properties: {
-                    operation: { type: "string", enum: ["context"] }
+        dynamicTools: [
+            {
+                type: "function",
+                name: "project",
+                description: "Read KiChad project context.",
+                inputSchema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["operation"],
+                    properties: {
+                        operation: { type: "string", enum: ["context"] }
+                    }
+                }
+            },
+            {
+                type: "function",
+                name: "inspect",
+                description: "Inspect a KiCad 10 design file without changing it.",
+                inputSchema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["operation", "path"],
+                    properties: {
+                        operation: { type: "string", enum: ["summary", "find"] },
+                        path: { type: "string", maxLength: 4096 },
+                        head: { type: "string", maxLength: 128 },
+                        limit: { type: "integer", minimum: 1, maximum: 50 }
+                    }
                 }
             }
-        }]
+        ]
     }
 }')"
 expect_result 4 thread/start

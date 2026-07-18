@@ -33,6 +33,7 @@ public:
 
 private:
     JSON handleProject( const JSON& aArguments ) const;
+    JSON handleInspect( const JSON& aArguments ) const;
     JSON success( const JSON& aPayload ) const;
     JSON failure( const std::string& aCode, const std::string& aMessage ) const;
     wxString projectPath() const;

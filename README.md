@@ -35,8 +35,10 @@ Closing KiChad terminates that owned child.  If Codex is not on `PATH`, set
 `KICHAD_CODEX_EXECUTABLE` to its absolute path before launching.  The panel's ChatGPT sign-in is
 stored by Codex in an isolated KiChad Codex home, not in the project; set `KICHAD_CODEX_HOME` only
 when you intentionally want a different state location.  The design-tool boundary and safety model
-are documented in
-[docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).
+are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).  Each
+submitted turn first snapshots the project through KiCad's local-history system, and the panel can
+restore that complete pre-turn state.  The initial native `project` and `inspect` calls expose
+project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation.
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.
 

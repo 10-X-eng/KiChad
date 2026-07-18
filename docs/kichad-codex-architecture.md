@@ -33,6 +33,12 @@ The panel's **Revert turn** action closes open editors through the normal KiCad 
 that exact pre-turn state.  If a snapshot cannot be established, mutating native tools stay locked;
 read-only conversation and inspection can continue.
 
+The first two advertised native tools are `project` and `inspect`.  `project` reports the active
+design context and snapshot gate.  `inspect` parses KiCad 10 schematic, board, symbol, and footprint
+s-expressions in-process and returns structural summaries or bounded matching expressions.  It
+accepts only existing project-relative paths, resolves symlinks before enforcing the project root,
+checks the file extension against the document root, caps input/output sizes, and never writes.
+
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for
 protocol changes; the runtime client accepts unknown notifications and relies only on the fields it
