@@ -44,6 +44,7 @@ public:
     void Stop();
 
     bool IsRunning() const { return m_process != nullptr && m_pid > 0; }
+    long ProcessId() const { return m_pid; }
 
     int64_t SendRequest( const std::string& aMethod, const JSON& aParams,
                          RESPONSE_HANDLER aHandler = {} );

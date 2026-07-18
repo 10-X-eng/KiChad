@@ -29,6 +29,7 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
         m_toolRegistry( m_projectPathProvider ),
         m_status( nullptr ),
+        m_processStatus( nullptr ),
         m_loginButton( nullptr ),
         m_modelChoice( nullptr ),
         m_reasoningChoice( nullptr ),
@@ -49,6 +50,9 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     statusRow->Add( m_status, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP( 8 ) );
     statusRow->Add( m_loginButton, 0, wxALIGN_CENTER_VERTICAL );
     root->Add( statusRow, 0, wxEXPAND | wxALL, FromDIP( 8 ) );
+
+    m_processStatus = new wxStaticText( this, wxID_ANY, _( "app-server: starting..." ) );
+    root->Add( m_processStatus, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
 
     wxBoxSizer* modelRow = new wxBoxSizer( wxHORIZONTAL );
     m_modelChoice = new wxChoice( this, wxID_ANY );
@@ -544,6 +548,16 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
 void CODEX_PANEL::onAppServerState( bool aRunning, const wxString& aDetail )
 {
     setStatus( aDetail );
+
+    if( aRunning )
+    {
+        m_processStatus->SetLabel( wxString::Format( _( "app-server: owned child PID %ld" ),
+                                                     m_client.ProcessId() ) );
+    }
+    else
+    {
+        m_processStatus->SetLabel( _( "app-server: stopped" ) );
+    }
 
     if( !aRunning )
     {

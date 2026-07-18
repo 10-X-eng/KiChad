@@ -65,6 +65,7 @@ private:
     CODEX_THREAD_STORE        m_threadStore;
     CODEX_APP_SERVER_CLIENT   m_client;
     wxStaticText*             m_status;
+    wxStaticText*             m_processStatus;
     wxButton*                 m_loginButton;
     wxChoice*                 m_modelChoice;
     wxChoice*                 m_reasoningChoice;
