@@ -1,4 +1,29 @@
-# KiCad README
+# KiChad
+
+KiChad is a Codex-oriented downstream of KiCad.  It preserves the complete upstream history and
+keeps the application architecture compatible with KiCad while providing a reproducible local
+development environment for AI-assisted work.
+
+See [KICHAD.md](KICHAD.md) for the Linux quick start, repository layout, runtime libraries, and
+upstream-sync workflow.  KiChad is an independent project and is not an official KiCad build.
+
+On Ubuntu 24.04 or KDE neon, the repeatable local build is:
+
+```sh
+./tools/bootstrap-kichad-ubuntu.sh  # Run once to install native dependencies.
+./tools/build-kichad.sh             # Configure, compile, install, and smoke-check.
+```
+
+Build products stay in `build/`, and the runnable installation is written to `build/install/`.
+Rerun `tools/build-kichad.sh` after source changes; it uses the tracked CMake preset, defaults to
+one build job per CPU, and accepts `KICHAD_BUILD_JOBS` when you need to cap parallelism.
+After a successful build, run `build/install/bin/kichad` or use
+`build/install/bin/kichad-cli version` for a headless check; both launchers set the local runtime
+library path without changing the system installation.
+
+---
+
+# KiCad upstream README
 
 For specific documentation about [building KiCad](https://dev-docs.kicad.org/en/build/), policies
 and guidelines, and source code documentation see the
