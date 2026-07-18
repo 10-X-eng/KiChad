@@ -286,8 +286,11 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
           { { "features",
               { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
                 { "browser_use", false }, { "computer_use", false },
-                { "image_generation", false }, { "multi_agent", false } } },
-            { "web_search", "disabled" } } }
+                { "image_generation", false }, { "multi_agent", false },
+                { "plugins", false }, { "enable_mcp_apps", false }, { "hooks", false },
+                { "skill_mcp_dependency_install", false },
+                { "workspace_dependencies", false } } },
+            { "mcp_servers", JSON::object() }, { "web_search", "disabled" } } }
     };
 
     params["dynamicTools"] = m_toolRegistry.Specs();

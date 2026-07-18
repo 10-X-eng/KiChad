@@ -14,11 +14,16 @@ threads, streaming events, and server-initiated dynamic-tool calls all use the a
 Dynamic tool requests are handled by the KiChad host.  KiChad does not run an MCP server,
 middleware daemon, tool-server process, or web UI.  The app-server process is never given an
 arbitrary KiChad tool that executes shell commands or drives the GUI.  Unrecognized tool calls are
-rejected with a structured JSON-RPC error.
+rejected with a structured JSON-RPC error.  The owned process starts with MCP, shell, unified exec,
+apps, browser/computer use, image generation, plugins, and multi-agent features disabled, so it
+cannot inherit broader tools or MCP connectors from the user's global Codex configuration.
 
 Set `KICHAD_CODEX_EXECUTABLE` when `codex` is not on `PATH`.  The executable is an installation
-prerequisite, not a linked build dependency, and it stores authentication using Codex's own account
-storage.  KiChad never stores access tokens in a project or its settings.
+prerequisite, not a linked build dependency.  The owned child uses an isolated Codex home at
+`~/.config/kichad/codex` by default, preventing global Codex configuration, MCP connectors, hooks,
+plugins, or sessions from leaking into the design agent.  Codex stores the panel's native ChatGPT
+authentication there; KiChad never stores access tokens in a project or its settings.  Set
+`KICHAD_CODEX_HOME` to override that state location.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for

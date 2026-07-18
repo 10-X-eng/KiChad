@@ -32,6 +32,7 @@ fast-forward-only pulls.
 
 ```sh
 build/install/bin/kichad-cli version
+./tools/smoke-codex-app-server-protocol.sh
 ctest --preset kichad-release
 ./tools/run-kichad.sh  # GUI smoke check; close the window after startup.
 ```

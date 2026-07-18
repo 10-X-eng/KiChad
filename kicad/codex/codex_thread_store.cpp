@@ -10,12 +10,12 @@
  */
 
 #include "codex_thread_store.h"
+#include "codex_paths.h"
 
 #include <nlohmann/json.hpp>
 #include <wx/ffile.h>
 #include <wx/filename.h>
 #include <wx/intl.h>
-#include <wx/stdpaths.h>
 
 
 std::string CODEX_THREAD_STORE::Load( const wxString& aProjectPath ) const
@@ -110,10 +110,7 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
 
 wxString CODEX_THREAD_STORE::storagePath() const
 {
-    wxFileName path( wxStandardPaths::Get().GetUserConfigDir(), wxEmptyString );
-    path.AppendDir( wxS( "kichad" ) );
-    path.SetFullName( wxS( "codex-threads.json" ) );
-    return path.GetFullPath();
+    return KICHAD::CODEX_PATHS::ThreadIndex();
 }
 
 

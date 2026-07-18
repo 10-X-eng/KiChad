@@ -26,6 +26,7 @@ fi
     cmake \
     gettext \
     git \
+    jq \
     libboost-all-dev \
     libbz2-dev \
     libcairo2-dev \

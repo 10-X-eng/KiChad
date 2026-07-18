@@ -10,9 +10,11 @@
  */
 
 #include "codex_app_server_client.h"
+#include "codex_paths.h"
 
 #include <vector>
 
+#include <wx/filename.h>
 #include <wx/log.h>
 #include <wx/intl.h>
 #include <wx/utils.h>
@@ -71,7 +73,58 @@ bool CODEX_APP_SERVER_CLIENT::Start()
     if( !wxGetEnv( wxS( "KICHAD_CODEX_EXECUTABLE" ), &executable ) || executable.IsEmpty() )
         executable = wxS( "codex" );
 
-    std::vector<wxString>       argumentStorage = { executable, wxS( "app-server" ) };
+    wxString codexHome;
+
+    if( !wxGetEnv( wxS( "KICHAD_CODEX_HOME" ), &codexHome ) || codexHome.IsEmpty() )
+        codexHome = KICHAD::CODEX_PATHS::AppServerHome();
+
+    if( !wxFileName::DirName( codexHome ).IsAbsolute() )
+    {
+        setState( false, _( "KICHAD_CODEX_HOME must be an absolute path." ) );
+        return false;
+    }
+
+    if( !wxFileName::Mkdir( codexHome, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL )
+        && !wxFileName::DirExists( codexHome ) )
+    {
+        setState( false, wxString::Format( _( "Could not create the Codex state directory '%s'." ),
+                                           codexHome ) );
+        return false;
+    }
+
+    // Keep the owned inference process isolated from arbitrary MCP servers and broad Codex tools
+    // in the user's global configuration.  KiChad supplies its complete tool surface through
+    // app-server dynamic tools on this same stdio connection.
+    std::vector<wxString> argumentStorage = {
+        executable,
+        wxS( "app-server" ),
+        wxS( "-c" ),
+        wxS( "mcp_servers={}" ),
+        wxS( "--disable" ),
+        wxS( "shell_tool" ),
+        wxS( "--disable" ),
+        wxS( "unified_exec" ),
+        wxS( "--disable" ),
+        wxS( "apps" ),
+        wxS( "--disable" ),
+        wxS( "browser_use" ),
+        wxS( "--disable" ),
+        wxS( "computer_use" ),
+        wxS( "--disable" ),
+        wxS( "image_generation" ),
+        wxS( "--disable" ),
+        wxS( "multi_agent" ),
+        wxS( "--disable" ),
+        wxS( "plugins" ),
+        wxS( "--disable" ),
+        wxS( "enable_mcp_apps" ),
+        wxS( "--disable" ),
+        wxS( "hooks" ),
+        wxS( "--disable" ),
+        wxS( "skill_mcp_dependency_install" ),
+        wxS( "--disable" ),
+        wxS( "workspace_dependencies" )
+    };
     std::vector<const wchar_t*> arguments;
 
     for( const wxString& argument : argumentStorage )
@@ -81,7 +134,11 @@ bool CODEX_APP_SERVER_CLIENT::Start()
 
     m_process = new CODEX_PROCESS( this );
     m_process->Redirect();
-    m_pid = wxExecute( arguments.data(), wxEXEC_ASYNC, m_process );
+
+    wxExecuteEnv environment;
+    wxGetEnvMap( &environment.env );
+    environment.env[wxS( "CODEX_HOME" )] = codexHome;
+    m_pid = wxExecute( arguments.data(), wxEXEC_ASYNC, m_process, &environment );
 
     if( m_pid == 0 )
     {

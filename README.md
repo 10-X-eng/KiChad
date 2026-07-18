@@ -16,6 +16,7 @@ On Ubuntu 24.04 or KDE neon, the repeatable local build is:
 ```sh
 ./tools/bootstrap-kichad-ubuntu.sh  # Run once to install native dependencies.
 ./tools/check-codex-app-server.sh   # Verify the Codex app-server prerequisite.
+./tools/smoke-codex-app-server-protocol.sh  # Verify the embedded JSON-RPC contract.
 ./tools/build-kichad.sh             # Configure, compile, install, and smoke-check.
 ```
 
@@ -31,8 +32,10 @@ model catalog, reasoning selection, streaming conversations, and visible app-ser
 Launching KiChad directly starts and owns one `codex app-server` child process and communicates
 with it over redirected stdio; no wrapper daemon, MCP server, or separate tool server is involved.
 Closing KiChad terminates that owned child.  If Codex is not on `PATH`, set
-`KICHAD_CODEX_EXECUTABLE` to its absolute path before launching.  The design-tool boundary and
-safety model are documented in
+`KICHAD_CODEX_EXECUTABLE` to its absolute path before launching.  The panel's ChatGPT sign-in is
+stored by Codex in an isolated KiChad Codex home, not in the project; set `KICHAD_CODEX_HOME` only
+when you intentionally want a different state location.  The design-tool boundary and safety model
+are documented in
 [docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.
