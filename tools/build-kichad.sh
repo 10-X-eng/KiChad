@@ -6,6 +6,34 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="${repo_root}/build/release"
 install_dir="${repo_root}/build/install"
 launcher_template="${repo_root}/tools/kichad-local-launcher.sh"
+base_version_file="${repo_root}/.kichad-base-version"
+
+if [[ ! -r "$base_version_file" ]]; then
+    echo "Missing KiChad stable-base marker: ${base_version_file}" >&2
+    exit 1
+fi
+
+base_version="$(<"$base_version_file")"
+
+if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Invalid KiChad stable-base version: ${base_version}" >&2
+    exit 1
+fi
+
+if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+    base_commit="$(git -C "$repo_root" rev-parse "${base_version}^{}" 2>/dev/null || true)"
+
+    if [[ -z "$base_commit" ]]; then
+        echo "Required upstream stable tag ${base_version} is not present." >&2
+        echo "Run: git fetch upstream --tags" >&2
+        exit 1
+    fi
+
+    if ! git -C "$repo_root" merge-base --is-ancestor "$base_commit" HEAD; then
+        echo "HEAD is not based on stable KiCad ${base_version} (${base_commit})." >&2
+        exit 1
+    fi
+fi
 
 if [[ -n "${KICHAD_BUILD_JOBS:-}" ]]; then
     jobs="$KICHAD_BUILD_JOBS"
@@ -40,7 +68,14 @@ if (( $# == 0 )); then
         install -m 0755 "$launcher_template" "$install_dir/bin/$launcher_name"
     done
 
-    "$install_dir/bin/kichad-cli" version
+    built_version="$("$install_dir/bin/kichad-cli" version)"
+
+    if [[ "$built_version" != "$base_version"* ]]; then
+        echo "Expected a ${base_version} build, got: ${built_version}" >&2
+        exit 1
+    fi
+
+    printf 'KiChad stable build verified: %s\n' "$built_version"
 else
     echo "Target build complete; install skipped because explicit targets were requested."
 fi

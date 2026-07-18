@@ -245,3 +245,9 @@ TOOL_ACTION KICAD_MANAGER_ACTIONS::showLocalHistory( TOOL_ACTION_ARGS()
         .FriendlyName( _( "Local History" ) )
         .Tooltip( _( "Show or hide local history panel" ) )
         .Icon( BITMAPS::recent ) );
+
+TOOL_ACTION KICAD_MANAGER_ACTIONS::showCodex( TOOL_ACTION_ARGS()
+        .Name( "kicad.Control.showCodex" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Codex" ) )
+        .Tooltip( _( "Show or hide the Codex design panel" ) ) );

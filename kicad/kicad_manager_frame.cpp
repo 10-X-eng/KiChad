@@ -24,6 +24,7 @@
  */
 
 #include "kicad_id.h"
+#include "codex/codex_panel.h"
 #include "pcm.h"
 #include "pgm_kicad.h"
 #include "project_tree_pane.h"
@@ -148,6 +149,7 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
         m_showHistoryPanel( false ),
         m_projectTreePane( nullptr ),
         m_historyPane( nullptr ),
+        m_codexPanel( nullptr ),
         m_launcher( nullptr ),
         m_lastToolbarIconSize( 0 ),
         m_pcmButton( nullptr ),
@@ -244,6 +246,14 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
 
     if( m_showHistoryPanel )
         m_auimgr.GetPane( m_historyPane ).Show();
+
+    m_codexPanel = new CODEX_PANEL( this, [this]() { return Prj().GetProjectPath(); } );
+    m_auimgr.AddPane( m_codexPanel,
+                      EDA_PANE().Palette().Name( "Codex" ).Right().Layer( 1 )
+                                .Caption( _( "Codex" ) ).PaneBorder( true )
+                                .MinSize( FromDIP( 360 ), FromDIP( 240 ) )
+                                .BestSize( FromDIP( 420 ), FromDIP( 640 ) )
+                                .CloseButton( true ) );
 
     wxSize client_size = GetClientSize();
     m_notebook = new wxAuiNotebook( this, wxID_ANY, wxPoint( client_size.x, client_size.y ),
@@ -476,6 +486,15 @@ void KICAD_MANAGER_FRAME::setupUIConditions()
             };
 
     manager->SetConditions( KICAD_MANAGER_ACTIONS::showLocalHistory, ACTION_CONDITIONS().Check( historyCond ) );
+
+    auto codexPanelCond =
+            [this]( const SELECTION& )
+            {
+                return CodexPanelShown();
+            };
+
+    manager->SetConditions( KICAD_MANAGER_ACTIONS::showCodex,
+                            ACTION_CONDITIONS().Check( codexPanelCond ) );
 
     // These are just here for text boxes, search boxes, etc. in places such as the standard
     // file dialogs.
@@ -1483,6 +1502,20 @@ void KICAD_MANAGER_FRAME::ToggleLocalHistory()
         m_historyPane->RefreshHistory( Prj().GetProjectPath() );
 
     m_auimgr.Update();
+}
+
+
+void KICAD_MANAGER_FRAME::ToggleCodexPanel()
+{
+    wxAuiPaneInfo& pane = m_auimgr.GetPane( m_codexPanel );
+    pane.Show( !pane.IsShown() );
+    m_auimgr.Update();
+}
+
+
+bool KICAD_MANAGER_FRAME::CodexPanelShown()
+{
+    return m_auimgr.GetPane( m_codexPanel ).IsShown();
 }
 
 

@@ -29,6 +29,7 @@
 
 class ACTION_TOOLBAR;
 class BITMAP_BUTTON;
+class CODEX_PANEL;
 class EDA_BASE_FRAME;
 class KICAD_SETTINGS;
 class PANEL_KICAD_LAUNCHER;
@@ -60,6 +61,8 @@ public:
     void RestoreCommitFromHistory( const wxString& aHash );
     void ToggleLocalHistory();
     bool HistoryPanelShown();
+    void ToggleCodexPanel();
+    bool CodexPanelShown();
 
     void OnOpenFileInTextEditor( wxCommandEvent& event );
     void OnEditAdvancedCfg( wxCommandEvent& event );
@@ -253,6 +256,7 @@ private:
 
     PROJECT_TREE_PANE*    m_projectTreePane;
     LOCAL_HISTORY_PANE*   m_historyPane;
+    CODEX_PANEL*          m_codexPanel;
     wxAuiNotebook*        m_notebook;
     PANEL_KICAD_LAUNCHER* m_launcher;
     int                   m_lastToolbarIconSize;

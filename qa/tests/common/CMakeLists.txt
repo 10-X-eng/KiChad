@@ -53,6 +53,7 @@ set( QA_COMMON_SRCS
     test_library_tables.cpp
     test_lockfile.cpp
     test_loop_safe_collect.cpp
+    test_lossless_sexpr_document.cpp
     test_markup_parser.cpp
     test_kicad_string.cpp
     test_kicad_stroke_font.cpp
@@ -88,6 +89,8 @@ set( QA_COMMON_SRCS
     test_utf8.cpp
     test_wildcards_and_files_ext.cpp
     test_wx_filename.cpp
+
+    ${CMAKE_SOURCE_DIR}/kicad/codex/lossless_sexpr_document.cpp
 
     libeval/test_numeric_evaluator.cpp
 

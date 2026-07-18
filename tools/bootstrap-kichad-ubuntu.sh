@@ -69,6 +69,7 @@ fi
     python3-dev \
     python3-numpy \
     python3-pytest \
+    python3-wxgtk4.0 \
     shared-mime-info \
     swig \
     unixodbc-dev \

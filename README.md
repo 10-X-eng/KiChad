@@ -4,6 +4,10 @@ KiChad is a Codex-oriented downstream of KiCad.  It preserves the complete upstr
 keeps the application architecture compatible with KiCad while providing a reproducible local
 development environment for AI-assisted work.
 
+Development is pinned to the latest stable KiCad release: **10.0.4**.  Preview releases and the
+upstream development branch are intentionally excluded.  The pinned version is recorded in
+`.kichad-base-version`, and the build script verifies both the Git ancestry and resulting binary.
+
 See [KICHAD.md](KICHAD.md) for the Linux quick start, repository layout, runtime libraries, and
 upstream-sync workflow.  KiChad is an independent project and is not an official KiCad build.
 
@@ -11,15 +15,27 @@ On Ubuntu 24.04 or KDE neon, the repeatable local build is:
 
 ```sh
 ./tools/bootstrap-kichad-ubuntu.sh  # Run once to install native dependencies.
+./tools/check-codex-app-server.sh   # Verify the Codex app-server prerequisite.
 ./tools/build-kichad.sh             # Configure, compile, install, and smoke-check.
 ```
 
 Build products stay in `build/`, and the runnable installation is written to `build/install/`.
 Rerun `tools/build-kichad.sh` after source changes; it uses the tracked CMake preset, defaults to
 one build job per CPU, and accepts `KICHAD_BUILD_JOBS` when you need to cap parallelism.
-After a successful build, run `build/install/bin/kichad` or use
+After a successful build, run `./tools/run-kichad.sh` (or `build/install/bin/kichad`) and use
 `build/install/bin/kichad-cli version` for a headless check; both launchers set the local runtime
 library path without changing the system installation.
+
+The project manager includes a native docked Codex panel with ChatGPT sign-in, a dynamic account
+model catalog, reasoning selection, streaming conversations, and visible app-server status.
+Launching KiChad directly starts and owns one `codex app-server` child process and communicates
+with it over redirected stdio; no wrapper daemon, MCP server, or separate tool server is involved.
+Closing KiChad terminates that owned child.  If Codex is not on `PATH`, set
+`KICHAD_CODEX_EXECUTABLE` to its absolute path before launching.  The design-tool boundary and
+safety model are documented in
+[docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).
+Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
+by their installed Codex app-server without committing generated schemas.
 
 ---
 

@@ -60,6 +60,7 @@ public:
     static TOOL_ACTION openProjectDirectory;
     static TOOL_ACTION restoreLocalHistory;
     static TOOL_ACTION showLocalHistory;
+    static TOOL_ACTION showCodex;
 };
 
 
