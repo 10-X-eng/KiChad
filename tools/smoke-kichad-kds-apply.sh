@@ -5,6 +5,7 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture_dir="${repo_root}/qa/data/kichad/kds_live_apply"
 pcbnew_binary="${repo_root}/build/release/pcbnew/pcbnew"
+kicad_cli_binary="${repo_root}/build/release/kicad/kicad-cli"
 test_binary="${repo_root}/build/release/qa/tests/common/qa_common"
 
 if [[ "${1:-}" != "--allow-mutation" || $# -ne 1 ]]; then
@@ -13,7 +14,7 @@ if [[ "${1:-}" != "--allow-mutation" || $# -ne 1 ]]; then
     exit 2
 fi
 
-if [[ ! -x "$pcbnew_binary" || ! -x "$test_binary" ]]; then
+if [[ ! -x "$pcbnew_binary" || ! -x "$kicad_cli_binary" || ! -x "$test_binary" ]]; then
     echo "Build pcbnew and qa_common first with ./tools/build-kichad.sh." >&2
     exit 1
 fi
@@ -26,6 +27,7 @@ mkdir -p -- "$project_dir" "$config_dir"
 cp -- "${fixture_dir}/live_apply.kicad_pro" "$project_dir/"
 cp -- "${fixture_dir}/live_apply.kicad_pcb" "$project_dir/"
 cp -- "${fixture_dir}/live_apply.kicad_kds" "$project_dir/"
+cp -- "${fixture_dir}/live_apply.kicad_sch" "$project_dir/"
 cp -R -- "${fixture_dir}/config/." "$config_dir/"
 
 editor_pid=""
@@ -63,6 +65,23 @@ for attempt in $(seq 1 30); do
     if "$test_binary" \
         --run_test=CodexToolRegistry/AppliesReusableDesignAgainstLivePcbEditorWhenRequested \
         --log_level=message; then
+        if ! KICAD_RUN_FROM_BUILD_DIR=1 "$kicad_cli_binary" sch export netlist \
+                --output "${project_dir}/live_apply.net" \
+                "${project_dir}/live_apply.kicad_sch"; then
+            echo "Native validation rejected the applied root schematic:" >&2
+            sed -n '1,240p' "${project_dir}/live_apply.kicad_sch" >&2
+            echo "Native validation child schematic:" >&2
+            sed -n '1,240p' "${project_dir}/power.kicad_sch" >&2
+            KICAD_RUN_FROM_BUILD_DIR=1 "$kicad_cli_binary" sch export netlist \
+                --output "${project_dir}/power.net" \
+                "${project_dir}/power.kicad_sch" >&2 || true
+            exit 1
+        fi
+        test -s "${project_dir}/live_apply.net"
+        grep -Fq '(company "KiChad lossless fixture")' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(uuid "11111111-2222-4333-8444-555555555555")' \
+            "${project_dir}/live_apply.kicad_sch"
         echo "KiChad live KDS apply smoke test passed."
         exit 0
     fi

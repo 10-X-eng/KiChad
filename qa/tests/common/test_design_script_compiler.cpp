@@ -39,7 +39,7 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
     (value "GREEN")
     (footprint "LED_SMD:LED_0603_1608Metric"))
   (net LED_A (pin R1 1) (pin LED1 1))
-  (sheet root (title "Main"))
+  (sheet root (parent none) (file "sensor_node.kicad_sch") (title "Main"))
   (board
     (stackup
       (finish "ENIG") (impedance_controlled true)
@@ -1140,6 +1140,62 @@ BOOST_AUTO_TEST_CASE( CompilesCanonicalGlobalAndProjectLibraryDependencies )
     BOOST_CHECK( !result.ok );
     BOOST_CHECK_NE( result.diagnostics.dump().find( "unresolved_component_library" ),
                     std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesOneExplicitResolvableSchematicHierarchy )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project hierarchy)
+  (sheet root
+    (parent none)
+    (file "hierarchy.kicad_sch")
+    (title "Main"))
+  (sheet power
+    (parent root)
+    (file "sheets/power.kicad_sch")
+    (title "Power")
+    (at 20mm 30mm)
+    (size 40mm 20mm)
+    (pin VIN input (at 20mm 35mm) (side left))
+    (pin VOUT output (at 60mm 35mm) (side right)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.ir["schematic"]["sheets"].size(), 2 );
+    const nlohmann::json& power = result.ir["schematic"]["sheets"][1];
+    BOOST_CHECK_EQUAL( power["parent"].get<std::string>(), "root" );
+    BOOST_CHECK_EQUAL( power["position"]["xNm"].get<int64_t>(), 20000000 );
+    BOOST_CHECK_EQUAL( power["size"]["yNm"].get<int64_t>(), 20000000 );
+    BOOST_REQUIRE_EQUAL( power["pins"].size(), 2 );
+    BOOST_CHECK_EQUAL( power["pins"][1]["side"].get<std::string>(), "right" );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project broken_hierarchy)
+  (sheet root (parent none) (file "broken_hierarchy.kicad_sch") (title "Main"))
+  (sheet a (parent b) (file "shared.kicad_sch") (title "Duplicate")
+    (at 10mm 10mm) (size 20mm 10mm)
+    (pin BAD input (at 15mm 15mm) (side left)))
+  (sheet b (parent a) (file "shared.kicad_sch") (title "Cycle")
+    (at 40mm 10mm) (size 20mm 10mm))
+  (sheet missing (parent root) (file "../escape.kicad_sch") (title "Duplicate")
+    (at 10mm 30mm) (size 20mm 10mm))
+  (sheet duplicate (parent root) (file "duplicate.kicad_sch") (title "Duplicate")
+    (at 40mm 30mm) (size 20mm 10mm))
+))KDS";
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    const std::string diagnostics = result.diagnostics.dump();
+
+    for( const char* code : { "invalid_sheet_file", "sheet_pin_off_edge",
+                              "duplicate_sibling_sheet_title", "recursive_sheet_hierarchy",
+                              "recursive_sheet_file" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
 }
 
 

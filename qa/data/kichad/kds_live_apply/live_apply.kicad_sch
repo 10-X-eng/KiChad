@@ -1,0 +1,16 @@
+(kicad_sch
+  (version 20260306)
+  (generator "eeschema")
+  (generator_version "10.0")
+  (uuid "11111111-2222-4333-8444-555555555555")
+  (paper "A4")
+  (title_block
+    (title "Unmanaged prior title")
+    (company "KiChad lossless fixture")
+  )
+  (lib_symbols)
+  (sheet_instances
+    (path "/" (page "9"))
+  )
+  (embedded_fonts no)
+)

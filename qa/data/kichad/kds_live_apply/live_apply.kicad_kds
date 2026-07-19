@@ -1,6 +1,18 @@
 (kichad_design
   (version 1)
   (project live_apply)
+  (sheet root
+    (parent none)
+    (file "live_apply.kicad_sch")
+    (title "KiChad live hierarchy"))
+  (sheet power
+    (parent root)
+    (file "power.kicad_sch")
+    (title "Power")
+    (at 20mm 30mm)
+    (size 40mm 20mm)
+    (pin VIN input (at 20mm 35mm) (side left))
+    (pin VOUT output (at 60mm 35mm) (side right)))
   (library symbol Device (table global))
   (library footprint Resistor_SMD (table global))
   (component R1

@@ -2031,7 +2031,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     wxGetEnv( wxS( "KICHAD_QA_LIVE_SOCKET_DIR" ), &socketDirectory );
     CODEX_TOOL_REGISTRY registry( [project]() { return project.GetFullPath(); },
                                   []() { return true; },
-                                  [socketDirectory]() { return socketDirectory; } );
+                                  [socketDirectory]() { return socketDirectory; },
+                                  []( const wxFileName&, std::string& ) { return true; } );
     const std::string sourceName = source.GetFullName().ToStdString();
     const std::string boardName = board.GetFullName().ToStdString();
     JSON compiled = registry.Handle( "design", { { "operation", "compile" },
@@ -2055,6 +2056,12 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( firstData["netClassesApplied"].get<bool>() );
     BOOST_CHECK( firstData["customRulesApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( firstData["libraryTablesApplied"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( firstData["schematicFilesApplied"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesCreated"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesUpdated"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["itemsUpserted"].get<int>(), 3 );
+    BOOST_CHECK( wxFileExists( wxFileName( project.GetFullPath(),
+                                           wxS( "power.kicad_sch" ) ).GetFullPath() ) );
     BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),
                                                       wxS( "sym-lib-table" ) ) ),
                        "(sym_lib_table\n  (version 7)\n)\n" );
@@ -2077,6 +2084,58 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["customRulesApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( repeatedData["libraryTablesApplied"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( repeatedData["schematicFilesApplied"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( repeatedData["schematicCounts"]["filesUnchanged"].get<int>(), 2 );
+
+    const wxFileName rootSchematic( project.GetFullPath(), wxS( "live_apply.kicad_sch" ) );
+    const std::string rootBeforeRejectedApply = readExactTextFile( rootSchematic );
+    const std::string originalSource = readExactTextFile( source );
+    std::string rejectedSource = originalSource;
+    const std::string originalTitle = "KiChad live hierarchy";
+    const size_t titlePosition = rejectedSource.find( originalTitle );
+    BOOST_REQUIRE_NE( titlePosition, std::string::npos );
+    rejectedSource.replace( titlePosition, originalTitle.size(), "Rejected native title" );
+    JSON rejectedSaved = registry.Handle(
+            "design", { { "operation", "save" },
+                         { "path", sourceName },
+                         { "source", rejectedSource },
+                         { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( rejectedSaved.at( "success" ).get<bool>(), rejectedSaved.dump() );
+    const std::string rejectedHash =
+            envelope( rejectedSaved )["data"]["sourceSha256"].get<std::string>();
+    CODEX_TOOL_REGISTRY rejectingRegistry(
+            [project]() { return project.GetFullPath(); }, []() { return true; },
+            [socketDirectory]() { return socketDirectory; },
+            []( const wxFileName&, std::string& aError )
+            {
+                aError = "injected native schematic rejection";
+                return false;
+            } );
+    JSON rejectedApply = rejectingRegistry.Handle(
+            "design", { { "operation", "apply" },
+                         { "path", sourceName },
+                         { "boardPath", boardName },
+                         { "expectedSha256", rejectedHash } } );
+    BOOST_CHECK( !rejectedApply.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( rejectedApply )["error"]["code"].get<std::string>(),
+                       "schematic_validation_failed" );
+    BOOST_CHECK_EQUAL( readExactTextFile( rootSchematic ), rootBeforeRejectedApply );
+
+    JSON restoredSaved = registry.Handle(
+            "design", { { "operation", "save" },
+                         { "path", sourceName },
+                         { "source", originalSource },
+                         { "expectedSha256", rejectedHash } } );
+    BOOST_REQUIRE_MESSAGE( restoredSaved.at( "success" ).get<bool>(), restoredSaved.dump() );
+    JSON recoveredApply = registry.Handle(
+            "design", { { "operation", "apply" },
+                         { "path", sourceName },
+                         { "boardPath", boardName },
+                         { "expectedSha256",
+                           envelope( restoredSaved )["data"]["sourceSha256"] } } );
+    BOOST_REQUIRE_MESSAGE( recoveredApply.at( "success" ).get<bool>(),
+                           recoveredApply.dump() );
+    BOOST_CHECK_EQUAL( readExactTextFile( rootSchematic ), rootBeforeRejectedApply );
 
     KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.stackup", socketDirectory );
     KICHAD_IPC_TARGET ipcTarget;

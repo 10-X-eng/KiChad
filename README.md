@@ -70,6 +70,10 @@ For the self-contained KDS transaction proof, run
 `tools/smoke-kichad-kds-apply.sh --allow-mutation`. It launches a disposable build-tree PCB Editor
 with an isolated configuration and project copy, applies the committed KDS fixture, and proves that
 a repeated apply updates the same twelve managed objects without duplicates. It also applies and
+reapplies a two-file hierarchical schematic, preserves the existing root screen UUID and unmanaged
+title-block company field, creates stable sheet/pin/interface UUIDs, proves the second apply is
+byte-idempotent, injects a native-validation failure to prove exact rollback, and exports the
+resulting hierarchy through the real `kicad-cli` schematic loader. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

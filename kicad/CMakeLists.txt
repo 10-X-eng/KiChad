@@ -26,6 +26,8 @@ set( KICAD_SRCS
     codex/design_script_compiler.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
+    codex/design_script_schematic_planner.cpp
+    codex/design_script_schematic_reconciler.cpp
     codex/kicad_ipc_client.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp

@@ -44,7 +44,8 @@ root, checks the file extension against the document root, caps input/output siz
 `design` is the compiler front end for reusable `.kicad_kds` KiChad Design Script sidecars.  It
 describes the versioned language, reads the exact bounded source as model context, compiles either
 inline source or a project-confined sidecar into a private deterministic validated IR and pass plan,
-previews typed physical board statements through their KDS logical and stable UUIDv8 identities,
+previews typed physical board statements and schematic hierarchy files through their KDS logical
+and stable UUIDv8 identities,
 atomically saves only valid programs, and applies the currently supported physical subset behind the
 pre-turn snapshot gate. Read and preview are bounded and read-only. Compiler IR and protobuf
 payloads are deliberately not exposed as a second design representation. Existing sidecars require
@@ -84,7 +85,10 @@ locked rule area with exact prohibited-item settings. It also creates determinis
 text and all five native dimension styles, then reapplies each distinct oneof field mask and verifies
 reference-resolved placement through a narrow native footprint transform: the parent and pad UUIDs,
 schematic symbol path, and child geometry survive a front-to-back flip. Its cleanup targets only the
-process and directory it created.
+process and directory it created. The fixture also reconciles an existing root schematic and a new
+child screen, preserves the root screen UUID and unmanaged title-block data, proves byte-idempotent
+reapply, injects native validation failure and verifies exact rollback/recovery, and loads the final
+hierarchy through `kicad-cli` to export a non-empty netlist.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for
@@ -113,6 +117,15 @@ and filled. A rejected or timed-out refill retains the recovery journal, and the
 reconciles and retries. Keepout rule areas use their own ownership namespace and exact protobuf
 field mask; they never participate in copper-fill completion polling. Both state files are project-confined and
 included in whole-turn local history snapshots.
+
+Hierarchy declarations compile into stable native sheet, sheet-pin, and hierarchical-label UUIDs.
+The planner first inventories existing screen UUIDs and uses those exact identities in nested KiCad
+instance paths; only missing screens receive deterministic compiler UUIDs. A lossless reconciler
+replaces or inserts direct managed expressions and removes only identities proven in the previous
+state. It updates the root title while retaining other title-block fields. Exact prior schematic
+presence and bytes are stored in the apply journal, files install atomically, and a bounded sibling
+`kicad-cli` process loads the complete hierarchy before any PCB item commit. Timeout or native parse
+failure restores schematics, library tables, and board settings in reverse order.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

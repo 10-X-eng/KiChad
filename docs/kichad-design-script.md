@@ -48,6 +48,19 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
     (revision "A"))
   (units mm)
 
+  (sheet root
+    (parent none)
+    (file "sensor_node.kicad_sch")
+    (title "Main"))
+  (sheet power
+    (parent root)
+    (file "power.kicad_sch")
+    (title "Power")
+    (at 20mm 30mm)
+    (size 40mm 20mm)
+    (pin VIN input (at 20mm 35mm) (side left))
+    (pin LED_A output (at 60mm 35mm) (side right)))
+
   (library symbol Device (table global))
   (library footprint Resistor_SMD (table global))
   (library footprint LED_SMD (table global))
@@ -167,6 +180,49 @@ rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zon
 board text require logical `id` fields. Those IDs are stable across formatting and statement
 reordering and are the source identity used by transactional backends; component placement uses the
 already-unique reference.
+
+### Schematic hierarchy
+
+KDS has one explicit hierarchy representation. Every declared hierarchy has exactly one root sheet;
+the root file is exactly `PROJECT.kicad_sch`. Non-root sheets declare their parent, project-relative
+`.kicad_sch` file, displayed title, rectangle, and zero or more pins:
+
+```scheme
+(sheet root
+  (parent none)
+  (file "controller.kicad_sch")
+  (title "Main"))
+(sheet power
+  (parent root)
+  (file "power.kicad_sch")
+  (title "Power")
+  (at 20mm 30mm)
+  (size 40mm 20mm)
+  (pin VIN input (at 20mm 35mm) (side left))
+  (pin VOUT output (at 60mm 35mm) (side right)))
+```
+
+Pin direction is one of `input`, `output`, `bidirectional`, `tri_state`, or `passive`; side is
+`left`, `right`, `top`, or `bottom`. A pin position must lie on its declared rectangle edge. Sheet
+IDs, sibling titles, and pin names are unique in their scopes. Parent references must resolve;
+cycles, recursive ancestor file reuse, path traversal, absolute paths, case-only file collisions,
+duplicate fields, and more than 128 sheets, 256 pins per sheet, or 4096 hierarchy pins are rejected
+before inventory or mutation. A single native screen file cannot yet be instantiated by multiple
+KDS sheet IDs, so shared-screen aliases are rejected rather than compiled incorrectly.
+
+The compiler derives stable UUIDv8 identities for each managed sheet symbol, sheet pin, and child
+hierarchical label. Existing screen UUIDs are never replaced: they are inventoried first and used in
+the native instance paths. New screen UUIDs, page order, and child-interface label layout are
+deterministic compiler output, not another authored representation. Existing schematics are edited
+by bounded node spans: unmanaged expressions, fields, ordering, quoting, and UUIDs retain their
+exact bytes. Only UUIDs proven in `managedSchematicItems` may be removed.
+
+Every changed schematic is installed atomically with its exact prior presence and bytes in the KDS
+apply journal. The complete desired hierarchy is then loaded through the sibling KiCad 10
+`kicad-cli sch export netlist` path with a 30-second process deadline. A launch, timeout, parse, or
+hierarchy error restores changed schematics, project library tables, and board settings in reverse
+order. Existing files and every parent directory must already be project-confined; a missing nested
+sheet directory is rejected before mutation.
 
 ### Library dependencies and project tables
 
@@ -568,8 +624,8 @@ KiCad `Dimension` protobuf type and uses the authored style as its single geomet
 3. Resolve libraries, symbols, footprints, models, components, pins, and nets.
 4. Produce a deterministic IR, source digest, diagnostics, and mutation plan.
 5. Establish the whole-project pre-apply snapshot.
-6. Compile native project library tables and schematic/library content through lossless edits
-   validated by KiCad 10.
+6. Compile native project library tables and schematic hierarchy through lossless edits validated
+   by KiCad 10.
 7. Compile live board state through the official KiCad 10 protobuf IPC transaction API.
 8. Resolve and cache sourcing evidence with explicit remote-action permissions.
 9. Run ERC, DRC, connectivity, sourcing, and manufacturability checks.
@@ -583,7 +639,8 @@ missing ones are recreated, and only previously managed obsolete items are delet
 KiCad transaction. A project-confined apply journal makes an interrupted operation safely
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
-The apply backend currently executes complete native project symbol/footprint tables, physical
+The apply backend currently executes nested native schematic hierarchy, complete native project
+symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,
@@ -636,7 +693,11 @@ keepout with exact prohibited-item policy. The seventh is multiline native board
 position, layer, typography, hyperlink, and lock state. The remaining five are aligned, orthogonal,
 radial, leader, and center dimensions with exact native geometry, units, precision, layout policy,
 labels, and text placement. Reapply groups updates by exact field mask so each dimension oneof is
-updated independently.
+updated independently. The same fixture reconciles a root and child schematic, retains the root
+screen UUID and unmanaged company field, creates stable native hierarchy identities, proves the
+repeat apply changes zero schematic files, injects a failed native validator and verifies exact
+root-file rollback, recovers from the retained journal, and finally exports a non-empty netlist
+through KiCad's real schematic loader.
 
 ## Production support rule
 
@@ -654,7 +715,8 @@ components, nets, sourcing, board statement kinds, global rules, net classes, cu
 and outputs. Global rules, net classes, custom rules, and executable board forms have
 backend-specific type checking and rollback coverage. Project symbol/footprint tables are
 executable with native parser validation, atomic installation, journaling, and rollback coverage.
-Nested sheets, schematic components and connectivity, and symbol/footprint/model library content
-remain non-executable until their own lossless backends and rollback tests land.
-Native backend
+Schematic components and connectivity, and symbol/footprint/model library content remain
+non-executable until their own lossless backends and rollback tests land. Nested sheet hierarchy is
+executable with lossless reconciliation, native hierarchy validation, journaling, rollback, and a
+disposable live integration proof. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

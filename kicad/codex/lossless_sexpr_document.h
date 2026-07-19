@@ -63,6 +63,11 @@ public:
 
     bool ReplaceNode( size_t aNode, const std::string& aReplacement,
                       std::string* aError = nullptr );
+    bool RemoveNode( size_t aNode, std::string* aError = nullptr );
+    bool InsertBeforeNode( size_t aNode, const std::string& aExpressions,
+                           std::string* aError = nullptr );
+    bool InsertBeforeClosingList( size_t aList, const std::string& aExpressions,
+                                  std::string* aError = nullptr );
     bool Render( std::string& aOutput, std::string* aError = nullptr ) const;
 
 private:
@@ -78,6 +83,8 @@ private:
     bool parse( std::string* aError );
     bool parseNode( size_t& aCursor, size_t aParent, size_t& aNode, size_t aDepth,
                     std::string* aError );
+    bool addEdit( size_t aBegin, size_t aEnd, std::string aReplacement,
+                  std::string* aError );
     void skipTrivia( size_t& aCursor ) const;
     bool fail( size_t aCursor, const std::string& aMessage, std::string* aError ) const;
 

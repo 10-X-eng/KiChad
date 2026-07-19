@@ -81,4 +81,60 @@ BOOST_AUTO_TEST_CASE( RejectsInvalidAndOverlappingReplacements )
 }
 
 
+BOOST_AUTO_TEST_CASE( InsertsAndRemovesManagedExpressionsWithoutTouchingUnknownContent )
+{
+    const std::string source =
+            "; keep leading trivia\n"
+            "(kicad_sch\n"
+            "  (uuid 11111111-2222-3333-4444-555555555555)\n"
+            "  (future_extension keep-me)\n"
+            "  (wire (uuid aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)))\n";
+    std::string error;
+    auto document = KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( source, &error );
+    BOOST_REQUIRE_MESSAGE( document, error );
+    const size_t root = document->Roots().front();
+    const size_t wire = document->FindLists( "wire" ).front();
+    const size_t extension = document->FindLists( "future_extension" ).front();
+    BOOST_REQUIRE( document->RemoveNode( wire, &error ) );
+    BOOST_REQUIRE( document->InsertBeforeNode(
+            extension,
+            "  (label \"SIGNAL\" (uuid bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb))\n",
+            &error ) );
+    BOOST_REQUIRE( document->InsertBeforeClosingList(
+            root,
+            "  (junction (uuid cccccccc-cccc-cccc-cccc-cccccccccccc))\n",
+            &error ) );
+
+    std::string rendered;
+    BOOST_REQUIRE_MESSAGE( document->Render( rendered, &error ), error );
+    BOOST_CHECK_NE( rendered.find( "; keep leading trivia" ), std::string::npos );
+    BOOST_CHECK_NE( rendered.find( "(future_extension keep-me)" ), std::string::npos );
+    BOOST_CHECK_EQUAL( rendered.find( "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" ),
+                       std::string::npos );
+    BOOST_CHECK_NE( rendered.find( "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" ),
+                    std::string::npos );
+    BOOST_CHECK_LT( rendered.find( "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" ),
+                    rendered.find( "(future_extension keep-me)" ) );
+    BOOST_CHECK_NE( rendered.find( "cccccccc-cccc-cccc-cccc-cccccccccccc" ),
+                    std::string::npos );
+    BOOST_CHECK( !document->InsertBeforeClosingList( root, "(wire", &error ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( InsertsBeforeAnAnchorThatIsAlsoReplaced )
+{
+    std::string error;
+    auto document = KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse(
+            "(root (anchor old) (tail keep))", &error );
+    BOOST_REQUIRE_MESSAGE( document, error );
+    const size_t anchor = document->FindLists( "anchor" ).front();
+    BOOST_REQUIRE( document->InsertBeforeNode( anchor, "(inserted new) ", &error ) );
+    BOOST_REQUIRE( document->ReplaceNode( anchor, "(anchor updated)", &error ) );
+    std::string rendered;
+    BOOST_REQUIRE_MESSAGE( document->Render( rendered, &error ), error );
+    BOOST_CHECK_EQUAL( rendered,
+                       "(root (inserted new) (anchor updated) (tail keep))" );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()

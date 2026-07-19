@@ -13,6 +13,8 @@
 #include "design_script_compiler.h"
 #include "design_script_pcb_planner.h"
 #include "design_script_pcb_reconciler.h"
+#include "design_script_schematic_planner.h"
+#include "design_script_schematic_reconciler.h"
 #include "kicad_ipc_client.h"
 #include "lossless_sexpr_document.h"
 
@@ -21,6 +23,7 @@
 #include <libraries/library_table_parser.h>
 
 #include <algorithm>
+#include <boost/process.hpp>
 #include <chrono>
 #include <filesystem>
 #include <map>
@@ -41,6 +44,7 @@
 #include <wx/file.h>
 #include <wx/ffile.h>
 #include <wx/filename.h>
+#include <wx/stdpaths.h>
 #include <wx/utils.h>
 
 #include <picosha2.h>
@@ -56,12 +60,15 @@ constexpr size_t       MAX_DISTINCT_HEADS = 512;
 constexpr size_t       MAX_PCB_ARGUMENT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
-constexpr size_t       MAX_DESIGN_STATE_BYTES = 4 * 1024 * 1024;
+constexpr size_t       MAX_DESIGN_STATE_BYTES = 64 * 1024 * 1024;
 constexpr size_t       MAX_PROJECT_LIBRARY_TABLE_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PROJECT_LIBRARY_ROWS = 256;
+constexpr size_t       MAX_SCHEMATIC_FILE_BYTES = 16 * 1024 * 1024;
+constexpr size_t       MAX_SCHEMATIC_INVENTORY_BYTES = 32 * 1024 * 1024;
 constexpr size_t       MAX_PCB_FOOTPRINTS = 10000;
 constexpr size_t       MAX_PCB_ZONES = 10000;
 constexpr auto         MAX_ZONE_REFILL_WAIT = std::chrono::seconds( 30 );
+constexpr auto         MAX_SCHEMATIC_VALIDATION_WAIT = std::chrono::seconds( 30 );
 
 
 struct PROJECT_LIBRARY_TABLE_UPDATE
@@ -70,6 +77,17 @@ struct PROJECT_LIBRARY_TABLE_UPDATE
     wxFileName  path;
     std::string source;
     size_t      rows = 0;
+    bool        previousPresent = false;
+    std::string previousSource;
+    bool        applied = false;
+};
+
+
+struct SCHEMATIC_FILE_UPDATE
+{
+    std::string relativePath;
+    wxFileName  path;
+    std::string source;
     bool        previousPresent = false;
     std::string previousSource;
     bool        applied = false;
@@ -262,6 +280,352 @@ bool installTextFileAtomically( const wxFileName& aPath, bool aPresent,
     }
 
     return true;
+}
+
+
+bool resolveProjectSchematic( const wxString& aProjectPath, const std::string& aRelativePath,
+                              wxFileName& aResolved, std::string& aError )
+{
+    wxString relative = wxString::FromUTF8( aRelativePath );
+    wxFileName candidate( relative );
+
+    if( aRelativePath.empty() || aRelativePath.size() > 4096
+        || aRelativePath.find( '\0' ) != std::string::npos || candidate.IsAbsolute()
+        || candidate.GetExt() != wxS( "kicad_sch" ) )
+    {
+        aError = "schematic path must be a project-relative .kicad_sch file";
+        return false;
+    }
+
+    wxFileName root = wxFileName::DirName( aProjectPath );
+    root.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    if( !canonicalizeExisting( root, true ) )
+    {
+        aError = "active project path could not be resolved";
+        return false;
+    }
+
+    candidate.MakeAbsolute( root.GetFullPath() );
+    candidate.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+    wxFileName parent = wxFileName::DirName( candidate.GetPath() );
+
+    if( !canonicalizeExisting( parent, true ) )
+    {
+        aError = "schematic parent directory does not exist";
+        return false;
+    }
+
+    wxString parentPath = parent.GetPathWithSep();
+    wxString rootPath = root.GetPathWithSep();
+
+#ifdef __WXMSW__
+    parentPath.MakeLower();
+    rootPath.MakeLower();
+#endif
+
+    if( !parentPath.StartsWith( rootPath ) && parent.GetFullPath() != root.GetFullPath() )
+    {
+        aError = "schematic path resolves outside the active project";
+        return false;
+    }
+
+    aResolved.Assign( parent.GetFullPath(), candidate.GetFullName() );
+
+    if( aResolved.FileExists() )
+    {
+        wxFileName canonical = aResolved;
+
+        if( !canonicalizeExisting( canonical ) )
+        {
+            aError = "existing schematic path could not be resolved";
+            return false;
+        }
+
+        wxString resolvedPath = aResolved.GetFullPath();
+        wxString canonicalPath = canonical.GetFullPath();
+
+#ifdef __WXMSW__
+        resolvedPath.MakeLower();
+        canonicalPath.MakeLower();
+#endif
+
+        if( resolvedPath != canonicalPath )
+        {
+            aError = "managed schematic path cannot be a symbolic link";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool readOptionalSchematic( const wxFileName& aPath, bool& aPresent, std::string& aSource,
+                            std::string& aError )
+{
+    aPresent = aPath.FileExists();
+    aSource.clear();
+
+    if( !aPresent )
+        return true;
+
+    wxFile file( aPath.GetFullPath(), wxFile::read );
+
+    if( !file.IsOpened() )
+    {
+        aError = "could not open managed schematic";
+        return false;
+    }
+
+    const wxFileOffset length = file.Length();
+
+    if( length <= 0 || length > static_cast<wxFileOffset>( MAX_SCHEMATIC_FILE_BYTES ) )
+    {
+        aError = "managed schematic must contain 1 byte to 16 MiB";
+        return false;
+    }
+
+    aSource.assign( static_cast<size_t>( length ), '\0' );
+
+    if( file.Read( aSource.data(), aSource.size() ) != length )
+    {
+        aSource.clear();
+        aError = "could not read the complete managed schematic";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool installSchematicAtomically( const wxFileName& aPath, bool aPresent,
+                                 const std::string& aSource, std::string& aError )
+{
+    if( !aPresent )
+    {
+        if( aPath.FileExists() && !wxRemoveFile( aPath.GetFullPath() ) )
+        {
+            aError = "could not remove newly created schematic during rollback";
+            return false;
+        }
+
+        if( aPath.FileExists() )
+        {
+            aError = "newly created schematic remained after rollback";
+            return false;
+        }
+
+        return true;
+    }
+
+    if( aSource.empty() || aSource.size() > MAX_SCHEMATIC_FILE_BYTES )
+    {
+        aError = "managed schematic must contain 1 byte to 16 MiB";
+        return false;
+    }
+
+    const wxString temporaryPath =
+            aPath.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
+    wxFile temporary;
+
+    if( !temporary.Create( temporaryPath, true )
+        || temporary.Write( aSource.data(), aSource.size() ) != aSource.size()
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+        aError = "could not durably write managed schematic temporary data";
+        return false;
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, aPath.GetFullPath(), true ) )
+    {
+        wxRemoveFile( temporaryPath );
+        aError = "could not atomically install managed schematic";
+        return false;
+    }
+
+    bool installedPresent = false;
+    std::string installedSource;
+
+    if( !readOptionalSchematic( aPath, installedPresent, installedSource, aError )
+        || !installedPresent || installedSource != aSource )
+    {
+        aError = "managed schematic verification failed after installation";
+        return false;
+    }
+
+    return true;
+}
+
+
+std::string directSchematicScalar( const KICHAD::LOSSLESS_SEXPR_DOCUMENT& aDocument,
+                                   size_t aParent, const std::string& aHead )
+{
+    size_t match = KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE;
+
+    for( size_t child : aDocument.Nodes().at( aParent ).children )
+    {
+        if( aDocument.Nodes().at( child ).kind
+                    != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+            || aDocument.ListHead( child ) != aHead )
+        {
+            continue;
+        }
+
+        if( match != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE )
+            return {};
+
+        match = child;
+    }
+
+    if( match == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE )
+        return {};
+
+    const auto& node = aDocument.Nodes().at( match );
+
+    if( node.children.size() != 2
+        || aDocument.Nodes().at( node.children[1] ).kind
+                   == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST )
+    {
+        return {};
+    }
+
+    return aDocument.AtomText( node.children[1] );
+}
+
+
+bool schematicScreenUuid( const std::string& aSource, std::string& aUuid,
+                          std::string& aError )
+{
+    std::unique_ptr<KICHAD::LOSSLESS_SEXPR_DOCUMENT> document =
+            KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( aSource, &aError );
+
+    if( !document || document->Roots().size() != 1
+        || document->ListHead( document->Roots().front() ) != "kicad_sch" )
+    {
+        if( aError.empty() )
+            aError = "managed schematic must contain one kicad_sch root";
+
+        return false;
+    }
+
+    aUuid = directSchematicScalar( *document, document->Roots().front(), "uuid" );
+
+    if( aUuid.empty() )
+    {
+        aError = "managed schematic must contain exactly one screen UUID";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool validateNativeSchematicHierarchy( const wxFileName& aRootSchematic,
+                                       std::string& aError )
+{
+    namespace bp = boost::process;
+
+    wxFileName executable( wxStandardPaths::Get().GetExecutablePath() );
+#ifdef __WXMSW__
+    wxFileName cli( executable.GetPath(), wxS( "kicad-cli.exe" ) );
+#else
+    wxFileName cli( executable.GetPath(), wxS( "kicad-cli" ) );
+#endif
+
+    if( !cli.FileExists() || !cli.IsFileExecutable() )
+    {
+        aError = "the sibling kicad-cli native schematic validator is unavailable";
+        return false;
+    }
+
+    const wxString token = KIID().AsString();
+    wxFileName output( wxFileName::GetTempDir(), wxS( "kichad-kds-" ) + token + wxS( ".net" ) );
+    wxFileName stdoutLog( wxFileName::GetTempDir(),
+                           wxS( "kichad-kds-" ) + token + wxS( ".stdout" ) );
+    wxFileName stderrLog( wxFileName::GetTempDir(),
+                           wxS( "kichad-kds-" ) + token + wxS( ".stderr" ) );
+    bool finished = false;
+    int exitCode = -1;
+
+    try
+    {
+        bp::child process(
+                cli.GetFullPath().ToStdString(),
+                bp::args( std::vector<std::string>{ "sch", "export", "netlist", "--output",
+                                                    output.GetFullPath().ToStdString(),
+                                                    aRootSchematic.GetFullPath().ToStdString() } ),
+                bp::std_out > stdoutLog.GetFullPath().ToStdString(),
+                bp::std_err > stderrLog.GetFullPath().ToStdString() );
+        const auto deadline = std::chrono::steady_clock::now()
+                              + MAX_SCHEMATIC_VALIDATION_WAIT;
+        std::error_code processError;
+
+        while( process.running( processError ) && !processError
+               && std::chrono::steady_clock::now() < deadline )
+        {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        }
+
+        finished = !process.running( processError ) && !processError;
+
+        if( !finished )
+        {
+            process.terminate();
+            process.wait();
+
+            if( processError )
+                aError = "native schematic validation process failed: "
+                         + processError.message();
+        }
+        else
+        {
+            exitCode = process.exit_code();
+        }
+    }
+    catch( const std::exception& error )
+    {
+        aError = std::string( "could not run native schematic validation: " ) + error.what();
+    }
+
+    if( aError.empty() && ( !finished || exitCode != 0 || !output.FileExists() ) )
+    {
+        aError = !finished ? "native schematic validation exceeded 30 seconds"
+                           : "native KiCad rejected the generated schematic hierarchy";
+
+        if( stderrLog.FileExists() )
+        {
+            wxFile errorFile( stderrLog.GetFullPath(), wxFile::read );
+            const wxFileOffset length = errorFile.IsOpened() ? errorFile.Length() : 0;
+
+            if( length > 0 )
+            {
+                const size_t bounded = std::min<size_t>( static_cast<size_t>( length ), 4096 );
+                std::string detail( bounded, '\0' );
+
+                if( errorFile.Read( detail.data(), detail.size() )
+                    == static_cast<wxFileOffset>( detail.size() ) )
+                {
+                    aError += ": " + detail;
+                }
+            }
+        }
+    }
+
+    if( output.FileExists() )
+        wxRemoveFile( output.GetFullPath() );
+
+    if( stdoutLog.FileExists() )
+        wxRemoveFile( stdoutLog.GetFullPath() );
+
+    if( stderrLog.FileExists() )
+        wxRemoveFile( stderrLog.GetFullPath() );
+
+    return aError.empty();
 }
 
 
@@ -498,7 +862,7 @@ bool readJsonFile( const wxFileName& aPath, nlohmann::json& aDocument, std::stri
 
     if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_STATE_BYTES ) )
     {
-        aError = "KiChad managed-state data must contain 1 byte to 4 MiB";
+        aError = "KiChad managed-state data must contain 1 byte to 64 MiB";
         return false;
     }
 
@@ -529,7 +893,7 @@ bool writeJsonAtomically( const wxFileName& aPath, const nlohmann::json& aDocume
 
     if( serialized.size() > MAX_DESIGN_STATE_BYTES )
     {
-        aError = "KiChad managed-state data exceeds 4 MiB";
+        aError = "KiChad managed-state data exceeds 64 MiB";
         return false;
     }
 
@@ -642,6 +1006,50 @@ bool mergeRecoveryJournal( const nlohmann::json& aJournal,
 
     for( const auto& [itemId, item] : items )
         merged["managedPcbItems"].push_back( item );
+
+    std::map<std::string, nlohmann::json> schematicItems;
+    const auto mergeSchematicItems = [&]( const nlohmann::json& aState ) -> bool
+    {
+        if( !aState.is_object() || !aState.contains( "managedSchematicItems" ) )
+            return true;
+
+        if( !aState["managedSchematicItems"].is_array() )
+            return false;
+
+        for( const nlohmann::json& item : aState["managedSchematicItems"] )
+        {
+            if( !item.is_object() || !item.contains( "file" ) || !item["file"].is_string()
+                || !item.contains( "kind" ) || !item["kind"].is_string()
+                || !item.contains( "logicalId" ) || !item["logicalId"].is_string()
+                || !item.contains( "uuid" ) || !item["uuid"].is_string() )
+            {
+                return false;
+            }
+
+            const std::string key = item["file"].get<std::string>() + "\n"
+                                    + item["uuid"].get<std::string>();
+            auto existing = schematicItems.find( key );
+
+            if( existing != schematicItems.end() && existing->second != item )
+                return false;
+
+            schematicItems.emplace( key, item );
+        }
+
+        return true;
+    };
+
+    if( !mergeSchematicItems( aJournal["preparedState"] )
+        || !mergeSchematicItems( previous ) )
+    {
+        aError = "KiChad apply journal contains invalid schematic ownership";
+        return false;
+    }
+
+    merged["managedSchematicItems"] = nlohmann::json::array();
+
+    for( const auto& entry : schematicItems )
+        merged["managedSchematicItems"].push_back( entry.second );
 
     aPreviousState = std::move( merged );
     return true;
@@ -1630,10 +2038,13 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
 
 CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                           std::function<bool()> aMutationGuard,
-                                          std::function<wxString()> aIpcSocketDirectoryProvider ) :
+                                          std::function<wxString()> aIpcSocketDirectoryProvider,
+                                          std::function<bool( const wxFileName&, std::string& )>
+                                                  aSchematicValidator ) :
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
         m_mutationGuard( std::move( aMutationGuard ) ),
-        m_ipcSocketDirectoryProvider( std::move( aIpcSocketDirectoryProvider ) )
+        m_ipcSocketDirectoryProvider( std::move( aIpcSocketDirectoryProvider ) ),
+        m_schematicValidator( std::move( aSchematicValidator ) )
 {}
 
 
@@ -1961,6 +2372,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPlanned =
+                KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
         JSON items = JSON::array();
 
         for( const JSON& plannedOperation : planned.operations )
@@ -2028,11 +2441,31 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                            { "items", std::move( items ) },
                            { "itemsTruncated", planned.operations.size() > 500 } };
 
+        JSON schematicFiles = JSON::array();
+
+        if( !schematicPlanned.operations.empty() )
+        {
+            for( const JSON& file : schematicPlanned.operations[0]["files"] )
+            {
+                schematicFiles.push_back( { { "path", file["path"] },
+                                            { "sheetId", file["sheetId"] },
+                                            { "page", file["page"] },
+                                            { "root", file["root"] },
+                                            { "managedItems", file["items"].size() } } );
+            }
+        }
+
+        JSON schematicPlan = { { "fullyLowered", schematicPlanned.fullyLowered },
+                               { "counts", std::move( schematicPlanned.counts ) },
+                               { "diagnostics", std::move( schematicPlanned.diagnostics ) },
+                               { "files", std::move( schematicFiles ) } };
+
         JSON payload = { { "operation", "preview" },
                          { "valid", true },
                          { "sourceSha256", compiled.sourceSha256 },
                          { "compilerPlan", std::move( compiled.plan ) },
-                         { "boardPlan", std::move( boardPlan ) } };
+                         { "boardPlan", std::move( boardPlan ) },
+                         { "schematicPlan", std::move( schematicPlan ) } };
 
         if( hasPath )
             payload["path"] = aArguments["path"];
@@ -2083,10 +2516,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPreplanned =
+                KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
 
-        if( !planned.fullyLowered )
+        if( !planned.fullyLowered || !schematicPreplanned.fullyLowered )
         {
-            std::string message = "one or more board statements do not have an apply backend";
+            std::string message = !planned.fullyLowered
+                                          ? "one or more board statements do not have an apply backend"
+                                          : "one or more schematic statements do not have an apply backend";
 
             for( const JSON& action : planned.operations )
             {
@@ -2095,6 +2532,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     message += ": " + action.value( "reason", "unsupported statement" );
                     break;
                 }
+            }
+
+            if( !schematicPreplanned.fullyLowered
+                && !schematicPreplanned.diagnostics.empty() )
+            {
+                message += ": " + schematicPreplanned.diagnostics.front().value(
+                                           "message", "unsupported schematic statement" );
             }
 
             return failure( "backend_incomplete", message );
@@ -2248,6 +2692,153 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "invalid_managed_state", pathError );
         }
 
+        JSON previousSchematicItems = JSON::array();
+
+        if( previousState.is_object() && previousState.contains( "managedSchematicItems" ) )
+        {
+            if( !previousState["managedSchematicItems"].is_array() )
+            {
+                return failure( "invalid_managed_state",
+                                "managed schematic ownership must be an array" );
+            }
+
+            previousSchematicItems = previousState["managedSchematicItems"];
+        }
+
+        std::map<std::string, JSON> preliminarySchematicFiles;
+
+        if( !schematicPreplanned.operations.empty() )
+        {
+            if( schematicPreplanned.operations.size() != 1
+                || schematicPreplanned.operations[0].value( "action", "" )
+                           != "reconcile_schematic_hierarchy" )
+            {
+                return failure( "invalid_plan", "KDS produced an invalid schematic operation" );
+            }
+
+            for( const JSON& file : schematicPreplanned.operations[0]["files"] )
+                preliminarySchematicFiles.emplace( file["path"].get<std::string>(), file );
+        }
+
+        std::set<std::string> schematicInventoryPaths;
+
+        for( const auto& entry : preliminarySchematicFiles )
+            schematicInventoryPaths.emplace( entry.first );
+
+        for( const JSON& item : previousSchematicItems )
+        {
+            if( !item.is_object() || !item.contains( "file" ) || !item["file"].is_string() )
+            {
+                return failure( "invalid_managed_state",
+                                "managed schematic ownership contains an invalid file path" );
+            }
+
+            schematicInventoryPaths.emplace( item["file"].get<std::string>() );
+        }
+
+        JSON liveSchematicFiles = JSON::array();
+        JSON existingScreenUuids = JSON::object();
+        std::map<std::string, wxFileName> resolvedSchematicPaths;
+        size_t schematicInventoryBytes = 0;
+
+        for( const std::string& relativePath : schematicInventoryPaths )
+        {
+            wxFileName resolved;
+            bool present = false;
+            std::string nativeSource;
+
+            if( !resolveProjectSchematic( aProjectPath, relativePath, resolved, pathError )
+                || !readOptionalSchematic( resolved, present, nativeSource, pathError ) )
+            {
+                return failure( "schematic_inventory_failed", pathError );
+            }
+
+            if( nativeSource.size() > MAX_SCHEMATIC_INVENTORY_BYTES
+                                             - schematicInventoryBytes )
+            {
+                return failure( "schematic_inventory_failed",
+                                "managed schematic inventory exceeds 32 MiB" );
+            }
+
+            schematicInventoryBytes += nativeSource.size();
+
+            resolvedSchematicPaths.emplace( relativePath, resolved );
+            JSON live = { { "path", relativePath }, { "present", present } };
+
+            if( present )
+                live["source"] = nativeSource;
+
+            liveSchematicFiles.emplace_back( std::move( live ) );
+
+            if( present && preliminarySchematicFiles.contains( relativePath ) )
+            {
+                std::string screenUuid;
+
+                if( !schematicScreenUuid( nativeSource, screenUuid, pathError ) )
+                    return failure( "schematic_inventory_failed", pathError );
+
+                existingScreenUuids[relativePath] = screenUuid;
+            }
+        }
+
+        KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPlanned =
+                KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                        compiled.ir, existingScreenUuids );
+
+        if( !schematicPlanned.fullyLowered )
+        {
+            return failure(
+                    "backend_incomplete",
+                    schematicPlanned.diagnostics.empty()
+                            ? "schematic hierarchy could not be lowered against live files"
+                            : schematicPlanned.diagnostics.front().value(
+                                      "message", "schematic hierarchy planning failed" ) );
+        }
+
+        JSON schematicOperation = {
+            { "action", "reconcile_schematic_hierarchy" },
+            { "project", projectName },
+            { "rootFile", "" },
+            { "files", JSON::array() },
+            { "managedItems", JSON::array() }
+        };
+
+        if( !schematicPlanned.operations.empty() )
+            schematicOperation = schematicPlanned.operations[0];
+
+        KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT schematicReconciled =
+                KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                        schematicOperation, previousSchematicItems, liveSchematicFiles );
+
+        if( !schematicReconciled.ok )
+        {
+            return failure(
+                    "schematic_reconcile_failed",
+                    schematicReconciled.diagnostics.empty()
+                            ? "managed schematic reconciliation failed"
+                            : schematicReconciled.diagnostics.front().value(
+                                      "message", "managed schematic reconciliation failed" ) );
+        }
+
+        std::vector<SCHEMATIC_FILE_UPDATE> schematicUpdates;
+
+        for( const JSON& action : schematicReconciled.fileActions )
+        {
+            const std::string relativePath = action["path"].get<std::string>();
+            auto resolved = resolvedSchematicPaths.find( relativePath );
+
+            if( resolved == resolvedSchematicPaths.end() )
+                return failure( "invalid_plan", "schematic action has no bounded inventory" );
+
+            SCHEMATIC_FILE_UPDATE update;
+            update.relativePath = relativePath;
+            update.path = resolved->second;
+            update.source = action["source"].get<std::string>();
+            update.previousPresent = action["previousPresent"].get<bool>();
+            update.previousSource = action["previousSource"].get<std::string>();
+            schematicUpdates.emplace_back( std::move( update ) );
+        }
+
         JSON managedOperations = JSON::array();
         JSON reconcileOperations = JSON::array();
         std::set<std::string> placementReferences;
@@ -2368,6 +2959,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                               "message", "managed PCB reconciliation failed" ) );
         }
 
+        reconciled.nextState["managedSchematicItems"] = schematicReconciled.managedItems;
+
         bool zoneMutation = false;
         std::set<std::string> expectedZoneIds;
 
@@ -2460,6 +3053,22 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 applyJournal["previousProjectLibraryTables"].push_back(
                         { { "kind", update.kind },
                           { "path", update.path.GetFullName().ToStdString() },
+                          { "present", update.previousPresent },
+                          { "sourceBase64",
+                            wxBase64Encode( update.previousSource.data(),
+                                            update.previousSource.size() )
+                                    .ToStdString() } } );
+            }
+        }
+
+        if( !schematicUpdates.empty() )
+        {
+            applyJournal["previousSchematicFiles"] = JSON::array();
+
+            for( const SCHEMATIC_FILE_UPDATE& update : schematicUpdates )
+            {
+                applyJournal["previousSchematicFiles"].push_back(
+                        { { "path", update.relativePath },
                           { "present", update.previousPresent },
                           { "sourceBase64",
                             wxBase64Encode( update.previousSource.data(),
@@ -2649,8 +3258,128 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             ++libraryTablesApplied;
         }
 
+        size_t schematicFilesApplied = 0;
+
+        auto rollbackSchematicFiles = [&]( std::string& aMessage )
+        {
+            for( auto update = schematicUpdates.rbegin();
+                 update != schematicUpdates.rend(); ++update )
+            {
+                if( !update->applied )
+                    continue;
+
+                std::string rollbackError;
+
+                if( !installSchematicAtomically( update->path, update->previousPresent,
+                                                 update->previousSource, rollbackError ) )
+                {
+                    aMessage += "; schematic rollback also failed: " + rollbackError;
+                }
+            }
+        };
+
+        for( SCHEMATIC_FILE_UPDATE& update : schematicUpdates )
+        {
+            if( !installSchematicAtomically( update.path, true, update.source, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !installSchematicAtomically( update.path, update.previousPresent,
+                                                 update.previousSource, rollbackError ) )
+                {
+                    message += "; current schematic rollback also failed: " + rollbackError;
+                }
+
+                rollbackSchematicFiles( message );
+
+                for( auto library = libraryTableUpdates.rbegin();
+                     library != libraryTableUpdates.rend(); ++library )
+                {
+                    if( !library->applied )
+                        continue;
+
+                    rollbackError.clear();
+
+                    if( !installTextFileAtomically( library->path, library->previousPresent,
+                                                    library->previousSource, rollbackError ) )
+                    {
+                        message += "; library-table rollback also failed: " + rollbackError;
+                    }
+                }
+
+                rollbackAllSettings( message );
+                return failure( "schematic_apply_failed", message );
+            }
+
+            update.applied = true;
+            ++schematicFilesApplied;
+        }
+
+        if( schematicFilesApplied > 0 )
+        {
+            pathError.clear();
+            std::vector<wxFileName> validationRoots;
+            const std::string rootRelativePath = schematicOperation.value( "rootFile", "" );
+
+            if( !rootRelativePath.empty() )
+            {
+                auto root = resolvedSchematicPaths.find( rootRelativePath );
+
+                if( root == resolvedSchematicPaths.end() )
+                    pathError = "planned root schematic has no bounded path";
+                else
+                    validationRoots.emplace_back( root->second );
+            }
+            else
+            {
+                for( const SCHEMATIC_FILE_UPDATE& update : schematicUpdates )
+                    validationRoots.emplace_back( update.path );
+            }
+
+            for( const wxFileName& validationRoot : validationRoots )
+            {
+                const bool nativeValid = pathError.empty()
+                                         && ( m_schematicValidator
+                                                      ? m_schematicValidator(
+                                                                validationRoot, pathError )
+                                                      : validateNativeSchematicHierarchy(
+                                                                validationRoot, pathError ) );
+
+                if( !nativeValid )
+                {
+                    std::string message = pathError
+                                          + "; the apply journal was retained for safe recovery";
+                    rollbackSchematicFiles( message );
+
+                    for( auto library = libraryTableUpdates.rbegin();
+                         library != libraryTableUpdates.rend(); ++library )
+                    {
+                        if( !library->applied )
+                            continue;
+
+                        std::string rollbackError;
+
+                        if( !installTextFileAtomically(
+                                    library->path, library->previousPresent,
+                                    library->previousSource, rollbackError ) )
+                        {
+                            message += "; library-table rollback also failed: "
+                                       + rollbackError;
+                        }
+                    }
+
+                    rollbackAllSettings( message );
+                    return failure( "schematic_validation_failed", message );
+                }
+            }
+        }
+
         auto rollbackAllArtifacts = [&]( std::string& aMessage )
         {
+            rollbackSchematicFiles( aMessage );
+
             for( auto update = libraryTableUpdates.rbegin();
                  update != libraryTableUpdates.rend(); ++update )
             {
@@ -2688,6 +3417,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "transaction",
                                stackupApplied || rulesApplied || netClassesApplied
                                                || customRulesApplied || libraryTablesApplied > 0
+                                               || schematicFilesApplied > 0
                                        ? "design settings applied"
                                        : "no board changes" },
                              { "stackupApplied", stackupApplied },
@@ -2695,6 +3425,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "netClassesApplied", netClassesApplied },
                              { "customRulesApplied", customRulesApplied },
                              { "libraryTablesApplied", libraryTablesApplied },
+                             { "schematicFilesApplied", schematicFilesApplied },
+                             { "schematicCounts", schematicReconciled.counts },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -2765,6 +3497,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "netClassesApplied", netClassesApplied },
                          { "customRulesApplied", customRulesApplied },
                          { "libraryTablesApplied", libraryTablesApplied },
+                         { "schematicFilesApplied", schematicFilesApplied },
+                         { "schematicCounts", schematicReconciled.counts },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };

@@ -140,14 +140,83 @@ bool LOSSLESS_SEXPR_DOCUMENT::ReplaceNode( size_t aNode, const std::string& aRep
     }
 
     const NODE& target = m_nodes[aNode];
+    return addEdit( target.begin, target.end, aReplacement, aError );
+}
+
+
+bool LOSSLESS_SEXPR_DOCUMENT::RemoveNode( size_t aNode, std::string* aError )
+{
+    if( aNode >= m_nodes.size() )
+        return fail( m_source.size(), "Removal node index is out of range", aError );
+
+    const NODE& target = m_nodes[aNode];
+    return addEdit( target.begin, target.end, {}, aError );
+}
+
+
+bool LOSSLESS_SEXPR_DOCUMENT::InsertBeforeNode( size_t aNode,
+                                                const std::string& aExpressions,
+                                                std::string* aError )
+{
+    if( aNode >= m_nodes.size() )
+        return fail( m_source.size(), "Insertion node index is out of range", aError );
+
+    std::string insertionError;
+    std::unique_ptr<LOSSLESS_SEXPR_DOCUMENT> insertion = Parse( aExpressions, &insertionError );
+
+    if( !insertion )
+    {
+        if( aError )
+            *aError = "Invalid insertion: " + insertionError;
+
+        return false;
+    }
+
+    return addEdit( m_nodes[aNode].begin, m_nodes[aNode].begin, aExpressions, aError );
+}
+
+
+bool LOSSLESS_SEXPR_DOCUMENT::InsertBeforeClosingList( size_t aList,
+                                                       const std::string& aExpressions,
+                                                       std::string* aError )
+{
+    if( aList >= m_nodes.size() || m_nodes[aList].kind != NODE_KIND::LIST )
+        return fail( m_source.size(), "Insertion target must be a list", aError );
+
+    std::string insertionError;
+    std::unique_ptr<LOSSLESS_SEXPR_DOCUMENT> insertion = Parse( aExpressions, &insertionError );
+
+    if( !insertion )
+    {
+        if( aError )
+            *aError = "Invalid insertion: " + insertionError;
+
+        return false;
+    }
+
+    const size_t position = m_nodes[aList].end - 1;
+    return addEdit( position, position, aExpressions, aError );
+}
+
+
+bool LOSSLESS_SEXPR_DOCUMENT::addEdit( size_t aBegin, size_t aEnd,
+                                       std::string aReplacement, std::string* aError )
+{
+    if( aBegin > aEnd || aEnd > m_source.size() )
+        return fail( m_source.size(), "Edit span is out of range", aError );
 
     for( const EDIT& edit : m_edits )
     {
-        if( target.begin < edit.end && edit.begin < target.end )
-            return fail( target.begin, "Replacement overlaps an existing edit", aError );
+        const bool bothInsertions = aBegin == aEnd && edit.begin == edit.end;
+
+        if( bothInsertions && aBegin == edit.begin )
+            return fail( aBegin, "Insertion overlaps an existing edit", aError );
+
+        if( aBegin < edit.end && edit.begin < aEnd )
+            return fail( aBegin, "Replacement overlaps an existing edit", aError );
     }
 
-    m_edits.push_back( { target.begin, target.end, aReplacement } );
+    m_edits.push_back( { aBegin, aEnd, std::move( aReplacement ) } );
     return true;
 }
 
@@ -158,7 +227,13 @@ bool LOSSLESS_SEXPR_DOCUMENT::Render( std::string& aOutput, std::string* aError 
     std::sort( edits.begin(), edits.end(),
                []( const EDIT& aLeft, const EDIT& aRight )
                {
-                   return aLeft.begin > aRight.begin;
+                   if( aLeft.begin != aRight.begin )
+                       return aLeft.begin > aRight.begin;
+
+                   // At a replacement's opening boundary, replace the original span first and
+                   // then insert into the resulting byte string.  This makes a structural anchor
+                   // safe to update and insert before in one lossless render.
+                   return aLeft.end > aRight.end;
                } );
 
     aOutput = m_source;

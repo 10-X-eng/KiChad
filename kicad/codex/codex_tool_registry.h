@@ -16,6 +16,7 @@
 #include <string>
 
 #include <nlohmann/json.hpp>
+#include <wx/filename.h>
 #include <wx/string.h>
 
 
@@ -28,7 +29,9 @@ public:
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
-                                  std::function<wxString()> aIpcSocketDirectoryProvider = {} );
+                                  std::function<wxString()> aIpcSocketDirectoryProvider = {},
+                                  std::function<bool( const wxFileName&, std::string& )>
+                                          aSchematicValidator = {} );
 
     JSON Specs() const;
     JSON Handle( const std::string& aTool, const JSON& aArguments ) const;
@@ -51,6 +54,7 @@ private:
     std::function<wxString()> m_projectPathProvider;
     std::function<bool()>     m_mutationGuard;
     std::function<wxString()> m_ipcSocketDirectoryProvider;
+    std::function<bool( const wxFileName&, std::string& )> m_schematicValidator;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

@@ -19,6 +19,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <limits>
@@ -1832,35 +1833,229 @@ JSON compileCustomRules( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
-JSON compileNamedFacet( const DOCUMENT& aDocument, size_t aNode, const std::string& aFacet,
-                        KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+JSON compileSheet( const DOCUMENT& aDocument, size_t aNode,
+                   KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
     const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
-    std::string           name;
+    std::string           id;
 
-    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], name )
-        || !validIdentifier( name ) )
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
     {
-        diagnostic( aResult, "error", "invalid_" + aFacet,
-                    aFacet + " requires a bounded logical name" );
+        diagnostic( aResult, "error", "invalid_sheet",
+                    "sheet requires a bounded logical identifier" );
         return JSON::object();
     }
 
-    JSON statements = JSON::array();
+    JSON sheet = { { "id", id }, { "parent", nullptr }, { "pins", JSON::array() } };
+    std::set<std::string> fields;
+    std::set<std::string> pinNames;
 
     for( size_t i = 2; i < node.children.size(); ++i )
     {
-        if( aDocument.ListHead( node.children[i] ).empty() )
+        const size_t child = node.children[i];
+        const std::string head = aDocument.ListHead( child );
+        const DOCUMENT::NODE& field = aDocument.Nodes()[child];
+
+        if( head == "pin" )
         {
-            diagnostic( aResult, "error", "invalid_" + aFacet + "_statement",
-                        aFacet + " payloads must contain named expressions" );
+            std::string name;
+            std::string direction;
+
+            if( field.children.size() < 5
+                || !scalarText( aDocument, field.children[1], name ) || name.empty()
+                || name.size() > MAX_IDENTIFIER_BYTES
+                || !scalarText( aDocument, field.children[2], direction )
+                || !std::set<std::string>( { "input", "output", "bidirectional",
+                                             "tri_state", "passive" } )
+                            .contains( direction ) )
+            {
+                diagnostic( aResult, "error", "invalid_sheet_pin",
+                            "sheet pin requires a bounded name, native electrical direction, "
+                            "position, and side" );
+                continue;
+            }
+
+            if( !pinNames.emplace( name ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_sheet_pin",
+                            "sheet " + id + " pin " + name + " occurs more than once" );
+                continue;
+            }
+
+            JSON pin = { { "name", name }, { "direction", direction } };
+            std::set<std::string> pinFields;
+
+            for( size_t fieldIndex = 3; fieldIndex < field.children.size(); ++fieldIndex )
+            {
+                const size_t pinFieldNode = field.children[fieldIndex];
+                const std::string pinHead = aDocument.ListHead( pinFieldNode );
+
+                if( !pinFields.emplace( pinHead ).second )
+                {
+                    diagnostic( aResult, "error", "duplicate_sheet_pin_field",
+                                "sheet pin field '" + pinHead + "' occurs more than once" );
+                    continue;
+                }
+
+                if( pinHead == "at" )
+                {
+                    const DOCUMENT::NODE& at = aDocument.Nodes()[pinFieldNode];
+                    std::string xText;
+                    std::string yText;
+                    int64_t x = 0;
+                    int64_t y = 0;
+
+                    if( at.children.size() != 3
+                        || !scalarText( aDocument, at.children[1], xText )
+                        || !scalarText( aDocument, at.children[2], yText )
+                        || !parseDistance( xText, x ) || !parseDistance( yText, y )
+                        || x < 0 || y < 0 || x > 2'000'000'000LL
+                        || y > 2'000'000'000LL )
+                    {
+                        diagnostic( aResult, "error", "invalid_sheet_pin_position",
+                                    "sheet pin position must contain two distances from 0 to 2 m" );
+                    }
+                    else
+                    {
+                        pin["position"] = { { "xNm", x }, { "yNm", y } };
+                    }
+                }
+                else if( pinHead == "side" )
+                {
+                    std::string side;
+
+                    if( !parseSingleValueForm( aDocument, pinFieldNode, side )
+                        || !std::set<std::string>( { "left", "right", "top", "bottom" } )
+                                    .contains( side ) )
+                    {
+                        diagnostic( aResult, "error", "invalid_sheet_pin_side",
+                                    "sheet pin side must be left, right, top, or bottom" );
+                    }
+                    else
+                    {
+                        pin["side"] = side;
+                    }
+                }
+                else
+                {
+                    diagnostic( aResult, "error", "unknown_sheet_pin_field",
+                                "sheet pin supports only at and side" );
+                }
+            }
+
+            if( !pin.contains( "position" ) || !pin.contains( "side" ) )
+            {
+                diagnostic( aResult, "error", "missing_sheet_pin_field",
+                            "sheet pin requires exactly one at and side" );
+            }
+
+            sheet["pins"].emplace_back( std::move( pin ) );
             continue;
         }
 
-        statements.emplace_back( expressionToIr( aDocument, node.children[i] ) );
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_sheet_field",
+                        "sheet field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "title" || head == "file" || head == "parent" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value ) || value.empty()
+                || value.size() > 4096 )
+            {
+                diagnostic( aResult, "error", "invalid_sheet_field",
+                            "sheet title, file, and parent require one bounded value" );
+                continue;
+            }
+
+            if( head == "title" && value.size() > 256 )
+            {
+                diagnostic( aResult, "error", "invalid_sheet_title",
+                            "sheet title may contain at most 256 bytes" );
+            }
+            else if( head == "file" )
+            {
+                const bool safe = value.ends_with( ".kicad_sch" )
+                                  && value.front() != '/' && value.front() != '\\'
+                                  && value.find( '\0' ) == std::string::npos
+                                  && value.find_first_of( "\r\n\\" ) == std::string::npos
+                                  && !value.starts_with( "../" )
+                                  && value.find( "/../" ) == std::string::npos
+                                  && !value.ends_with( "/.." ) && value.find( ':' ) == std::string::npos;
+
+                if( !safe )
+                {
+                    diagnostic( aResult, "error", "invalid_sheet_file",
+                                "sheet file must be a safe project-relative .kicad_sch path" );
+                }
+            }
+            else if( head == "parent" && value != "none" && !validIdentifier( value ) )
+            {
+                diagnostic( aResult, "error", "invalid_sheet_parent",
+                            "sheet parent must be none or a bounded sheet identifier" );
+            }
+
+            sheet[head] = head == "parent" && value == "none" ? JSON( nullptr ) : JSON( value );
+        }
+        else if( head == "at" || head == "size" )
+        {
+            std::string xText;
+            std::string yText;
+            int64_t x = 0;
+            int64_t y = 0;
+
+            if( field.children.size() != 3
+                || !scalarText( aDocument, field.children[1], xText )
+                || !scalarText( aDocument, field.children[2], yText )
+                || !parseDistance( xText, x ) || !parseDistance( yText, y )
+                || ( head == "at" && ( x < 0 || y < 0 ) )
+                || ( head == "size" && ( x <= 0 || y <= 0 ) )
+                || x > 2'000'000'000LL || y > 2'000'000'000LL )
+            {
+                diagnostic( aResult, "error", "invalid_sheet_" + head,
+                            "sheet " + head + " requires two bounded physical distances" );
+            }
+            else
+            {
+                sheet[head == "at" ? "position" : "size"] = {
+                    { "xNm", x }, { "yNm", y }
+                };
+            }
+        }
+        else
+        {
+            diagnostic( aResult, "error", "unknown_sheet_field",
+                        "sheet supports title, file, parent, at, size, and pin" );
+        }
     }
 
-    return { { "name", name }, { "statements", std::move( statements ) } };
+    for( const char* required : { "title", "file" } )
+    {
+        if( !sheet.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_sheet_field",
+                        "sheet " + id + " is missing " + required );
+        }
+    }
+
+    if( !fields.contains( "parent" ) )
+    {
+        diagnostic( aResult, "error", "missing_sheet_field",
+                    "sheet " + id + " is missing parent" );
+    }
+
+    if( sheet["pins"].size() > 256 )
+    {
+        diagnostic( aResult, "error", "too_many_sheet_pins",
+                    "a sheet may declare at most 256 hierarchical pins" );
+    }
+
+    return sheet;
 }
 
 
@@ -1919,7 +2114,11 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(component REF (symbol LIB:ID) (value VALUE) (footprint LIB:ID) "
                       "(property NAME VALUE) (dnp true|false))" } },
                   { { "form", "(net NAME (pin REF NUMBER) (pin REF NUMBER) ...)" } },
-                  { { "form", "(sheet NAME ...)" } },
+                  { { "form",
+                      "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
+                      "(title TEXT) [(at X Y) (size W H) "
+                      "(pin NAME input|output|bidirectional|tri_state|passive "
+                      "(at X Y) (side left|right|top|bottom)) ...])" } },
                   { { "form",
                       "(board (stackup ...) (outline (rect (id ID) (at X Y) (size W H))) "
                       "(place REF (at X Y) ...) (route NET (id ID) (from X Y) (to X Y) ...) "
@@ -2189,8 +2388,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         }
         else if( form == "sheet" )
         {
-            JSON sheet = compileNamedFacet( *document, formNode, "sheet", result );
-            const std::string name = sheet.value( "name", "" );
+            JSON sheet = compileSheet( *document, formNode, result );
+            const std::string name = sheet.value( "id", "" );
 
             if( !name.empty() && !sheetIds.emplace( name ).second )
             {
@@ -2317,6 +2516,212 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     if( !sawProject )
         diagnostic( result, "error", "missing_project", "script is missing project metadata" );
+
+    const JSON& sheets = result.ir["schematic"]["sheets"];
+
+    if( sheets.size() > 128 )
+    {
+        diagnostic( result, "error", "too_many_sheets",
+                    "a script may declare at most 128 schematic sheets" );
+    }
+
+    std::map<std::string, const JSON*> sheetsById;
+    std::map<std::string, std::string> sheetParents;
+    std::map<std::string, std::string> siblingTitles;
+    std::map<std::string, std::string> caseFoldedFiles;
+    std::vector<std::string> rootSheets;
+    size_t sheetPinCount = 0;
+
+    for( const JSON& sheet : sheets )
+    {
+        if( !sheet.is_object() )
+            continue;
+
+        const std::string id = sheet.value( "id", "" );
+
+        if( id.empty() )
+            continue;
+
+        sheetsById[id] = &sheet;
+        sheetPinCount += sheet.value( "pins", JSON::array() ).size();
+
+        if( sheet["parent"].is_null() )
+        {
+            rootSheets.emplace_back( id );
+
+            if( sheet.contains( "position" ) || sheet.contains( "size" )
+                || !sheet.value( "pins", JSON::array() ).empty() )
+            {
+                diagnostic( result, "error", "invalid_root_sheet_geometry",
+                            "the root sheet cannot have a parent symbol position, size, or pins" );
+            }
+        }
+        else if( sheet["parent"].is_string() )
+        {
+            const std::string parent = sheet["parent"].get<std::string>();
+            sheetParents[id] = parent;
+
+            if( parent == id )
+            {
+                diagnostic( result, "error", "recursive_sheet_hierarchy",
+                            "sheet " + id + " cannot parent itself" );
+            }
+
+            if( !sheet.contains( "position" ) || !sheet.contains( "size" ) )
+            {
+                diagnostic( result, "error", "missing_sheet_geometry",
+                            "non-root sheet " + id + " requires at and size" );
+            }
+            else
+            {
+                const int64_t x = sheet["position"]["xNm"].get<int64_t>();
+                const int64_t y = sheet["position"]["yNm"].get<int64_t>();
+                const int64_t right = x + sheet["size"]["xNm"].get<int64_t>();
+                const int64_t bottom = y + sheet["size"]["yNm"].get<int64_t>();
+
+                for( const JSON& pin : sheet["pins"] )
+                {
+                    if( !pin.contains( "position" ) || !pin.contains( "side" ) )
+                        continue;
+
+                    const int64_t pinX = pin["position"]["xNm"].get<int64_t>();
+                    const int64_t pinY = pin["position"]["yNm"].get<int64_t>();
+                    const std::string side = pin["side"].get<std::string>();
+                    const bool onBoundary = side == "left" ? pinX == x && pinY >= y && pinY <= bottom
+                                          : side == "right" ? pinX == right && pinY >= y && pinY <= bottom
+                                          : side == "top" ? pinY == y && pinX >= x && pinX <= right
+                                                            : pinY == bottom && pinX >= x && pinX <= right;
+
+                    if( !onBoundary )
+                    {
+                        diagnostic( result, "error", "sheet_pin_off_edge",
+                                    "sheet " + id + " pin " + pin.value( "name", "" )
+                                            + " must lie on its declared sheet side" );
+                    }
+                }
+            }
+
+            const std::string siblingKey = parent + "\n" + sheet.value( "title", "" );
+
+            if( !siblingTitles.emplace( siblingKey, id ).second )
+            {
+                diagnostic( result, "error", "duplicate_sibling_sheet_title",
+                            "sibling sheets under " + parent + " cannot share title "
+                                    + sheet.value( "title", "" ) );
+            }
+        }
+
+        if( sheet.contains( "file" ) && sheet["file"].is_string() )
+        {
+            const std::string file = sheet["file"].get<std::string>();
+            std::string folded = file;
+            std::transform( folded.begin(), folded.end(), folded.begin(),
+                            []( unsigned char aCharacter )
+                            {
+                                return static_cast<char>( std::tolower( aCharacter ) );
+                            } );
+            auto [entry, inserted] = caseFoldedFiles.emplace( folded, file );
+
+            if( !inserted && entry->second != file )
+            {
+                diagnostic( result, "error", "ambiguous_sheet_file_case",
+                            "sheet files cannot differ only by letter case" );
+            }
+        }
+    }
+
+    if( sheetPinCount > 4096 )
+    {
+        diagnostic( result, "error", "too_many_sheet_pins",
+                    "a script may declare at most 4096 hierarchical sheet pins" );
+    }
+
+    if( !sheets.empty() && rootSheets.size() != 1 )
+    {
+        diagnostic( result, "error", "invalid_root_sheet_count",
+                    "a schematic hierarchy requires exactly one sheet with parent none" );
+    }
+
+    if( rootSheets.size() == 1 && result.ir["project"].is_object() )
+    {
+        const JSON* rootSheet = sheetsById[rootSheets.front()];
+        const std::string expected = result.ir["project"].value( "name", "" ) + ".kicad_sch";
+
+        if( rootSheet && rootSheet->value( "file", "" ) != expected )
+        {
+            diagnostic( result, "error", "invalid_root_sheet_file",
+                        "root sheet file must be " + expected );
+        }
+    }
+
+    for( const auto& [ id, parent ] : sheetParents )
+    {
+        if( !sheetsById.contains( parent ) )
+        {
+            diagnostic( result, "error", "unresolved_sheet_parent",
+                        "sheet " + id + " references undeclared parent " + parent );
+        }
+    }
+
+    std::map<std::string, int> sheetVisitState;
+    std::function<void( const std::string& )> visitSheet = [&]( const std::string& aId )
+    {
+        if( sheetVisitState[aId] == 2 )
+            return;
+
+        if( sheetVisitState[aId] == 1 )
+        {
+            diagnostic( result, "error", "recursive_sheet_hierarchy",
+                        "schematic sheet hierarchy contains a parent cycle at " + aId );
+            return;
+        }
+
+        sheetVisitState[aId] = 1;
+        auto parent = sheetParents.find( aId );
+
+        if( parent != sheetParents.end() && sheetsById.contains( parent->second ) )
+            visitSheet( parent->second );
+
+        sheetVisitState[aId] = 2;
+    };
+
+    for( const auto& entry : sheetsById )
+        visitSheet( entry.first );
+
+    for( const auto& entry : sheetParents )
+    {
+        const std::string& id = entry.first;
+        auto child = sheetsById.find( id );
+        std::set<std::string> ancestorIds;
+        std::set<std::string> ancestorFiles;
+        std::string current = id;
+
+        while( child != sheetsById.end() )
+        {
+            if( !ancestorIds.emplace( current ).second )
+                break;
+
+            const std::string file = child->second->value( "file", "" );
+
+            if( !file.empty() && !ancestorFiles.emplace( file ).second )
+            {
+                diagnostic( result, "error", "recursive_sheet_file",
+                            "sheet " + id + " recursively reuses file " + file );
+                break;
+            }
+
+            auto currentParent = sheetParents.find( current );
+
+            if( currentParent == sheetParents.end()
+                || !sheetsById.contains( currentParent->second ) )
+            {
+                break;
+            }
+
+            current = currentParent->second;
+            child = sheetsById.find( current );
+        }
+    }
 
     if( result.ir["libraries"].size() > MAX_LIBRARIES )
     {
