@@ -215,6 +215,9 @@ UUID like other direct schematic items. Rule areas carry validated simple polygo
 stroke/fill and inclusion policy, and a nested native polyline UUID; the reconciler extracts that
 nested identity but owns and journals the entire native rule-area expression. A rule-area directive
 must be on the same sheet with its anchor exactly on the declared boundary.
+Schematic free text follows the same content-first semantic shape as board text while adding a
+sheet reference. Complete native typography, simulation inclusion, color, mirroring, and hyperlink
+state lower to a stable-UUID KiCad `text` expression; no presentation field is silently dropped.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

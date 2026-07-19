@@ -71,6 +71,12 @@
       (at 102mm 50mm) (rotation 0deg) (size 1.27mm 1.27mm)
       (thickness auto) (justify left center)
       (bold false) (italic true) (visible true)))
+  (text "AI-readable schematic note\nwith complete typography"
+    (id root-design-note) (sheet root) (at 100mm 70mm) (rotation 15.5deg)
+    (exclude_from_sim false) (size 1.2mm 1.5mm) (font stroke)
+    (line_spacing 1.25) (thickness 0.2mm) (color #11223380)
+    (justify right top) (mirror true) (bold true) (italic true)
+    (hyperlink "https://github.com/10-X-eng/KiChad"))
   (bus root-bus (sheet root) (from 80mm 50mm) (to 90mm 50mm)
     (stroke 0.5mm dash))
   (bus_entry root-entry (sheet root) (from 85mm 48.73mm) (to 86.27mm 50mm)

@@ -112,7 +112,8 @@ BOM/board/position/simulation flags, attaches project-global signal and power
 nets to resolved pin coordinates, and checks their exact nodes in the exported netlist. The native schematic proof also
 reconciles net-derived local/global labels, a name-owned bus alias, plus stable-ID wires, junctions,
 buses, diagonal bus entries, net-targeted directive flags, and polygonal schematic rule areas with
-border-attached directives and explicit native fields. It also applies and
+border-attached directives, plus stable multiline free text with complete typography and hyperlink
+state. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

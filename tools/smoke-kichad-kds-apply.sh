@@ -148,6 +148,12 @@ for attempt in $(seq 1 30); do
         grep -Fq '(color 68 85 102 0.6)' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(property "Component Class" "ANALOG"' \
             "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(text "AI-readable schematic note\nwith complete typography"' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(at 100 70 15.5)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(justify right top mirror)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(href "https://github.com/10-X-eng/KiChad")' \
+            "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"

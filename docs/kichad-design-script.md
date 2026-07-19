@@ -507,6 +507,23 @@ source:
     (italic true)
     (visible true)))
 
+(text "AI-readable design note\nwith explicit rendering intent"
+  (id analog-review-note)
+  (sheet analog)
+  (at 65mm 65mm)
+  (rotation 15.5deg)
+  (exclude_from_sim false)
+  (size 1.2mm 1.5mm)
+  (font stroke)
+  (line_spacing 1.25)
+  (thickness 0.2mm)
+  (color #11223380)
+  (justify right top)
+  (mirror true)
+  (bold true)
+  (italic true)
+  (hyperlink "https://example.com/design-review"))
+
 (bus_alias SENSOR_SIGNALS
   (sheet analog)
   (members SENSOR_OUT SENSOR_ENABLE))
@@ -551,6 +568,17 @@ The native rule-area UUID is nested in KiCad's `polyline`, so the reconciler del
 that location while still replacing or removing the complete `rule_area` atomically. Net targets
 and rule-area targets now pass the complete production qualification, so
 `schematic.directive_labels` is reported as `qualified`.
+
+Top-level schematic `text` uses the same content-first, explicit-ID convention as board text, with
+sheet ownership added. Content is a bounded UTF-8 string and may contain newlines and KiCad text
+variables. Position, any normalized angle from 0 degrees through less than 360 degrees,
+simulation inclusion, rectangular size, `stroke` or named font, line spacing, `auto` or physical
+thickness, `default` or RGBA color, horizontal/vertical justification, mirror, bold, italic, and
+`none` or a single-line hyperlink are all required. The compiler rejects duplicate or ignored
+fields rather than inventing rendering defaults. Text lowers to KiCad 10's native `text` item with
+a stable UUID and participates in the same idempotent reconcile, removal, native-loader gate, and
+rollback journal. The broader `schematic.text_graphics` facet remains `partial` until text boxes,
+shapes/curves, images, and tables are represented.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are
@@ -977,7 +1005,7 @@ reconcilable on the next apply, while the whole turn remains revertible from loc
 The apply backend currently executes nested native schematic hierarchy, confined project-local
 symbol resolution, multi-unit and virtual/power component placement, native inclusion flags,
 global-net connectivity, explicit no-connect state, native local/global labels, directive flags,
-schematic rule areas, bus aliases, wires/junctions/buses/bus entries, complete native project
+schematic rule areas, free text, bus aliases, wires/junctions/buses/bus entries, complete native project
 symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular

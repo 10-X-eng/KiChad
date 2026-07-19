@@ -126,6 +126,14 @@ std::string millimetres( int64_t aNanometres )
 }
 
 
+std::string finiteDecimal( double aValue )
+{
+    std::ostringstream output;
+    output << std::setprecision( 12 ) << aValue;
+    return output.str();
+}
+
+
 std::string stableUuid( const std::string& aProject, const std::string& aKind,
                         const std::string& aLogicalId )
 {
@@ -668,6 +676,74 @@ std::string ruleAreaExpression( const JSON& aDrawing, const std::string& aUuid )
 }
 
 
+std::string textExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    const JSON& size = aDrawing.at( "size" );
+    const JSON& justify = aDrawing.at( "justify" );
+    const std::string horizontal = justify.at( "horizontal" ).get<std::string>();
+    const std::string vertical = justify.at( "vertical" ).get<std::string>();
+    const int64_t thickness = aDrawing.at( "thicknessNm" ).get<int64_t>();
+    std::ostringstream output;
+    output << "(text " << quoted( aDrawing.at( "content" ).get<std::string>() ) << "\n"
+           << "    (exclude_from_sim "
+           << ( aDrawing.at( "exclude_from_sim" ).get<bool>() ? "yes" : "no" ) << ")\n"
+           << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
+           << finiteDecimal( aDrawing.at( "rotationDegrees" ).get<double>() ) << ")\n"
+           << "    (effects\n"
+           << "      (font\n";
+
+    if( aDrawing.at( "font" ).get<std::string>() != "stroke" )
+        output << "        (face " << quoted( aDrawing.at( "font" ).get<std::string>() ) << ")\n";
+
+    output << "        (size " << millimetres( size.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( size.at( "yNm" ).get<int64_t>() ) << ")\n"
+           << "        (line_spacing "
+           << finiteDecimal( aDrawing.at( "lineSpacing" ).get<double>() ) << ")\n";
+
+    if( thickness != 0 )
+        output << "        (thickness " << millimetres( thickness ) << ")\n";
+
+    if( aDrawing.at( "bold" ).get<bool>() )
+        output << "        (bold yes)\n";
+
+    if( aDrawing.at( "italic" ).get<bool>() )
+        output << "        (italic yes)\n";
+
+    if( !aDrawing.at( "color" ).is_null() )
+        appendSchematicColor( output, aDrawing.at( "color" ), "        " );
+
+    output << "      )\n";
+
+    if( horizontal != "center" || vertical != "center"
+        || aDrawing.at( "mirror" ).get<bool>() )
+    {
+        output << "      (justify";
+
+        if( horizontal != "center" )
+            output << ' ' << horizontal;
+
+        if( vertical != "center" )
+            output << ' ' << vertical;
+
+        if( aDrawing.at( "mirror" ).get<bool>() )
+            output << " mirror";
+
+        output << ")\n";
+    }
+
+    if( !aDrawing.at( "hyperlink" ).get<std::string>().empty() )
+        output << "      (href " << quoted( aDrawing.at( "hyperlink" ).get<std::string>() )
+               << ")\n";
+
+    output << "    )\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
 std::string directivePropertyExpression( const JSON& aProperty )
 {
     const JSON& position = aProperty.at( "position" );
@@ -875,6 +951,57 @@ bool validDrawingShape( const JSON& aDrawing )
             || !aDrawing.contains( "italic" ) || !aDrawing["italic"].is_boolean() )
         {
             return false;
+        }
+
+        return true;
+    }
+
+    if( kind == "text" )
+    {
+        if( !aDrawing.contains( "content" ) || !aDrawing["content"].is_string()
+            || !aDrawing.contains( "position" ) || !aDrawing["position"].is_object()
+            || !aDrawing["position"].contains( "xNm" )
+            || !aDrawing["position"]["xNm"].is_number_integer()
+            || !aDrawing["position"].contains( "yNm" )
+            || !aDrawing["position"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "rotationDegrees" )
+            || !aDrawing["rotationDegrees"].is_number()
+            || !aDrawing.contains( "exclude_from_sim" )
+            || !aDrawing["exclude_from_sim"].is_boolean()
+            || !aDrawing.contains( "size" ) || !aDrawing["size"].is_object()
+            || !aDrawing["size"].contains( "xNm" )
+            || !aDrawing["size"]["xNm"].is_number_integer()
+            || !aDrawing["size"].contains( "yNm" )
+            || !aDrawing["size"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "font" ) || !aDrawing["font"].is_string()
+            || !aDrawing.contains( "lineSpacing" ) || !aDrawing["lineSpacing"].is_number()
+            || !aDrawing.contains( "thicknessNm" )
+            || !aDrawing["thicknessNm"].is_number_integer()
+            || !aDrawing.contains( "color" )
+            || !( aDrawing["color"].is_null() || aDrawing["color"].is_object() )
+            || !aDrawing.contains( "justify" ) || !aDrawing["justify"].is_object()
+            || !aDrawing["justify"].contains( "horizontal" )
+            || !aDrawing["justify"]["horizontal"].is_string()
+            || !aDrawing["justify"].contains( "vertical" )
+            || !aDrawing["justify"]["vertical"].is_string()
+            || !aDrawing.contains( "mirror" ) || !aDrawing["mirror"].is_boolean()
+            || !aDrawing.contains( "bold" ) || !aDrawing["bold"].is_boolean()
+            || !aDrawing.contains( "italic" ) || !aDrawing["italic"].is_boolean()
+            || !aDrawing.contains( "hyperlink" ) || !aDrawing["hyperlink"].is_string() )
+        {
+            return false;
+        }
+
+        if( aDrawing["color"].is_object() )
+        {
+            for( const char* channel : { "r", "g", "b", "a" } )
+            {
+                if( !aDrawing["color"].contains( channel )
+                    || !aDrawing["color"][channel].is_number_integer() )
+                {
+                    return false;
+                }
+            }
         }
 
         return true;
@@ -1494,6 +1621,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                            ? labelExpression( drawing, nativeKind, uuid )
                                    : kind == "directive"
                                            ? directiveExpression( drawing, uuid )
+                                   : kind == "text"
+                                           ? textExpression( drawing, uuid )
                                    : kind == "rule_area"
                                            ? ruleAreaExpression( drawing, uuid )
                                            : schematicLineExpression( drawing, uuid );

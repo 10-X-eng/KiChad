@@ -46,6 +46,9 @@ constexpr size_t MAX_TOP_LEVEL_FORMS = 20000;
 constexpr size_t MAX_IDENTIFIER_BYTES = 128;
 constexpr size_t MAX_TITLE_BLOCK_TEXT_BYTES = 4096;
 constexpr size_t MAX_SCHEMATIC_PROPERTY_BYTES = 4096;
+constexpr size_t MAX_SCHEMATIC_TEXT_BYTES = 64 * 1024;
+constexpr size_t MAX_FONT_NAME_BYTES = 256;
+constexpr size_t MAX_HYPERLINK_BYTES = 2048;
 constexpr size_t MAX_LIBRARIES = 512;
 constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
 
@@ -2054,6 +2057,271 @@ JSON compileSchematicDirective( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileSchematicText( const DOCUMENT& aDocument, size_t aNode,
+                           KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string content;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], content )
+        || content.size() > MAX_SCHEMATIC_TEXT_BYTES )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_text",
+                    "text requires content up to 65536 UTF-8 bytes" );
+        return JSON::object();
+    }
+
+    JSON text = { { "kind", "text" }, { "content", content } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_text_field",
+                        "text field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "id" || head == "sheet" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || !validIdentifier( value ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_" + head,
+                            "text " + head + " must be a bounded identifier" );
+            }
+            else
+            {
+                text[head] = value;
+            }
+
+            continue;
+        }
+
+        if( head == "at" || head == "size" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point )
+                || ( head == "size"
+                     && ( point["xNm"].get<int64_t>() < 100'000
+                          || point["yNm"].get<int64_t>() < 100'000
+                          || point["xNm"].get<int64_t>() > 50'000'000
+                          || point["yNm"].get<int64_t>() > 50'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_" + head,
+                            head == "at"
+                                    ? "text at requires two distances from 0 to 2 m"
+                                    : "text size requires two dimensions from 0.1 mm through 50 mm" );
+            }
+            else
+            {
+                text[head == "at" ? "position" : "size"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string rotation;
+            double degrees = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, rotation )
+                || !parseFiniteDecimal( rotation, degrees, "deg" )
+                || degrees < 0.0 || degrees >= 360.0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_rotation",
+                            "text rotation requires an angle from 0deg through less than 360deg" );
+            }
+            else
+            {
+                text["rotationDegrees"] = degrees;
+            }
+
+            continue;
+        }
+
+        if( head == "font" )
+        {
+            std::string font;
+
+            if( !parseSingleValueForm( aDocument, child, font ) || font.empty()
+                || font.size() > MAX_FONT_NAME_BYTES
+                || font.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_font",
+                            "text font requires stroke or a name up to 256 UTF-8 bytes" );
+            }
+            else
+            {
+                text["font"] = font;
+            }
+
+            continue;
+        }
+
+        if( head == "line_spacing" )
+        {
+            std::string spacingText;
+            double spacing = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, spacingText )
+                || !parseFiniteDecimal( spacingText, spacing, "" )
+                || spacing < 0.5 || spacing > 5.0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_line_spacing",
+                            "text line_spacing requires a finite value from 0.5 through 5" );
+            }
+            else
+            {
+                text["lineSpacing"] = spacing;
+            }
+
+            continue;
+        }
+
+        if( head == "thickness" )
+        {
+            std::string thicknessText;
+            int64_t thickness = 0;
+
+            if( !parseSingleValueForm( aDocument, child, thicknessText )
+                || ( thicknessText != "auto"
+                     && ( !parseDistance( thicknessText, thickness ) || thickness < 10'000
+                          || thickness > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_thickness",
+                            "text thickness requires auto or 0.01 mm through 10 mm" );
+            }
+            else
+            {
+                text["thicknessNm"] = thicknessText == "auto" ? 0 : thickness;
+            }
+
+            continue;
+        }
+
+        if( head == "color" )
+        {
+            std::string colorText;
+            JSON color;
+
+            if( !parseSingleValueForm( aDocument, child, colorText )
+                || ( colorText != "default" && !parseHexColor( colorText, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_color",
+                            "text color requires default or #RRGGBB[AA]" );
+            }
+            else if( colorText == "default" )
+            {
+                text["color"] = nullptr;
+            }
+            else
+            {
+                text["color"] = {
+                    { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                    { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                    { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                    { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                };
+            }
+
+            continue;
+        }
+
+        if( head == "justify" )
+        {
+            const DOCUMENT::NODE& justify = aDocument.Nodes()[child];
+            std::string horizontal;
+            std::string vertical;
+
+            if( justify.children.size() != 3
+                || !scalarText( aDocument, justify.children[1], horizontal )
+                || !scalarText( aDocument, justify.children[2], vertical )
+                || ( horizontal != "left" && horizontal != "center"
+                     && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_justify",
+                            "text justify requires left|center|right and top|center|bottom" );
+            }
+            else
+            {
+                text["justify"] = { { "horizontal", horizontal },
+                                     { "vertical", vertical } };
+            }
+
+            continue;
+        }
+
+        if( head == "hyperlink" )
+        {
+            std::string hyperlink;
+
+            if( !parseSingleValueForm( aDocument, child, hyperlink )
+                || hyperlink.size() > MAX_HYPERLINK_BYTES
+                || hyperlink.find( '\0' ) != std::string::npos
+                || hyperlink.find( '\r' ) != std::string::npos
+                || hyperlink.find( '\n' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_hyperlink",
+                            "text hyperlink requires none or one line up to 2048 UTF-8 bytes" );
+            }
+            else
+            {
+                text["hyperlink"] = hyperlink == "none" ? "" : hyperlink;
+            }
+
+            continue;
+        }
+
+        if( head == "exclude_from_sim" || head == "mirror" || head == "bold"
+            || head == "italic" )
+        {
+            std::string boolean;
+
+            if( !parseSingleValueForm( aDocument, child, boolean )
+                || ( boolean != "true" && boolean != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_" + head,
+                            "text " + head + " must be true or false" );
+            }
+            else
+            {
+                text[head] = boolean == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_text_field",
+                    "text supports id, sheet, at, rotation, exclude_from_sim, size, font, "
+                    "line_spacing, thickness, color, justify, mirror, bold, italic, and hyperlink" );
+    }
+
+    for( const char* required : { "id", "sheet", "position", "rotationDegrees",
+                                  "exclude_from_sim", "size", "font", "lineSpacing",
+                                  "thicknessNm", "color", "justify", "mirror", "bold",
+                                  "italic", "hyperlink" } )
+    {
+        if( !text.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_text_field",
+                        "text is missing " + std::string( required ) );
+        }
+    }
+
+    return text;
+}
+
+
 JSON compileSchematicBusAlias( const DOCUMENT& aDocument, size_t aNode,
                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -3756,6 +4024,13 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(rotation ORTHOGONAL) (size W H) (thickness auto|SIZE) "
                       "(justify left|center|right top|center|bottom) "
                       "(bold true|false) (italic true|false) (visible true|false)) ... )" } },
+                  { { "form",
+                      "(text CONTENT (id ID) (sheet ID) (at X Y) (rotation ANGLE) "
+                      "(exclude_from_sim BOOL) (size W H) (font stroke|NAME) "
+                      "(line_spacing NUMBER) (thickness auto|SIZE) "
+                      "(color default|#RRGGBB[AA]) "
+                      "(justify left|center|right top|center|bottom) (mirror BOOL) "
+                      "(bold BOOL) (italic BOOL) (hyperlink none|TEXT))" } },
                   { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
@@ -4106,6 +4381,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "directive" )
         {
             JSON drawing = compileSchematicDirective( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "text" )
+        {
+            JSON drawing = compileSchematicText( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )

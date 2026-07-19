@@ -1613,6 +1613,48 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeSchematicDrawingPrimitives )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesCompleteStableSchematicFreeText )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_text)
+  (sheet root (parent none) (file "schematic_text.kicad_sch") (title "Text"))
+  (text "AI note\nwith context"
+    (id design-note) (sheet root) (at 25mm 35mm) (rotation 15.5deg)
+    (exclude_from_sim true) (size 1.2mm 1.5mm) (font "DejaVu Sans")
+    (line_spacing 1.25) (thickness 0.2mm) (color #11223380)
+    (justify right top) (mirror true) (bold true) (italic true)
+    (hyperlink "https://example.com/design-note"))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& text = result.ir["schematic"]["drawings"][0];
+    BOOST_CHECK_EQUAL( text["kind"], "text" );
+    BOOST_CHECK_EQUAL( text["id"], "design-note" );
+    BOOST_CHECK_EQUAL( text["content"], "AI note\nwith context" );
+    BOOST_CHECK_CLOSE( text["rotationDegrees"].get<double>(), 15.5, 0.000001 );
+    BOOST_CHECK( text["exclude_from_sim"].get<bool>() );
+    BOOST_CHECK_EQUAL( text["font"], "DejaVu Sans" );
+    BOOST_CHECK_CLOSE( text["lineSpacing"].get<double>(), 1.25, 0.000001 );
+    BOOST_CHECK_EQUAL( text["thicknessNm"], 200000 );
+    BOOST_CHECK_EQUAL( text["color"]["a"], 128 );
+    BOOST_CHECK_EQUAL( text["justify"]["horizontal"], "right" );
+    BOOST_CHECK( text["mirror"].get<bool>() );
+    BOOST_CHECK( text["bold"].get<bool>() );
+    BOOST_CHECK( text["italic"].get<bool>() );
+    BOOST_CHECK_EQUAL( text["hyperlink"], "https://example.com/design-note" );
+
+    std::string invalid = program;
+    const size_t rotation = invalid.find( "15.5deg" );
+    BOOST_REQUIRE_NE( rotation, std::string::npos );
+    invalid.replace( rotation, 7, "360deg" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "invalid_schematic_text_rotation" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design

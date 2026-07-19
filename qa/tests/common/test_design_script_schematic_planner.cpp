@@ -242,6 +242,12 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
       (at 72mm 40mm) (rotation 0deg) (size 1.27mm 1.27mm)
       (thickness auto) (justify left center)
       (bold false) (italic false) (visible true)))
+  (text "AI note\nwith context"
+    (id design-note) (sheet root) (at 25mm 35mm) (rotation 15.5deg)
+    (exclude_from_sim true) (size 1.2mm 1.5mm) (font "DejaVu Sans")
+    (line_spacing 1.25) (thickness 0.2mm) (color #11223380)
+    (justify right top) (mirror true) (bold true) (italic true)
+    (hyperlink "https://example.com/design-note"))
   (bus_alias SIGNALS (sheet root) (members SIGNAL))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -278,7 +284,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_EQUAL( plan.counts["components"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( plan.counts["netEndpoints"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["noConnects"].get<int>(), 1 );
-    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 5 );
+    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 6 );
     BOOST_CHECK_EQUAL( plan.counts["busAliases"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["librarySymbols"].get<int>(), 1 );
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
@@ -320,6 +326,16 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(type hatch)\n        (color 68 85 102 0.6)" ),
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(property \"Component Class\" \"ANALOG\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(text \"AI note\\nwith context\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(exclude_from_sim yes)\n    (at 25 35 15.5)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(face \"DejaVu Sans\")" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(line_spacing 1.25)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(color 17 34 51 0.50196078)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(justify right top mirror)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(href \"https://example.com/design-note\")" ),
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
                     std::string::npos );
