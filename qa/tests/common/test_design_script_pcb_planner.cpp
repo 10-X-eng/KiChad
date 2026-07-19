@@ -602,7 +602,9 @@ BOOST_AUTO_TEST_CASE( FullyLowersTypedComponentPlacement )
     const std::string source = R"KDS((kichad_design
   (version 1)
   (project placed_board)
-  (component U1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (sheet root (parent none) (file "placed_board.kicad_sch") (title "Root"))
+  (component U1 (symbol "Device:R") (value "1k") (footprint "R:R")
+    (unit 1 (sheet root) (at 20mm 20mm) (rotation 0deg) (mirror none)))
   (board (place U1 (at 12.5mm 7.5mm) (rotation 37.5deg) (side back) (locked true))))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -619,6 +621,18 @@ BOOST_AUTO_TEST_CASE( FullyLowersTypedComponentPlacement )
     BOOST_CHECK_EQUAL( plan.operations[0]["rotationDegrees"].get<double>(), 37.5 );
     BOOST_CHECK_EQUAL( plan.operations[0]["side"].get<std::string>(), "back" );
     BOOST_CHECK( plan.operations[0]["locked"].get<bool>() );
+    BOOST_REQUIRE( plan.operations[0].contains( "instance" ) );
+    BOOST_CHECK_EQUAL( plan.operations[0]["instance"]["libraryId"].get<std::string>(),
+                       "R:R" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["instance"]["value"].get<std::string>(), "1k" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["instance"]["symbolSheetFilename"]
+                               .get<std::string>(),
+                       "placed_board.kicad_sch" );
+    BOOST_REQUIRE_EQUAL( plan.operations[0]["instance"]["symbolPath"].size(), 1 );
+    BOOST_CHECK_EQUAL(
+            plan.operations[0]["instance"]["symbolPath"][0].get<std::string>(),
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                    "placed_board", "schematic_symbol", "U1/1" ) );
 }
 
 

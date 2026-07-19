@@ -179,6 +179,7 @@ struct PLACEMENT
     double      rotationDegrees = 0.0;
     std::string side;
     bool        locked = false;
+    JSON        instance;
 };
 
 
@@ -223,6 +224,67 @@ bool readPlacement( const JSON& aJson, PLACEMENT& aPlacement, RESULT& aResult )
                     "planned component placement contains an invalid value" );
         return false;
     }
+
+    if( !aJson.contains( "instance" ) )
+        return true;
+
+    const JSON& instance = aJson["instance"];
+
+    if( !instance.is_object() || !instance.contains( "libraryId" )
+        || !instance["libraryId"].is_string() || !instance.contains( "value" )
+        || !instance["value"].is_string() || !instance.contains( "dnp" )
+        || !instance["dnp"].is_boolean() || !instance.contains( "symbolPath" )
+        || !instance["symbolPath"].is_array() || instance["symbolPath"].empty()
+        || instance["symbolPath"].size() > 64
+        || !instance.contains( "symbolSheetName" )
+        || !instance["symbolSheetName"].is_string()
+        || !instance.contains( "symbolSheetFilename" )
+        || !instance["symbolSheetFilename"].is_string()
+        || !instance.contains( "padNets" ) || !instance["padNets"].is_object()
+        || instance["padNets"].size() > 1024 )
+    {
+        diagnostic( aResult, "invalid_placement",
+                    "planned component footprint instance is malformed" );
+        return false;
+    }
+
+    const std::string libraryId = instance["libraryId"].get<std::string>();
+    const size_t separator = libraryId.find( ':' );
+
+    if( !boundedText( libraryId, 512 ) || separator == std::string::npos
+        || separator == 0 || separator + 1 == libraryId.size()
+        || libraryId.find( ':', separator + 1 ) != std::string::npos
+        || !boundedText( instance["value"].get<std::string>(), 1024 )
+        || !boundedText( instance["symbolSheetName"].get<std::string>(), 1024 )
+        || !boundedText( instance["symbolSheetFilename"].get<std::string>(), 4096 ) )
+    {
+        diagnostic( aResult, "invalid_placement",
+                    "planned component footprint instance contains an invalid value" );
+        return false;
+    }
+
+    for( const JSON& id : instance["symbolPath"] )
+    {
+        if( !id.is_string() || !uuid( id.get<std::string>() ) )
+        {
+            diagnostic( aResult, "invalid_placement",
+                        "planned component symbol path contains an invalid UUID" );
+            return false;
+        }
+    }
+
+    for( auto net = instance["padNets"].begin(); net != instance["padNets"].end(); ++net )
+    {
+        if( !boundedText( net.key(), 64 ) || !net.value().is_string()
+            || !boundedText( net.value().get<std::string>(), 1024 ) )
+        {
+            diagnostic( aResult, "invalid_placement",
+                        "planned component pad-to-net mapping is invalid" );
+            return false;
+        }
+    }
+
+    aPlacement.instance = instance;
 
     return true;
 }
@@ -375,7 +437,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 {
     RESULT result;
     result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
-                      { "placement", 0 } };
+                      { "placement", 0 }, { "footprintCreate", 0 } };
     validateContext( aContext, result );
 
     std::map<std::string, MANAGED_ITEM> previous;
@@ -565,8 +627,26 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 
         if( footprints == liveFootprints.end() )
         {
-            diagnostic( result, "missing_component_footprint",
-                        "no live PCB footprint has reference " + component );
+            if( !placement.instance.is_object() )
+            {
+                diagnostic( result, "missing_component_footprint",
+                            "no live PCB footprint has reference " + component
+                                    + " and no executable schematic instance was planned" );
+                continue;
+            }
+
+            result.actions.push_back(
+                    { { "action", "create_footprint" },
+                      { "component", component },
+                      { "itemType", "footprint" },
+                      { "instance", placement.instance },
+                      { "position", { { "xNm", placement.xNm },
+                                        { "yNm", placement.yNm } } },
+                      { "rotationDegrees", placement.rotationDegrees },
+                      { "side", placement.side },
+                      { "locked", placement.locked } } );
+            ++result.counts["placement"].get_ref<int64_t&>();
+            ++result.counts["footprintCreate"].get_ref<int64_t&>();
             continue;
         }
 
@@ -607,7 +687,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
     {
         result.actions = JSON::array();
         result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
-                          { "placement", 0 } };
+                          { "placement", 0 }, { "footprintCreate", 0 } };
         return result;
     }
 

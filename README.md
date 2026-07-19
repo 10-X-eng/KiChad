@@ -96,9 +96,12 @@ with KiCad's parser, repeats them byte-for-byte, and covers exact rollback. It c
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.
-It also resolves and places an existing schematic-linked footprint on the back side while
-proving the footprint UUID, symbol path, pad UUID, and flipped pad layers are preserved. The harness
-never connects to or stops an existing KiChad process.
+It also resolves and places an existing schematic-linked footprint on the back side while proving
+the footprint UUID, symbol path, pad UUID, and flipped pad layers are preserved. A second absent
+footprint is parsed from the declared project-local `.pretty` library, linked to its deterministic
+hierarchical symbol path, assigned its pad net, and created in the same native transaction; repeat
+apply proves it is not duplicated. The harness never connects to or stops an existing KiChad
+process.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

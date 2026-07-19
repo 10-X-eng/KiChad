@@ -404,6 +404,58 @@ BOOST_AUTO_TEST_CASE( SummarizesAndFindsBoundedExpressions )
 }
 
 
+BOOST_AUTO_TEST_CASE( ConfinesProjectFootprintSourcesUsedByPlacement )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); } );
+    wxFileName library = wxFileName::DirName( fixture.Root() );
+    library.AppendDir( wxS( "Local.pretty" ) );
+    BOOST_REQUIRE( wxFileName::Mkdir(
+            library.GetFullPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project footprint_inventory)
+  (library symbol Device (table global))
+  (library footprint Local (table project)
+    (uri "${KIPRJMOD}/Local.pretty"))
+  (sheet root (parent none) (file "footprint_inventory.kicad_sch") (title "Root"))
+  (component R1 (symbol "Device:R") (value "1k") (footprint "Local:R")
+    (unit 1 (sheet root) (at 10mm 10mm) (rotation 0deg) (mirror none)))
+  (board (place R1 (at 20mm 20mm) (rotation 0deg) (side front) (locked false))))
+)KDS";
+
+    JSON missing = registry.Handle(
+            "design", { { "operation", "preview" }, { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( !missing.at( "success" ).get<bool>(), missing.dump() );
+    BOOST_CHECK_EQUAL( envelope( missing )["error"]["code"].get<std::string>(),
+                       "footprint_inventory_failed" );
+
+    wxFileName footprint( library.GetFullPath(), wxS( "R.kicad_mod" ) );
+    wxFFile file( footprint.GetFullPath(), wxS( "wb" ) );
+    BOOST_REQUIRE( file.IsOpened() );
+    BOOST_REQUIRE( file.Write( wxS( "(footprint \"R\" (version 20240108)\n)\n" ) ) );
+    BOOST_REQUIRE( file.Close() );
+
+    JSON inventoried = registry.Handle(
+            "design", { { "operation", "preview" }, { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( inventoried.at( "success" ).get<bool>(), inventoried.dump() );
+
+#ifndef __WXMSW__
+    BOOST_REQUIRE( wxRemoveFile( footprint.GetFullPath() ) );
+    std::error_code linkError;
+    std::filesystem::create_symlink(
+            std::filesystem::path( fixture.OutsidePath().ToStdString() ),
+            std::filesystem::path( footprint.GetFullPath().ToStdString() ), linkError );
+    BOOST_REQUIRE_MESSAGE( !linkError, linkError.message() );
+    JSON linked = registry.Handle(
+            "design", { { "operation", "preview" }, { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( !linked.at( "success" ).get<bool>(), linked.dump() );
+    BOOST_CHECK_EQUAL( envelope( linked )["error"]["code"].get<std::string>(),
+                       "footprint_inventory_failed" );
+#endif
+}
+
+
 BOOST_AUTO_TEST_CASE( RejectsPathsOutsideTheProject )
 {
     TOOL_PROJECT_FIXTURE fixture;
@@ -2048,7 +2100,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
     BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 12 );
-    BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["footprintCreate"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
     BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
@@ -2088,7 +2141,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 12 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["footprintCreate"].get<int>(), 0 );
     BOOST_CHECK( repeatedData["stackupApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
@@ -2508,7 +2562,20 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     JSON center = findDimension( "mounting-center", "center" );
     BOOST_CHECK_EQUAL( center["center"]["end"]["xNm"].get<std::string>(), "47000000" );
 
-    JSON footprint = getOne( "footprint" );
+    JSON footprints = getItems( "footprint", 2 );
+    const auto findFootprint = [&]( const std::string& aReference )
+    {
+        auto found = std::find_if(
+                footprints.begin(), footprints.end(),
+                [&]( const JSON& candidate )
+                {
+                    return candidate["referenceField"]["text"]["text"]["text"]
+                                   .get<std::string>() == aReference;
+                } );
+        BOOST_REQUIRE( found != footprints.end() );
+        return *found;
+    };
+    JSON footprint = findFootprint( "R1" );
     BOOST_CHECK_EQUAL( footprint["id"]["value"].get<std::string>(),
                        "11111111-1111-8111-8111-111111111111" );
     BOOST_CHECK_EQUAL( footprint["position"]["xNm"].get<std::string>(), "30000000" );
@@ -2542,6 +2609,45 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( pad["padStack"]["layers"][0].get<std::string>(), "BL_B_Cu" );
     BOOST_CHECK_EQUAL( pad["padStack"]["layers"][1].get<std::string>(), "BL_B_Mask" );
     BOOST_CHECK_EQUAL( pad["padStack"]["layers"][2].get<std::string>(), "BL_B_Paste" );
+
+    JSON createdFootprint = findFootprint( "R2" );
+    BOOST_CHECK_EQUAL( createdFootprint["position"]["xNm"].get<std::string>(),
+                       "50000000" );
+    BOOST_CHECK_EQUAL( createdFootprint["position"]["yNm"].get<std::string>(),
+                       "40000000" );
+    BOOST_CHECK_EQUAL( createdFootprint["orientation"]["valueDegrees"].get<double>(), 90.0 );
+    BOOST_CHECK_EQUAL( createdFootprint["layer"].get<std::string>(), "BL_F_Cu" );
+    BOOST_CHECK_EQUAL( createdFootprint["locked"].get<std::string>(), "LS_UNLOCKED" );
+    BOOST_CHECK_EQUAL( createdFootprint["definition"]["id"]["libraryNickname"]
+                               .get<std::string>(),
+                       "Resistor_SMD" );
+    BOOST_CHECK_EQUAL( createdFootprint["definition"]["id"]["entryName"]
+                               .get<std::string>(),
+                       "R_0603_1608Metric" );
+    BOOST_REQUIRE_EQUAL( createdFootprint["symbolPath"]["path"].size(), 2 );
+    BOOST_CHECK_EQUAL(
+            createdFootprint["symbolPath"]["path"][0]["value"].get<std::string>(),
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                    "live_apply", "schematic_sheet", "power" ) );
+    BOOST_CHECK_EQUAL(
+            createdFootprint["symbolPath"]["path"][1]["value"].get<std::string>(),
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                    "live_apply", "schematic_symbol", "R2/1" ) );
+
+    JSON createdPad;
+
+    for( const JSON& child : createdFootprint["definition"]["items"] )
+    {
+        if( child.value( "@type", "" ).ends_with( ".Pad" )
+            && child.value( "number", "" ) == "1" )
+        {
+            createdPad = child;
+            break;
+        }
+    }
+
+    BOOST_REQUIRE_MESSAGE( !createdPad.is_null(), createdFootprint.dump() );
+    BOOST_CHECK_EQUAL( createdPad["net"]["name"].get<std::string>(), "Net1" );
 }
 
 

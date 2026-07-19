@@ -827,10 +827,16 @@ retains the recovery journal and aborts the apply result rather than claiming su
 Keepouts use a separate deterministic ownership type and exact `rule_area_settings` update mask, so
 their unfilled state is never confused with a failed copper refill.
 
-Placement requires exactly one live footprint with the KDS component reference and
-an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
-state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
-existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
+Placement resolves exactly one schematic component by reference. If its footprint is already on the
+board, KDS updates only position, rotation, front/back side, and lock state in place; footprint UUID,
+symbol path, fields, pads, and child UUIDs remain unchanged. If it is absent, a declared
+project-local `.pretty` library may supply the exact `.kicad_mod`: KiChad parses it with KiCad's
+native parser and atomically creates a fresh footprint instance with the component reference, value,
+DNP flag, deterministic hierarchical symbol path, sheet metadata, placement, and pad nets. Source
+files are size-bounded, project-confined regular files; symlinks and path-shaped entry names are
+rejected. Missing global-library content is not loaded by this backend yet. Duplicate references,
+board-only matches, malformed sources, missing connected pads, or unavailable sources abort the
+transaction before commit.
 Any other structurally retained form is refused before mutation until it has its own typed backend
 and rollback coverage.
 
@@ -847,8 +853,10 @@ schematic units, colors, line styles, via/microvia padstacks, and priorities; an
 must leave that table unchanged. It also reads back the exact generated custom-rule document,
 reapplies it without duplication, and proves malformed native input leaves the active document
 unchanged. It then
-places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
-and flipped child layers survive both applies. It proves the fifth managed object is a filled
+places an existing schematic-linked footprint on the back side and proves its footprint/symbol/pad
+identities and flipped child layers survive both applies. It also creates a second footprint from a
+confined project-local library, verifies its exact hierarchical symbol link and pad net, and proves
+the repeat apply converges without a duplicate. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
 keepout with exact prohibited-item policy. The seventh is multiline native board text with exact
 position, layer, typography, hyperlink, and lock state. The remaining five are aligned, orthogonal,
@@ -879,8 +887,9 @@ executable with native parser validation, atomic installation, journaling, and r
 Project-local root and derived symbol content, physical and virtual/power component unit placement,
 native inclusion flags, connectivity, and no-connect state are executable with lossless
 reconciliation, stable identity, native netlist validation,
-journaling, rollback, and a disposable live integration proof. Global installed symbol content,
-library authoring, footprint/model content, and other schematic
+journaling, rollback, and a disposable live integration proof. Confined project-local footprint
+instances are executable through KiCad's native parser and transaction API. Global installed symbol
+content, library authoring, footprint/model authoring, and other schematic
 drawing forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
 hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

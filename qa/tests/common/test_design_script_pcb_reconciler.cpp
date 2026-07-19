@@ -346,6 +346,43 @@ BOOST_FIXTURE_TEST_CASE( RefusesMissingAmbiguousAndUnlinkedFootprintPlacements, 
 }
 
 
+BOOST_FIXTURE_TEST_CASE( CreatesMissingFootprintFromExecutableSchematicInstance, FIXTURE )
+{
+    JSON placement = JSON::array( {
+            { { "action", "place_by_reference" }, { "component", "R1" },
+              { "position", { { "xNm", 12500000 }, { "yNm", 7500000 } } },
+              { "rotationDegrees", 37.5 }, { "side", "back" }, { "locked", true },
+              { "instance",
+                { { "libraryId", "Resistor_SMD:R_0603_1608Metric" },
+                  { "value", "1k" }, { "dnp", false },
+                  { "symbolPath",
+                    JSON::array( { "11111111-1111-8111-8111-111111111111" } ) },
+                  { "symbolSheetName", "Root" },
+                  { "symbolSheetFilename", "board.kicad_sch" },
+                  { "padNets", { { "1", "SIGNAL" }, { "2", "GND" } } } } } }
+    } );
+    RECONCILER::RESULT created =
+            RECONCILER::Reconcile( placement, nullptr, JSON::array(), Context() );
+    BOOST_REQUIRE_MESSAGE( created.ok, created.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( created.actions.size(), 1 );
+    BOOST_CHECK_EQUAL( created.counts["placement"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( created.counts["footprintCreate"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( created.actions[0]["action"].get<std::string>(),
+                       "create_footprint" );
+    BOOST_CHECK_EQUAL( created.actions[0]["component"].get<std::string>(), "R1" );
+    BOOST_CHECK_EQUAL( created.actions[0]["instance"]["padNets"]["2"]
+                               .get<std::string>(),
+                       "GND" );
+
+    placement[0]["instance"]["symbolPath"][0] = "not-a-uuid";
+    RECONCILER::RESULT malformed =
+            RECONCILER::Reconcile( placement, nullptr, JSON::array(), Context() );
+    BOOST_CHECK( !malformed.ok );
+    BOOST_CHECK_NE( malformed.diagnostics.dump().find( "invalid_placement" ),
+                    std::string::npos );
+}
+
+
 BOOST_FIXTURE_TEST_CASE( IsDeterministicAcrossDesiredStatementOrder, FIXTURE )
 {
     JSON reversed = operations;

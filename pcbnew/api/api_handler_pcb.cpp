@@ -24,6 +24,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <set>
 
 #include <common.h>
 #include <api/api_handler_pcb.h>
@@ -76,6 +78,7 @@ constexpr size_t MAX_CUSTOM_RULES_BYTES = 1024 * 1024;
 constexpr size_t MAX_CUSTOM_RULE_COUNT = 512;
 constexpr size_t MAX_CUSTOM_CONSTRAINTS_PER_RULE = 64;
 constexpr size_t MAX_CUSTOM_CONSTRAINT_COUNT = 4096;
+constexpr size_t MAX_PARSED_ITEMS_BYTES = 4 * 1024 * 1024;
 
 
 bool readCustomRulesFile( const wxFileName& aPath, bool& aPresent, std::string& aSource,
@@ -2796,6 +2799,16 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRefillZones( const HANDLER_CONTEXT<
     if( aCtx.Request.zones().empty() )
     {
         TOOL_MANAGER* mgr = frame()->GetToolManager();
+
+        // The fill action is queued because API requests already run on the editor thread.  Mark
+        // copper zones pending before returning so clients cannot observe an old filled=true and
+        // enqueue another fill while this one has not started yet.
+        for( ZONE* zone : frame()->GetBoard()->Zones() )
+        {
+            if( !zone->GetIsRuleArea() )
+                zone->SetIsFilled( false );
+        }
+
         frame()->CallAfter( [mgr]()
                             {
                                 mgr->RunAction( PCB_ACTIONS::zoneFillAll );
@@ -2871,7 +2884,207 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
+    if( aCtx.Request.contents().empty()
+        || aCtx.Request.contents().size() > MAX_PARSED_ITEMS_BYTES
+        || aCtx.Request.contents().find( '\0' ) != std::string::npos )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message(
+                "parsed PCB items must contain 1 byte to 4 MiB of UTF-8 text" );
+        return tl::unexpected( error );
+    }
+
+    const wxString decoded = wxString::FromUTF8( aCtx.Request.contents().data(),
+                                                  aCtx.Request.contents().size() );
+    const wxScopedCharBuffer reencoded = decoded.ToUTF8();
+
+    if( reencoded.length() != aCtx.Request.contents().size()
+        || std::memcmp( reencoded.data(), aCtx.Request.contents().data(),
+                        aCtx.Request.contents().size() ) != 0 )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( "parsed PCB items must be valid UTF-8" );
+        return tl::unexpected( error );
+    }
+
+    std::unique_ptr<BOARD_ITEM> parsed;
+
+    try
+    {
+        PCB_IO_KICAD_SEXPR parser;
+        parsed.reset( parser.Parse( decoded ) );
+    }
+    catch( const std::exception& error )
+    {
+        ApiResponseStatus responseError;
+        responseError.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        responseError.set_error_message( std::string( "could not parse PCB items: " )
+                                         + error.what() );
+        return tl::unexpected( responseError );
+    }
+
+    if( !parsed || parsed->Type() != PCB_FOOTPRINT_T )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message(
+                "PCB item parsing currently requires exactly one KiCad footprint" );
+        return tl::unexpected( error );
+    }
+
+    BOARD* board = frame()->GetBoard();
+    FOOTPRINT* footprint = static_cast<FOOTPRINT*>( parsed.get() );
+    footprint->SetParent( board );
+    footprint->ResolveComponentClassNames( board,
+                                           footprint->GetTransientComponentClassNames() );
+    footprint->ClearTransientComponentClassNames();
+
+    if( aCtx.Request.has_item() )
+    {
+        board::types::FootprintInstance requested;
+
+        if( !aCtx.Request.item().UnpackTo( &requested ) || !requested.id().value().empty()
+            || !requested.has_definition() || !requested.definition().has_id()
+            || requested.definition().id().library_nickname().empty()
+            || requested.definition().id().entry_name().empty()
+            || !requested.has_reference_field() || !requested.has_value_field()
+            || requested.reference_field().text().text().text().empty()
+            || requested.value_field().text().text().text().empty()
+            || !requested.has_symbol_path() || requested.symbol_path().path_size() == 0
+            || requested.symbol_path().path_size() > 64 || !requested.has_position()
+            || requested.position().x_nm() < std::numeric_limits<int>::min()
+            || requested.position().x_nm() > std::numeric_limits<int>::max()
+            || requested.position().y_nm() < std::numeric_limits<int>::min()
+            || requested.position().y_nm() > std::numeric_limits<int>::max()
+            || !requested.has_orientation()
+            || !std::isfinite( requested.orientation().value_degrees() )
+            || std::abs( requested.orientation().value_degrees() ) > 360000.0
+            || ( requested.layer() != board::types::BoardLayer::BL_F_Cu
+                 && requested.layer() != board::types::BoardLayer::BL_B_Cu )
+            || ( requested.locked() != common::types::LockedState::LS_LOCKED
+                 && requested.locked() != common::types::LockedState::LS_UNLOCKED ) )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "parsed footprint instance metadata is malformed" );
+            return tl::unexpected( error );
+        }
+
+        for( const common::types::KIID& id : requested.symbol_path().path() )
+        {
+            if( !KIID::SniffTest( wxString::FromUTF8( id.value() ) ) )
+            {
+                ApiResponseStatus error;
+                error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                error.set_error_message( "parsed footprint symbol path contains an invalid UUID" );
+                return tl::unexpected( error );
+            }
+        }
+
+        std::map<wxString, wxString> padNets;
+
+        for( const google::protobuf::Any& packed : requested.definition().items() )
+        {
+            board::types::Pad pad;
+
+            if( !packed.UnpackTo( &pad ) || pad.number().empty() || pad.number().size() > 64
+                || pad.net().name().empty() || pad.net().name().size() > 1024
+                || !pad.id().value().empty()
+                || !padNets.emplace( wxString::FromUTF8( pad.number() ),
+                                     wxString::FromUTF8( pad.net().name() ) ).second )
+            {
+                ApiResponseStatus error;
+                error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                error.set_error_message( "parsed footprint pad-to-net mapping is malformed" );
+                return tl::unexpected( error );
+            }
+        }
+
+        std::set<wxString> foundPads;
+
+        for( PAD* pad : footprint->Pads() )
+        {
+            if( padNets.contains( pad->GetNumber() ) )
+                foundPads.emplace( pad->GetNumber() );
+        }
+
+        if( foundPads.size() != padNets.size() )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "parsed footprint does not contain every connected pad" );
+            return tl::unexpected( error );
+        }
+
+        const LIB_ID libraryId = kiapi::common::LibIdFromProto( requested.definition().id() );
+
+        if( !libraryId.IsValid() )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "parsed footprint library identifier is invalid" );
+            return tl::unexpected( error );
+        }
+
+        footprint->SetFPID( libraryId );
+        footprint->SetReference(
+                wxString::FromUTF8( requested.reference_field().text().text().text() ) );
+        footprint->SetValue(
+                wxString::FromUTF8( requested.value_field().text().text().text() ) );
+        footprint->SetBoardOnly( false );
+        footprint->SetDNP( requested.attributes().do_not_populate() );
+        footprint->SetPath( kiapi::common::UnpackSheetPath( requested.symbol_path() ) );
+        footprint->SetSheetname( wxString::FromUTF8( requested.symbol_sheet_name() ) );
+        footprint->SetSheetfile( wxString::FromUTF8( requested.symbol_sheet_filename() ) );
+        footprint->SetLayerAndFlip(
+                FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( requested.layer() ) );
+        footprint->SetPosition( VECTOR2I( requested.position().x_nm(),
+                                          requested.position().y_nm() ) );
+        footprint->SetOrientationDegrees( requested.orientation().value_degrees() );
+        footprint->SetLocked( requested.locked() == common::types::LockedState::LS_LOCKED );
+
+        for( PAD* pad : footprint->Pads() )
+        {
+            auto net = padNets.find( pad->GetNumber() );
+
+            if( net == padNets.end() )
+                continue;
+
+            board::types::Net netMessage;
+            netMessage.set_name( net->second.ToUTF8() );
+            pad->UnpackNet( netMessage );
+        }
+    }
+
+    // A library footprint UUID identifies the definition, not an instance on this board.  Give
+    // every parsed instance a fresh root UUID; handleCreateUpdateItemsInternal() also refreshes
+    // every child UUID before adding the item to the active API commit.
+    const_cast<KIID&>( footprint->m_Uuid ) = KIID();
+
+    google::protobuf::RepeatedPtrField<google::protobuf::Any> items;
+    footprint->Serialize( *items.Add() );
+
+    types::ItemHeader header;
+    header.mutable_document()->CopyFrom( aCtx.Request.document() );
     CreateItemsResponse response;
+    response.mutable_header()->CopyFrom( header );
+
+    HANDLER_RESULT<ItemRequestStatus> result = handleCreateUpdateItemsInternal(
+            true, aCtx.ClientName, header, items,
+            [&]( const ItemStatus& aStatus, const google::protobuf::Any& aItem )
+            {
+                ItemCreationResult itemResult;
+                itemResult.mutable_status()->CopyFrom( aStatus );
+                itemResult.mutable_item()->CopyFrom( aItem );
+                response.mutable_created_items()->Add( std::move( itemResult ) );
+            } );
+
+    if( !result )
+        return tl::unexpected( result.error() );
+
+    response.set_status( *result );
     return response;
 }
 

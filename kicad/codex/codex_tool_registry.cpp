@@ -513,6 +513,227 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
 }
 
 
+bool inventoryProjectFootprints( const wxString& aProjectPath,
+                                 const nlohmann::json& aCompilerIr,
+                                 nlohmann::json& aSources, std::string& aError )
+{
+    constexpr size_t MAX_FOOTPRINT_BYTES = 4 * 1024 * 1024;
+    constexpr size_t MAX_FOOTPRINT_INVENTORY_BYTES = 32 * 1024 * 1024;
+    aSources = nlohmann::json::object();
+
+    if( !aCompilerIr.is_object() || !aCompilerIr.contains( "libraries" )
+        || !aCompilerIr["libraries"].is_array() || !aCompilerIr.contains( "schematic" )
+        || !aCompilerIr["schematic"].is_object()
+        || !aCompilerIr["schematic"].contains( "components" )
+        || !aCompilerIr["schematic"]["components"].is_array()
+        || !aCompilerIr.contains( "pcb" ) || !aCompilerIr["pcb"].is_array() )
+    {
+        aError = "compiled KDS footprint inventory is malformed";
+        return false;
+    }
+
+    std::set<std::string> placedReferences;
+
+    for( const nlohmann::json& statement : aCompilerIr["pcb"] )
+    {
+        if( statement.is_object() && statement.value( "kind", "" ) == "place"
+            && statement.contains( "component" ) && statement["component"].is_string() )
+        {
+            placedReferences.emplace( statement["component"].get<std::string>() );
+        }
+    }
+
+    std::map<std::string, std::set<std::string>> usedEntries;
+
+    for( const nlohmann::json& component : aCompilerIr["schematic"]["components"] )
+    {
+        if( !component.is_object() || !component.contains( "reference" )
+            || !component["reference"].is_string()
+            || !placedReferences.contains( component["reference"].get<std::string>() )
+            || !component.contains( "footprint" ) || !component["footprint"].is_string() )
+        {
+            continue;
+        }
+
+        const std::string libraryId = component["footprint"].get<std::string>();
+        const size_t separator = libraryId.find( ':' );
+
+        if( separator == std::string::npos || separator == 0
+            || separator + 1 == libraryId.size()
+            || libraryId.find( ':', separator + 1 ) != std::string::npos )
+        {
+            aError = "placed component contains an invalid footprint library ID";
+            return false;
+        }
+
+        const std::string nickname = libraryId.substr( 0, separator );
+        const std::string entry = libraryId.substr( separator + 1 );
+
+        if( entry == "." || entry == ".." || entry.find( '/' ) != std::string::npos
+            || entry.find( '\\' ) != std::string::npos
+            || entry.find( '\0' ) != std::string::npos )
+        {
+            aError = "placed footprint entry name cannot contain a path";
+            return false;
+        }
+
+        usedEntries[nickname].emplace( entry );
+    }
+
+    if( usedEntries.empty() )
+        return true;
+
+    wxFileName root = wxFileName::DirName( aProjectPath );
+    root.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    if( !canonicalizeExisting( root, true ) )
+    {
+        aError = "active project path could not be resolved";
+        return false;
+    }
+
+    std::set<std::string> inventoriedNicknames;
+    size_t totalBytes = 0;
+
+    for( const nlohmann::json& library : aCompilerIr["libraries"] )
+    {
+        if( !library.is_object() || library.value( "kind", "" ) != "footprint"
+            || library.value( "table", "" ) != "project"
+            || !usedEntries.contains( library.value( "id", "" ) ) )
+        {
+            continue;
+        }
+
+        const std::string nickname = library.value( "id", "" );
+        const std::string uri = library.value( "uri", "" );
+        constexpr std::string_view prefix = "${KIPRJMOD}/";
+
+        if( !inventoriedNicknames.emplace( nickname ).second )
+        {
+            aError = "project footprint library nickname occurs more than once: " + nickname;
+            return false;
+        }
+
+        if( nickname.empty() || !uri.starts_with( prefix )
+            || uri.size() <= prefix.size() || !uri.ends_with( ".pretty" ) )
+        {
+            aError = "project footprint library declaration is malformed";
+            return false;
+        }
+
+        const std::string relativePath = uri.substr( prefix.size() );
+        wxFileName directory = wxFileName::DirName( wxString::FromUTF8( relativePath ) );
+
+        if( directory.IsAbsolute() )
+        {
+            aError = "project footprint library path must be relative";
+            return false;
+        }
+
+        directory.MakeAbsolute( root.GetFullPath() );
+        directory.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+        if( !directory.DirExists() )
+        {
+            aError = "project footprint library does not exist: " + relativePath;
+            return false;
+        }
+
+        wxFileName canonicalDirectory = directory;
+
+        if( !canonicalizeExisting( canonicalDirectory, true ) )
+        {
+            aError = "project footprint library could not be resolved: " + relativePath;
+            return false;
+        }
+
+        wxString directoryPath = directory.GetFullPath();
+        wxString canonicalDirectoryPath = canonicalDirectory.GetFullPath();
+        wxString rootPath = root.GetPathWithSep();
+
+#ifdef __WXMSW__
+        directoryPath.MakeLower();
+        canonicalDirectoryPath.MakeLower();
+        rootPath.MakeLower();
+#endif
+
+        if( directoryPath != canonicalDirectoryPath
+            || !( canonicalDirectoryPath + wxFileName::GetPathSeparator() ).StartsWith( rootPath ) )
+        {
+            aError = "project footprint library must be a confined directory, not a symlink";
+            return false;
+        }
+
+        for( const std::string& entry : usedEntries.at( nickname ) )
+        {
+            wxFileName candidate( directory.GetFullPath(),
+                                  wxString::FromUTF8( entry + ".kicad_mod" ) );
+
+            if( !candidate.FileExists() )
+            {
+                aError = "project footprint does not exist: " + nickname + ":" + entry;
+                return false;
+            }
+
+            wxFileName canonical = candidate;
+
+            if( !canonicalizeExisting( canonical ) )
+            {
+                aError = "project footprint could not be resolved: " + nickname + ":" + entry;
+                return false;
+            }
+
+            wxString candidatePath = candidate.GetFullPath();
+            wxString canonicalPath = canonical.GetFullPath();
+            wxString libraryPath = canonicalDirectory.GetPathWithSep();
+
+#ifdef __WXMSW__
+            candidatePath.MakeLower();
+            canonicalPath.MakeLower();
+            libraryPath.MakeLower();
+#endif
+
+            if( candidatePath != canonicalPath || !canonicalPath.StartsWith( libraryPath ) )
+            {
+                aError = "project footprint must be a confined regular file, not a symlink";
+                return false;
+            }
+
+            wxFile input;
+
+            if( !input.Open( candidate.GetFullPath() ) )
+            {
+                aError = "could not open project footprint: " + nickname + ":" + entry;
+                return false;
+            }
+
+            const wxFileOffset length = input.Length();
+
+            if( length <= 0 || length > static_cast<wxFileOffset>( MAX_FOOTPRINT_BYTES )
+                || static_cast<size_t>( length )
+                           > MAX_FOOTPRINT_INVENTORY_BYTES - totalBytes )
+            {
+                aError = "project footprint inventory exceeds bounded size limits";
+                return false;
+            }
+
+            std::string source( static_cast<size_t>( length ), '\0' );
+
+            if( input.Read( source.data(), source.size() ) != length )
+            {
+                aError = "could not read complete project footprint: " + nickname + ":" + entry;
+                return false;
+            }
+
+            totalBytes += source.size();
+            aSources[nickname + ":" + entry] = std::move( source );
+        }
+    }
+
+    return true;
+}
+
+
 bool readOptionalSchematic( const wxFileName& aPath, bool& aPresent, std::string& aSource,
                             std::string& aError )
 {
@@ -2042,10 +2263,117 @@ bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
 }
 
 
+bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
+                                const KICHAD_IPC_TARGET& aTarget,
+                                const nlohmann::json& aAction,
+                                const nlohmann::json& aFootprintSources,
+                                std::string& aError )
+{
+    const nlohmann::json& instance = aAction.at( "instance" );
+    const std::string libraryId = instance.at( "libraryId" ).get<std::string>();
+
+    if( !aFootprintSources.is_object() || !aFootprintSources.contains( libraryId )
+        || !aFootprintSources[libraryId].is_string() )
+    {
+        aError = "placed footprint " + libraryId
+                 + " is not available from a confined project-local library";
+        return false;
+    }
+
+    const size_t separator = libraryId.find( ':' );
+    kiapi::board::types::FootprintInstance requested;
+    requested.mutable_definition()->mutable_id()->set_library_nickname(
+            libraryId.substr( 0, separator ) );
+    requested.mutable_definition()->mutable_id()->set_entry_name(
+            libraryId.substr( separator + 1 ) );
+    requested.mutable_reference_field()->mutable_text()->mutable_text()->set_text(
+            aAction.at( "component" ).get<std::string>() );
+    requested.mutable_value_field()->mutable_text()->mutable_text()->set_text(
+            instance.at( "value" ).get<std::string>() );
+    requested.mutable_attributes()->set_not_in_schematic( false );
+    requested.mutable_attributes()->set_do_not_populate( instance.at( "dnp" ).get<bool>() );
+
+    for( const nlohmann::json& id : instance.at( "symbolPath" ) )
+    {
+        requested.mutable_symbol_path()->add_path()->set_value( id.get<std::string>() );
+    }
+
+    requested.set_symbol_sheet_name( instance.at( "symbolSheetName" ).get<std::string>() );
+    requested.set_symbol_sheet_filename(
+            instance.at( "symbolSheetFilename" ).get<std::string>() );
+    requested.mutable_position()->set_x_nm(
+            aAction.at( "position" ).at( "xNm" ).get<int64_t>() );
+    requested.mutable_position()->set_y_nm(
+            aAction.at( "position" ).at( "yNm" ).get<int64_t>() );
+    requested.mutable_orientation()->set_value_degrees(
+            aAction.at( "rotationDegrees" ).get<double>() );
+    requested.set_layer( aAction.at( "side" ) == "front"
+                                 ? kiapi::board::types::BL_F_Cu
+                                 : kiapi::board::types::BL_B_Cu );
+    requested.set_locked( aAction.at( "locked" ).get<bool>()
+                                  ? kiapi::common::types::LS_LOCKED
+                                  : kiapi::common::types::LS_UNLOCKED );
+
+    for( auto net = instance.at( "padNets" ).begin();
+         net != instance.at( "padNets" ).end(); ++net )
+    {
+        kiapi::board::types::Pad pad;
+        pad.set_number( net.key() );
+        pad.mutable_net()->set_name( net.value().get<std::string>() );
+        requested.mutable_definition()->add_items()->PackFrom( pad );
+    }
+
+    kiapi::common::commands::ParseAndCreateItemsFromString parse;
+    parse.mutable_document()->CopyFrom( aTarget.document );
+    parse.set_contents( aFootprintSources[libraryId].get<std::string>() );
+    parse.mutable_item()->PackFrom( requested );
+    kiapi::common::ApiResponse parseResponse;
+
+    if( !aClient.Call( aTarget, parse, parseResponse, aError ) )
+        return false;
+
+    kiapi::common::commands::CreateItemsResponse created;
+
+    if( !parseResponse.message().UnpackTo( &created )
+        || created.status() != kiapi::common::types::IRS_OK
+        || created.created_items_size() != 1
+        || created.created_items( 0 ).status().code() != kiapi::common::commands::ISC_OK )
+    {
+        aError = created.created_items_size() == 1
+                         ? created.created_items( 0 ).status().error_message()
+                         : "KiCad could not create exactly one footprint from " + libraryId;
+        return false;
+    }
+
+    kiapi::board::types::FootprintInstance footprint;
+
+    if( !created.created_items( 0 ).item().UnpackTo( &footprint )
+        || !KIID::SniffTest( wxString::FromUTF8( footprint.id().value() ) )
+        || footprint.reference_field().text().text().text()
+                   != aAction.at( "component" ).get<std::string>()
+        || footprint.definition().id().library_nickname()
+                   != requested.definition().id().library_nickname()
+        || footprint.definition().id().entry_name()
+                   != requested.definition().id().entry_name()
+        || footprint.symbol_path().path_size() != requested.symbol_path().path_size()
+        || footprint.position().x_nm() != requested.position().x_nm()
+        || footprint.position().y_nm() != requested.position().y_nm()
+        || footprint.layer() != requested.layer() )
+    {
+        aError = "KiCad returned a mismatched parsed footprint instance";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
-                        const nlohmann::json& aActions, std::string& aError )
+                        const nlohmann::json& aActions,
+                        const nlohmann::json& aFootprintSources, std::string& aError )
 {
     std::vector<const nlohmann::json*> creates;
+    std::vector<const nlohmann::json*> footprintCreates;
     std::map<std::pair<std::string, std::string>,
              std::vector<const nlohmann::json*>> updates;
     std::vector<const nlohmann::json*> deletes;
@@ -2056,11 +2384,22 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
 
         if( kind == "create" )
             creates.emplace_back( &action );
+        else if( kind == "create_footprint" )
+            footprintCreates.emplace_back( &action );
         else if( kind == "update" )
             updates[{ action.at( "itemType" ).get<std::string>(),
                       action.at( "fieldMask" ).dump() }].emplace_back( &action );
         else
             deletes.emplace_back( &action );
+    }
+
+    for( const nlohmann::json* action : footprintCreates )
+    {
+        if( !createFootprintFromSource( aClient, aTarget, *action,
+                                        aFootprintSources, aError ) )
+        {
+            return false;
+        }
     }
 
     for( size_t begin = 0; begin < creates.size(); begin += 200 )
@@ -2525,11 +2864,18 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
         JSON symbolLibrarySources;
+        JSON footprintSources;
 
         if( !inventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
                                               symbolLibrarySources, pathError ) )
         {
             return failure( "symbol_inventory_failed", pathError );
+        }
+
+        if( !inventoryProjectFootprints( aProjectPath, compiled.ir,
+                                         footprintSources, pathError ) )
+        {
+            return failure( "footprint_inventory_failed", pathError );
         }
 
         KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
@@ -2693,11 +3039,18 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
         JSON symbolLibrarySources;
+        JSON footprintSources;
 
         if( !inventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
                                               symbolLibrarySources, pathError ) )
         {
             return failure( "symbol_inventory_failed", pathError );
+        }
+
+        if( !inventoryProjectFootprints( aProjectPath, compiled.ir,
+                                         footprintSources, pathError ) )
+        {
+            return failure( "footprint_inventory_failed", pathError );
         }
 
         KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
@@ -3640,7 +3993,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "transaction_failed", message );
         }
 
-        if( !executePcbActions( client, target, reconciled.actions, pathError ) )
+        if( !executePcbActions( client, target, reconciled.actions,
+                                footprintSources, pathError ) )
         {
             std::string dropError;
             const bool  dropped = commit.Drop( dropError );

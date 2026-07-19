@@ -82,10 +82,12 @@ active rules. It generates and repeats exact KiCad-parsed project symbol and foo
 the canonical KDS library declarations. It verifies a deterministic managed copper zone is filled
 by KiCad's official zone engine after each transaction and a distinct managed keepout remains an unfilled,
 locked rule area with exact prohibited-item settings. It also creates deterministic native board
-text and all five native dimension styles, then reapplies each distinct oneof field mask and verifies
+text and all five native dimension styles, then reapplies each distinct oneof field mask. It verifies
 reference-resolved placement through a narrow native footprint transform: the parent and pad UUIDs,
-schematic symbol path, and child geometry survive a front-to-back flip. Its cleanup targets only the
-process and directory it created. The fixture also reconciles an existing root schematic and a new
+schematic symbol path, and child geometry survive a front-to-back flip. It also creates an absent
+schematic-linked footprint from a confined project-local library, assigns its native pad net, and
+proves duplicate-free reapply. Its cleanup targets only the process and directory it created. The
+fixture also reconciles an existing root schematic and a new
 child screen, preserves the root screen UUID and unmanaged title-block data, proves byte-idempotent
 reapply, places a real footprintless power symbol through the same canonical component path while
 preserving native artifact-inclusion flags, injects native validation failure and verifies exact
@@ -112,8 +114,12 @@ managed-state records, and protobuf messages are compiler implementation details
 reconciliation; a short-lived `*.kicad_kds_journal` safely carries ownership across an interrupted
 apply. The generated `.kicad_dru` file is likewise an internal compiler artifact; conditional-rule
 intent is authored only in the exported `.kicad_kds` sidecar. Its exact prior presence and bytes are
-journaled so a failed apply restores both the file and live DRC engine. Existing schematic-linked footprints are resolved uniquely by reference and transformed in
-place; they are never added to KDS ownership state. Managed copper zones are committed unfilled,
+journaled so a failed apply restores both the file and live DRC engine. Existing schematic-linked
+footprints are resolved uniquely by reference and transformed in place. When a referenced footprint
+is absent, a confined project-local `.kicad_mod` is parsed in-process and inserted atomically with
+its deterministic schematic path and pad nets; the next apply resolves the same instance rather
+than duplicating it. Footprints are not added to deterministic PCB-item ownership state. Managed
+copper zones are committed unfilled,
 then KiCad's official refill command is polled until every desired zone is authoritatively present
 and filled. A rejected or timed-out refill retains the recovery journal, and the next apply safely
 reconciles and retries. Keepout rule areas use their own ownership namespace and exact protobuf

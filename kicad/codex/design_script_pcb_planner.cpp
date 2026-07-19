@@ -16,8 +16,10 @@
 #include <cstdint>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <picosha2.h>
 
@@ -349,6 +351,149 @@ JSON planLibraryTable( const JSON& aLibraries, const std::string& aKind )
              { "present", true },
              { "entries", entries },
              { "source", planLibraryTableSource( aLibraries, aKind ) } };
+}
+
+
+JSON planFootprintInstance( const JSON& aCompilerIr, const std::string& aProject,
+                            const std::string& aReference )
+{
+    if( !aCompilerIr.contains( "schematic" ) || !aCompilerIr["schematic"].is_object()
+        || !aCompilerIr["schematic"].contains( "components" )
+        || !aCompilerIr["schematic"]["components"].is_array()
+        || !aCompilerIr["schematic"].contains( "sheets" )
+        || !aCompilerIr["schematic"]["sheets"].is_array() )
+    {
+        return JSON();
+    }
+
+    const JSON* component = nullptr;
+
+    for( const JSON& candidate : aCompilerIr["schematic"]["components"] )
+    {
+        if( candidate.is_object() && candidate.value( "reference", "" ) == aReference )
+        {
+            component = &candidate;
+            break;
+        }
+    }
+
+    if( !component || !component->contains( "footprint" )
+        || !( *component )["footprint"].is_string()
+        || !component->contains( "value" ) || !( *component )["value"].is_string()
+        || !component->contains( "units" ) || !( *component )["units"].is_array()
+        || ( *component )["units"].empty() )
+    {
+        return JSON();
+    }
+
+    const JSON* unit = nullptr;
+
+    for( const JSON& candidate : ( *component )["units"] )
+    {
+        if( !candidate.is_object() || !candidate.contains( "number" )
+            || !candidate["number"].is_number_integer()
+            || !candidate.contains( "sheet" ) || !candidate["sheet"].is_string() )
+        {
+            return JSON();
+        }
+
+        if( !unit || candidate["number"].get<int64_t>()
+                            < ( *unit )["number"].get<int64_t>() )
+        {
+            unit = &candidate;
+        }
+    }
+
+    std::map<std::string, const JSON*> sheets;
+
+    for( const JSON& sheet : aCompilerIr["schematic"]["sheets"] )
+    {
+        if( !sheet.is_object() || !sheet.contains( "id" ) || !sheet["id"].is_string()
+            || !sheet.contains( "parent" )
+            || ( !sheet["parent"].is_null() && !sheet["parent"].is_string() )
+            || !sheet.contains( "file" ) || !sheet["file"].is_string()
+            || !sheet.contains( "title" ) || !sheet["title"].is_string() )
+        {
+            return JSON();
+        }
+
+        sheets.emplace( sheet["id"].get<std::string>(), &sheet );
+    }
+
+    const std::string unitSheet = ( *unit )["sheet"].get<std::string>();
+    auto sheet = sheets.find( unitSheet );
+
+    if( sheet == sheets.end() )
+        return JSON();
+
+    std::vector<std::string> ancestors;
+    std::set<std::string> visited;
+    auto cursor = sheet;
+
+    while( !cursor->second->at( "parent" ).is_null() )
+    {
+        if( !visited.emplace( cursor->first ).second )
+            return JSON();
+
+        ancestors.emplace_back( cursor->first );
+        cursor = sheets.find( cursor->second->at( "parent" ).get<std::string>() );
+
+        if( cursor == sheets.end() )
+            return JSON();
+    }
+
+    std::reverse( ancestors.begin(), ancestors.end() );
+    JSON symbolPath = JSON::array();
+
+    for( const std::string& ancestor : ancestors )
+        symbolPath.emplace_back( KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aProject, "schematic_sheet", ancestor ) );
+
+    const int64_t unitNumber = ( *unit )["number"].get<int64_t>();
+    symbolPath.emplace_back( KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+            aProject, "schematic_symbol",
+            aReference + "/" + std::to_string( unitNumber ) ) );
+
+    JSON padNets = JSON::object();
+
+    if( aCompilerIr["schematic"].contains( "nets" )
+        && aCompilerIr["schematic"]["nets"].is_array() )
+    {
+        for( const JSON& net : aCompilerIr["schematic"]["nets"] )
+        {
+            if( !net.is_object() || !net.contains( "name" ) || !net["name"].is_string()
+                || !net.contains( "pins" ) || !net["pins"].is_array() )
+            {
+                return JSON();
+            }
+
+            for( const JSON& pin : net["pins"] )
+            {
+                if( !pin.is_object() || pin.value( "component", "" ) != aReference )
+                    continue;
+
+                if( !pin.contains( "number" ) || !pin["number"].is_string() )
+                    return JSON();
+
+                const std::string number = pin["number"].get<std::string>();
+                const std::string name = net["name"].get<std::string>();
+
+                if( padNets.contains( number ) && padNets[number] != name )
+                    return JSON();
+
+                padNets[number] = name;
+            }
+        }
+    }
+
+    const JSON& linkedSheet = *sheet->second;
+    return { { "libraryId", ( *component )["footprint"] },
+             { "value", ( *component )["value"] },
+             { "dnp", component->value( "dnp", false ) },
+             { "symbolPath", std::move( symbolPath ) },
+             { "symbolSheetName", linkedSheet["title"] },
+             { "symbolSheetFilename", linkedSheet["file"] },
+             { "padNets", std::move( padNets ) } };
 }
 
 
@@ -1117,13 +1262,19 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             }
             else if( kind == "place" )
             {
-                result.operations.push_back( { { "action", "place_by_reference" },
-                                               { "component", statement.at( "component" ) },
-                                               { "position", statement.at( "position" ) },
-                                               { "rotationDegrees",
-                                                 statement.at( "rotationDegrees" ) },
-                                               { "side", statement.at( "side" ) },
-                                               { "locked", statement.at( "locked" ) } } );
+                const std::string reference = statement.at( "component" ).get<std::string>();
+                JSON operation = { { "action", "place_by_reference" },
+                                   { "component", reference },
+                                   { "position", statement.at( "position" ) },
+                                   { "rotationDegrees", statement.at( "rotationDegrees" ) },
+                                   { "side", statement.at( "side" ) },
+                                   { "locked", statement.at( "locked" ) } };
+                JSON instance = planFootprintInstance( aCompilerIr, project, reference );
+
+                if( instance.is_object() )
+                    operation["instance"] = std::move( instance );
+
+                result.operations.emplace_back( std::move( operation ) );
                 ++result.counts["placements"].get_ref<int64_t&>();
             }
             else
