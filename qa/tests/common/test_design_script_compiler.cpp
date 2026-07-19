@@ -1301,6 +1301,7 @@ BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
   (output u3d)
   (output xao)
   (output 3d_pdf)
+  (output board_ps)
   (output schematic_pdf)
   (output schematic_svg)
   (output schematic_dxf)
@@ -1314,11 +1315,11 @@ BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
     BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
-    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 17 );
+    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 18 );
 
-    const std::array<const char*, 17> expected = {
+    const std::array<const char*, 18> expected = {
         "netlist", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf",
-        "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
+        "board_ps", "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
         "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
 

@@ -298,6 +298,18 @@ std::string mockSchematicPostscript()
 }
 
 
+std::string mockBoardPostscript( const std::string& aLayer )
+{
+    return "%!PS-Adobe-3.0\n%%Creator: PCBNEW\n%%Pages: 1\n"
+           "%%BoundingBox: 0 0 596 842\n%%DocumentMedia: A4 595 842 0 () ()\n"
+           "%%Orientation: Landscape\n%%EndComments\n%%BeginProlog\n"
+           "/line { newpath moveto lineto stroke } bind def\n%%EndProlog\n"
+           "%%Page: (" + aLayer
+           + ") 1\n%%BeginPageSetup\ngsave\n%%EndPageSetup\n"
+             "0 0 10 10 line\nshowpage\ngrestore\n%%EOF\n";
+}
+
+
 std::string mockGlb( const std::string& aStem )
 {
     JSON scene = {
@@ -494,6 +506,7 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output xao)
   (output 3d_pdf)
   (output pdf)
+  (output board_ps)
   (output schematic_pdf)
   (output schematic_svg)
   (output schematic_dxf)
@@ -923,6 +936,24 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 return false;
             }
         }
+        else if( kind == "board_ps" )
+        {
+            const std::string stem = aPlan.at( "fileStem" ).get<std::string>();
+
+            for( const JSON& layerValue : job.at( "layers" ) )
+            {
+                const std::string layer = layerValue.get<std::string>();
+                std::string filenameLayer = layer;
+                std::replace( filenameLayer.begin(), filenameLayer.end(), '.', '_' );
+
+                if( !write( output / ( stem + "-" + filenameLayer + ".ps" ),
+                            mockBoardPostscript( layer ) ) )
+                {
+                    aError = "could not write fake board PostScript output";
+                    return false;
+                }
+            }
+        }
         else if( kind == "schematic_pdf" )
         {
             if( !write( output,
@@ -1125,10 +1156,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v9" );
+                       "kichad-production-10.0.4-v10" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 26 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 27 );
     BOOST_CHECK_EQUAL( data["expectedSchematicPdfTitle"].get<std::string>(),
                        "design.pdf" );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
@@ -1474,7 +1505,7 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "waived" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 35 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 44 );
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
@@ -1533,6 +1564,12 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/documentation/schematic_ps/"
                                       "fabrication_clean.ps" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/documentation/board_ps/"
+                                      "fabrication_clean-F_Cu.ps" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/documentation/board_ps/"
+                                      "fabrication_clean-Edge_Cuts.ps" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/assembly/drawings-svg/"
                                       "fabrication_clean-F_Fab.svg" ) ) );
@@ -1662,7 +1699,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 28 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 37 );
 
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
@@ -1716,6 +1753,9 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName schematicPsPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/documentation/schematic_ps/fabrication_component.ps" ) );
+    wxFileName boardPsPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/documentation/board_ps/fabrication_component-F_Cu.ps" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
@@ -1734,6 +1774,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE( schematicSvgPath.FileExists() );
     BOOST_REQUIRE( schematicDxfPath.FileExists() );
     BOOST_REQUIRE( schematicPsPath.FileExists() );
+    BOOST_REQUIRE( boardPsPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );

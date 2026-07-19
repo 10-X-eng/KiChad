@@ -10,6 +10,7 @@
  */
 
 #include "codex_tool_internal.h"
+#include "board_ps_artifact_validator.h"
 #include "design_script_compiler.h"
 #include "design_script_pcb_planner.h"
 #include "design_script_pcb_reconciler.h"
@@ -1562,6 +1563,14 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
                           "--check-zones", "--no-property-popups",
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "board_ps" )
+        {
+            arguments = { "pcb", "export", "ps", "--output", output.string(),
+                          "--layers", joinCommaSeparated( job.at( "layers" ) ),
+                          "--mode-multi", "--black-and-white", "--subtract-soldermask",
+                          "--force-a4", "--scale", "1", "--check-zones",
+                          aBoard.GetFullPath().ToStdString() };
+        }
         else if( kind == "schematic_pdf" )
         {
             arguments = { "sch", "export", "pdf", "--output", output.string(),
@@ -1661,7 +1670,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
         "step", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf", "pdf",
-        "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
+        "board_ps", "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
         "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
@@ -1873,6 +1882,12 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
             job["relativePath"] = "documentation/" + aFileStem + ".pdf";
             job["layers"] = layers;
         }
+        else if( std::string_view( kind ) == "board_ps" )
+        {
+            job["relativePath"] = "documentation/board_ps";
+            job["directory"] = true;
+            job["layers"] = layers;
+        }
         else if( std::string_view( kind ) == "schematic_pdf" )
         {
             job["relativePath"] = "documentation/schematic/" + aFileStem + ".pdf";
@@ -1916,7 +1931,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v9" },
+    return { { "profile", "kichad-production-10.0.4-v10" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -3172,6 +3187,7 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
     std::set<std::string> schematicSvgFiles;
     std::set<std::string> schematicDxfFiles;
     std::set<std::string> schematicPsFiles;
+    std::set<std::string> boardPsFiles;
     std::set<std::string> bomReferences;
     std::set<std::string> placementReferences;
     std::set<std::string> allowedDirectories;
@@ -3185,10 +3201,23 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
     const std::set<std::string> expectedAssemblyDxfFiles = {
         fileStem + "-F_Fab.dxf", fileStem + "-B_Fab.dxf"
     };
+    std::map<std::string, std::string> expectedBoardPsFiles;
     aArtifacts = JSON::array();
 
     for( const JSON& job : aPlan.at( "jobs" ) )
     {
+        if( job.at( "kind" ) == "board_ps" )
+        {
+            for( const JSON& layerValue : job.at( "layers" ) )
+            {
+                const std::string layer = layerValue.get<std::string>();
+                std::string filenameLayer = layer;
+                std::replace( filenameLayer.begin(), filenameLayer.end(), '.', '_' );
+                expectedBoardPsFiles.emplace(
+                        fileStem + "-" + filenameLayer + ".ps", layer );
+            }
+        }
+
         std::filesystem::path directory =
                 job.at( "directory" ).get<bool>()
                         ? std::filesystem::path( job.at( "relativePath" ).get<std::string>() )
@@ -3576,6 +3605,24 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path.starts_with( "documentation/board_ps/" )
+                 && extension == ".ps" )
+        {
+            kind = "board_ps";
+            const std::string filename = iterator->path().filename().string();
+            const auto expected = expectedBoardPsFiles.find( filename );
+
+            if( expected == expectedBoardPsFiles.end()
+                || !boardPsFiles.emplace( filename ).second
+                || !KICHAD::BOARD_PS_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), expected->second, aError ) )
+            {
+                if( aError.empty() )
+                    aError = "board PostScript export has an unexpected filename";
+
+                return false;
+            }
+        }
         else if( path.starts_with( "documentation/schematic_svg/" )
                  && extension == ".svg" )
         {
@@ -3744,6 +3791,10 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "3D PDF export did not produce exactly one interactive model artifact";
         else if( kind == "pdf" && counts["pdf"] != 1 )
             aError = "documentation export did not produce exactly one PDF artifact";
+        else if( kind == "board_ps"
+                 && ( counts["board_ps"] != expectedBoardPsFiles.size()
+                      || boardPsFiles.size() != expectedBoardPsFiles.size() ) )
+            aError = "board PostScript export did not produce exactly one drawing per layer";
         else if( kind == "schematic_pdf" && counts["schematic_pdf"] != 1 )
             aError = "schematic PDF export did not produce exactly one release drawing";
         else if( kind == "schematic_svg"

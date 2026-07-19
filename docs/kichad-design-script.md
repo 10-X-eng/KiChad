@@ -299,7 +299,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v9`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v10`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -321,6 +321,7 @@ production-ready plan requires all of the following declarations in the same sid
 ; optional: (output xao)
 ; optional: (output 3d_pdf)
 ; optional: (output pdf)
+; optional: (output board_ps)
 ; optional: (output schematic_pdf)
 ; optional: (output schematic_svg)
 ; optional: (output schematic_dxf)
@@ -366,7 +367,9 @@ format-aware parser before installation. BREP, binary glTF (`glb`), triangular A
 U3D, XAO, and interactive `3d_pdf` use the same complete fixed-origin 3D geometry policy as STEP.
 Each has a bounded structural validator for its native container and scene/topology data; STEPZ is
 inflated with a hard limit, while 3D PDF's embedded U3D stream is decompressed and fully validated.
-The four `schematic_*` outputs render the guarded root-schematic snapshot as PDF or a bounded set of
+`board_ps` emits a separate A4 DSC PostScript document for each enabled physical layer, with exact
+filename/layer identity and a restricted drawing-only operator profile. The four `schematic_*`
+outputs render the guarded root-schematic snapshot as PDF or a bounded set of
 per-sheet SVG, DXF, or PostScript drawings. Their validators require KiCad/Eeschema producer
 identity, exact root-sheet filenames, complete page/container structure, and no added external
 actions, unsafe SVG references, or privileged PostScript operators.

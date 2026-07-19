@@ -89,12 +89,13 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v9` profile requires explicit stackup intent, ERC, DRC,
+sidecar. The fixed `kichad-production-10.0.4-v10` profile requires explicit stackup intent, ERC, DRC,
 sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
 outputs; STEP, STEPZ, BREP, GLB, STL, U3D, XAO, interactive 3D PDF, fabrication PDF, IPC-2581C XML,
 ODB++, front/back assembly SVG/DXF, GenCAD, VRML, and typed board statistics are optional
-declarations. Root-schematic PDF, SVG, DXF, and PostScript release drawings use the same guarded
-schematic snapshot as ERC. A native Eeschema netlist can also be declared and is matched against the
+declarations. PCB PostScript emits an exact A4 drawing set for every enabled physical layer.
+Root-schematic PDF, SVG, DXF, and PostScript release drawings use the same guarded schematic snapshot
+as ERC. A native Eeschema netlist can also be declared and is matched against the
 exact compiled KDS component and ref/pin connectivity sets. Each auxiliary artifact has
 an exact planned path and a
 dedicated bounded structural validator. IPC-2581 export uses one fixed
