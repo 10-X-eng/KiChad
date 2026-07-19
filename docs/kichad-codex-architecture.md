@@ -216,8 +216,10 @@ stroke/fill and inclusion policy, and a nested native polyline UUID; the reconci
 nested identity but owns and journals the entire native rule-area expression. A rule-area directive
 must be on the same sheet with its anchor exactly on the declared boundary.
 Schematic free text follows the same content-first semantic shape as board text while adding a
-sheet reference. Complete native typography, simulation inclusion, color, mirroring, and hyperlink
-state lower to a stable-UUID KiCad `text` expression; no presentation field is silently dropped.
+sheet reference. Text boxes add independently bounded container size, four margins, preserved
+hidden/visible border state, every native line/fill mode, and the same complete text-effects block.
+Both lower to stable-UUID KiCad expressions with simulation inclusion, color, mirroring, and
+hyperlink state intact; no presentation field is silently dropped.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

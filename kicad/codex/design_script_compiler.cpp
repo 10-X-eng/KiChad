@@ -2322,6 +2322,420 @@ JSON compileSchematicText( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileSchematicTextBox( const DOCUMENT& aDocument, size_t aNode,
+                              KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string content;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], content )
+        || content.size() > MAX_SCHEMATIC_TEXT_BYTES )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_text_box",
+                    "text_box requires content up to 65536 UTF-8 bytes" );
+        return JSON::object();
+    }
+
+    JSON textBox = { { "kind", "text_box" }, { "content", content } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_text_box_field",
+                        "text_box field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "id" || head == "sheet" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || !validIdentifier( value ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_" + head,
+                            "text_box " + head + " must be a bounded identifier" );
+            }
+            else
+            {
+                textBox[head] = value;
+            }
+
+            continue;
+        }
+
+        if( head == "at" || head == "box_size" || head == "text_size" )
+        {
+            JSON point;
+            const bool isPosition = head == "at";
+            constexpr int64_t minimum = 100'000;
+            const int64_t maximum = head == "box_size" ? 2'000'000'000 : 50'000'000;
+
+            if( !parseSchematicPoint( aDocument, child, point )
+                || ( !isPosition
+                     && ( point["xNm"].get<int64_t>() < minimum
+                          || point["yNm"].get<int64_t>() < minimum
+                          || point["xNm"].get<int64_t>() > maximum
+                          || point["yNm"].get<int64_t>() > maximum ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_" + head,
+                            isPosition
+                                    ? "text_box at requires two distances from 0 to 2 m"
+                            : head == "box_size"
+                                    ? "text_box box_size requires two dimensions from 0.1 mm through 2 m"
+                                    : "text_box text_size requires two dimensions from 0.1 mm through 50 mm" );
+            }
+            else
+            {
+                textBox[isPosition ? "position" : head == "box_size" ? "boxSize" : "size"] =
+                        std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "margins" )
+        {
+            const DOCUMENT::NODE& margins = aDocument.Nodes()[child];
+            JSON values = JSON::array();
+            bool valid = margins.children.size() == 5;
+
+            for( size_t marginIndex = 1; marginIndex < margins.children.size(); ++marginIndex )
+            {
+                std::string valueText;
+                int64_t value = 0;
+
+                if( !scalarText( aDocument, margins.children[marginIndex], valueText )
+                    || !parseDistance( valueText, value ) || value < 0
+                    || value > 2'000'000'000 )
+                {
+                    valid = false;
+                }
+
+                values.push_back( value );
+            }
+
+            if( !valid )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_margins",
+                            "text_box margins requires left, top, right, and bottom distances from 0 to 2 m" );
+            }
+            else
+            {
+                textBox["margins"] = { { "leftNm", values[0] }, { "topNm", values[1] },
+                                         { "rightNm", values[2] },
+                                         { "bottomNm", values[3] } };
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string rotation;
+            double degrees = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, rotation )
+                || !parseFiniteDecimal( rotation, degrees, "deg" )
+                || degrees < 0.0 || degrees >= 360.0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_rotation",
+                            "text_box rotation requires an angle from 0deg through less than 360deg" );
+            }
+            else
+            {
+                textBox["rotationDegrees"] = degrees;
+            }
+
+            continue;
+        }
+
+        if( head == "stroke" )
+        {
+            const DOCUMENT::NODE& stroke = aDocument.Nodes()[child];
+            std::string widthText;
+            std::string lineStyle;
+            std::string colorText;
+            int64_t width = 0;
+            JSON color;
+            static const std::set<std::string> STYLES = {
+                "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+            };
+
+            if( stroke.children.size() != 4
+                || !scalarText( aDocument, stroke.children[1], widthText )
+                || !scalarText( aDocument, stroke.children[2], lineStyle )
+                || !scalarText( aDocument, stroke.children[3], colorText )
+                || !STYLES.contains( lineStyle )
+                || ( widthText != "none" && widthText != "default"
+                     && ( !parseDistance( widthText, width ) || width < 10'000
+                          || width > 10'000'000 ) )
+                || ( colorText != "default" && !parseHexColor( colorText, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_stroke",
+                            "text_box stroke requires none, default, or 0.01 mm through 10 mm; a native line style; and default or #RRGGBB[AA] color" );
+            }
+            else
+            {
+                JSON nativeColor = nullptr;
+
+                if( colorText != "default" )
+                {
+                    nativeColor = {
+                        { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                        { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                        { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                        { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                    };
+                }
+
+                textBox["stroke"] = {
+                    { "widthNm", widthText == "none" ? -1
+                                                       : widthText == "default" ? 0 : width },
+                    { "lineStyle", lineStyle },
+                    { "color", std::move( nativeColor ) }
+                };
+            }
+
+            continue;
+        }
+
+        if( head == "fill" )
+        {
+            const DOCUMENT::NODE& fill = aDocument.Nodes()[child];
+            std::string fillType;
+            std::string colorText;
+            JSON color;
+            static const std::set<std::string> TYPES = {
+                "none", "outline", "background", "color", "hatch", "reverse_hatch",
+                "cross_hatch"
+            };
+
+            if( fill.children.size() != 3
+                || !scalarText( aDocument, fill.children[1], fillType )
+                || !scalarText( aDocument, fill.children[2], colorText )
+                || !TYPES.contains( fillType )
+                || ( ( fillType == "color" || fillType == "hatch"
+                       || fillType == "reverse_hatch" || fillType == "cross_hatch" )
+                             ? !parseHexColor( colorText, color )
+                             : colorText != "default" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_fill",
+                            "text_box fill requires none|outline|background with default, or color|hatch|reverse_hatch|cross_hatch with #RRGGBB[AA]" );
+            }
+            else
+            {
+                JSON nativeColor = nullptr;
+
+                if( colorText != "default" )
+                {
+                    nativeColor = {
+                        { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                        { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                        { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                        { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                    };
+                }
+
+                textBox["fill"] = { { "type", fillType },
+                                      { "color", std::move( nativeColor ) } };
+            }
+
+            continue;
+        }
+
+        if( head == "font" )
+        {
+            std::string font;
+
+            if( !parseSingleValueForm( aDocument, child, font ) || font.empty()
+                || font.size() > MAX_FONT_NAME_BYTES
+                || font.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_font",
+                            "text_box font requires stroke or a name up to 256 UTF-8 bytes" );
+            }
+            else
+            {
+                textBox["font"] = font;
+            }
+
+            continue;
+        }
+
+        if( head == "line_spacing" )
+        {
+            std::string spacingText;
+            double spacing = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, spacingText )
+                || !parseFiniteDecimal( spacingText, spacing, "" )
+                || spacing < 0.5 || spacing > 5.0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_line_spacing",
+                            "text_box line_spacing requires a finite value from 0.5 through 5" );
+            }
+            else
+            {
+                textBox["lineSpacing"] = spacing;
+            }
+
+            continue;
+        }
+
+        if( head == "thickness" )
+        {
+            std::string thicknessText;
+            int64_t thickness = 0;
+
+            if( !parseSingleValueForm( aDocument, child, thicknessText )
+                || ( thicknessText != "auto"
+                     && ( !parseDistance( thicknessText, thickness ) || thickness < 10'000
+                          || thickness > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_thickness",
+                            "text_box thickness requires auto or 0.01 mm through 10 mm" );
+            }
+            else
+            {
+                textBox["thicknessNm"] = thicknessText == "auto" ? 0 : thickness;
+            }
+
+            continue;
+        }
+
+        if( head == "color" )
+        {
+            std::string colorText;
+            JSON color;
+
+            if( !parseSingleValueForm( aDocument, child, colorText )
+                || ( colorText != "default" && !parseHexColor( colorText, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_color",
+                            "text_box color requires default or #RRGGBB[AA]" );
+            }
+            else if( colorText == "default" )
+            {
+                textBox["color"] = nullptr;
+            }
+            else
+            {
+                textBox["color"] = {
+                    { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                    { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                    { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                    { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                };
+            }
+
+            continue;
+        }
+
+        if( head == "justify" )
+        {
+            const DOCUMENT::NODE& justify = aDocument.Nodes()[child];
+            std::string horizontal;
+            std::string vertical;
+
+            if( justify.children.size() != 3
+                || !scalarText( aDocument, justify.children[1], horizontal )
+                || !scalarText( aDocument, justify.children[2], vertical )
+                || ( horizontal != "left" && horizontal != "center"
+                     && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_justify",
+                            "text_box justify requires left|center|right and top|center|bottom" );
+            }
+            else
+            {
+                textBox["justify"] = { { "horizontal", horizontal },
+                                        { "vertical", vertical } };
+            }
+
+            continue;
+        }
+
+        if( head == "hyperlink" )
+        {
+            std::string hyperlink;
+
+            if( !parseSingleValueForm( aDocument, child, hyperlink )
+                || hyperlink.size() > MAX_HYPERLINK_BYTES
+                || hyperlink.find( '\0' ) != std::string::npos
+                || hyperlink.find( '\r' ) != std::string::npos
+                || hyperlink.find( '\n' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_hyperlink",
+                            "text_box hyperlink requires none or one line up to 2048 UTF-8 bytes" );
+            }
+            else
+            {
+                textBox["hyperlink"] = hyperlink == "none" ? "" : hyperlink;
+            }
+
+            continue;
+        }
+
+        if( head == "exclude_from_sim" || head == "mirror" || head == "bold"
+            || head == "italic" )
+        {
+            std::string boolean;
+
+            if( !parseSingleValueForm( aDocument, child, boolean )
+                || ( boolean != "true" && boolean != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_text_box_" + head,
+                            "text_box " + head + " must be true or false" );
+            }
+            else
+            {
+                textBox[head] = boolean == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_text_box_field",
+                    "text_box supports id, sheet, at, rotation, box_size, margins, exclude_from_sim, stroke, fill, text_size, font, line_spacing, thickness, color, justify, mirror, bold, italic, and hyperlink" );
+    }
+
+    for( const char* required : { "id", "sheet", "position", "rotationDegrees", "boxSize",
+                                  "margins", "exclude_from_sim", "stroke", "fill", "size",
+                                  "font", "lineSpacing", "thicknessNm", "color", "justify",
+                                  "mirror", "bold", "italic", "hyperlink" } )
+    {
+        if( !textBox.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_text_box_field",
+                        "text_box is missing " + std::string( required ) );
+        }
+    }
+
+    if( textBox.contains( "position" ) && textBox.contains( "boxSize" ) )
+    {
+        const int64_t right = textBox["position"]["xNm"].get<int64_t>()
+                              + textBox["boxSize"]["xNm"].get<int64_t>();
+        const int64_t bottom = textBox["position"]["yNm"].get<int64_t>()
+                               + textBox["boxSize"]["yNm"].get<int64_t>();
+
+        if( right > 2'000'000'000 || bottom > 2'000'000'000 )
+        {
+            diagnostic( aResult, "error", "invalid_schematic_text_box_extent",
+                        "text_box at plus box_size must remain within the 2 m schematic coordinate range" );
+        }
+    }
+
+    return textBox;
+}
+
+
 JSON compileSchematicBusAlias( const DOCUMENT& aDocument, size_t aNode,
                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -4031,6 +4445,15 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(color default|#RRGGBB[AA]) "
                       "(justify left|center|right top|center|bottom) (mirror BOOL) "
                       "(bold BOOL) (italic BOOL) (hyperlink none|TEXT))" } },
+                  { { "form",
+                      "(text_box CONTENT (id ID) (sheet ID) (at X Y) (rotation ANGLE) "
+                      "(box_size W H) (margins LEFT TOP RIGHT BOTTOM) "
+                      "(exclude_from_sim BOOL) (stroke none|default|WIDTH STYLE COLOR) "
+                      "(fill TYPE COLOR) (text_size W H) (font stroke|NAME) "
+                      "(line_spacing NUMBER) (thickness auto|SIZE) "
+                      "(color default|#RRGGBB[AA]) "
+                      "(justify left|center|right top|center|bottom) (mirror BOOL) "
+                      "(bold BOOL) (italic BOOL) (hyperlink none|TEXT))" } },
                   { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
@@ -4394,6 +4817,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "text" )
         {
             JSON drawing = compileSchematicText( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "text_box" )
+        {
+            JSON drawing = compileSchematicTextBox( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )

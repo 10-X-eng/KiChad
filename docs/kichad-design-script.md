@@ -577,8 +577,42 @@ thickness, `default` or RGBA color, horizontal/vertical justification, mirror, b
 `none` or a single-line hyperlink are all required. The compiler rejects duplicate or ignored
 fields rather than inventing rendering defaults. Text lowers to KiCad 10's native `text` item with
 a stable UUID and participates in the same idempotent reconcile, removal, native-loader gate, and
-rollback journal. The broader `schematic.text_graphics` facet remains `partial` until text boxes,
-shapes/curves, images, and tables are represented.
+rollback journal.
+
+Top-level schematic text boxes extend that same text contract with an explicit rectangular
+container:
+
+```scheme
+(text_box "AI-readable constraint summary\nwith bounded context"
+  (id analog-constraint-summary)
+  (sheet analog)
+  (at 80mm 60mm)
+  (rotation 22.5deg)
+  (box_size 30mm 12mm)
+  (margins 0.5mm 0.75mm 1mm 1.25mm)
+  (exclude_from_sim false)
+  (stroke 0.3mm dash_dot #10203080)
+  (fill cross_hatch #40506099)
+  (text_size 1.2mm 1.5mm)
+  (font "DejaVu Sans")
+  (line_spacing 1.25)
+  (thickness 0.2mm)
+  (color #708090cc)
+  (justify left top)
+  (mirror false)
+  (bold true)
+  (italic false)
+  (hyperlink "https://example.com/constraint-summary"))
+```
+
+`box_size` is independent of `text_size`, and `margins` always names left, top, right, then bottom.
+Stroke width is `none` for KiCad's preserved hidden-border state, `default` for native zero-width
+policy, or a physical width; line style and border color remain explicit in every case. Fill covers
+all seven native modes: `none`, `outline`, and `background` pair with `default`, while `color`,
+`hatch`, `reverse_hatch`, and `cross_hatch` require RGBA. The compiler bounds the box extent before
+planning, and the stable UUID participates in the same guarded reconciliation and rollback path as
+free text. The broader `schematic.text_graphics` facet remains `partial` until shapes/curves,
+images, tables, and table cells are represented.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are

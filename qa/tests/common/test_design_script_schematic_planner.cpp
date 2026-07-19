@@ -248,6 +248,15 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     (line_spacing 1.25) (thickness 0.2mm) (color #11223380)
     (justify right top) (mirror true) (bold true) (italic true)
     (hyperlink "https://example.com/design-note"))
+  (text_box "AI constraint summary\nwith bounded context"
+    (id constraint-summary) (sheet root) (at 100mm 60mm) (rotation 22.5deg)
+    (box_size 30mm 12mm) (margins 0.5mm 0.75mm 1mm 1.25mm)
+    (exclude_from_sim false) (stroke 0.3mm dash_dot #10203080)
+    (fill cross_hatch #40506099)
+    (text_size 1.3mm 1.7mm) (font "DejaVu Sans")
+    (line_spacing 1.25) (thickness 0.2mm) (color #708090cc)
+    (justify left top) (mirror true) (bold true) (italic true)
+    (hyperlink "https://example.com/constraint-summary"))
   (bus_alias SIGNALS (sheet root) (members SIGNAL))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -284,7 +293,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_EQUAL( plan.counts["components"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( plan.counts["netEndpoints"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["noConnects"].get<int>(), 1 );
-    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 6 );
+    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 7 );
     BOOST_CHECK_EQUAL( plan.counts["busAliases"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["librarySymbols"].get<int>(), 1 );
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
@@ -305,7 +314,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(label \"SIGNAL\"" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(global_label \"SIGNAL\"\n    (shape output)" ),
                     std::string::npos );
-    BOOST_CHECK_NE( native.find( "(size 1.5 1.2)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 1.2 1.5)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(thickness 0.2)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(bold yes)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(italic yes)" ), std::string::npos );
@@ -332,10 +341,22 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(exclude_from_sim yes)\n    (at 25 35 15.5)" ),
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(face \"DejaVu Sans\")" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 1.5 1.2)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(line_spacing 1.25)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(color 17 34 51 0.50196078)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(justify right top mirror)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(href \"https://example.com/design-note\")" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(text_box \"AI constraint summary\\nwith bounded context\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(at 100 60 22.5)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 30 12)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(margins 0.5 0.75 1 1.25)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 1.7 1.3)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(width 0.3)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(type cross_hatch)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(color 112 128 144 0.8)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(href \"https://example.com/constraint-summary\")" ),
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
                     std::string::npos );

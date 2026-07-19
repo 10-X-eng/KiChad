@@ -587,8 +587,8 @@ std::string labelExpression( const JSON& aDrawing, const std::string& aNativeKin
            << aDrawing.at( "rotationDegrees" ).get<int>() << ")\n"
            << "    (effects\n"
            << "      (font\n"
-           << "        (size " << millimetres( size.at( "xNm" ).get<int64_t>() ) << ' '
-           << millimetres( size.at( "yNm" ).get<int64_t>() ) << ")\n";
+           << "        (size " << millimetres( size.at( "yNm" ).get<int64_t>() ) << ' '
+           << millimetres( size.at( "xNm" ).get<int64_t>() ) << ")\n";
 
     if( thickness != 0 )
         output << "        (thickness " << millimetres( thickness ) << ")\n";
@@ -676,69 +676,124 @@ std::string ruleAreaExpression( const JSON& aDrawing, const std::string& aUuid )
 }
 
 
-std::string textExpression( const JSON& aDrawing, const std::string& aUuid )
+void appendSchematicTextEffects( std::ostringstream& aOutput, const JSON& aDrawing,
+                                 const std::string& aIndent )
 {
-    const JSON& position = aDrawing.at( "position" );
     const JSON& size = aDrawing.at( "size" );
     const JSON& justify = aDrawing.at( "justify" );
     const std::string horizontal = justify.at( "horizontal" ).get<std::string>();
     const std::string vertical = justify.at( "vertical" ).get<std::string>();
     const int64_t thickness = aDrawing.at( "thicknessNm" ).get<int64_t>();
+    aOutput << aIndent << "(effects\n"
+            << aIndent << "  (font\n";
+
+    if( aDrawing.at( "font" ).get<std::string>() != "stroke" )
+    {
+        aOutput << aIndent << "    (face "
+                << quoted( aDrawing.at( "font" ).get<std::string>() ) << ")\n";
+    }
+
+    aOutput << aIndent << "    (size " << millimetres( size.at( "yNm" ).get<int64_t>() )
+            << ' ' << millimetres( size.at( "xNm" ).get<int64_t>() ) << ")\n"
+            << aIndent << "    (line_spacing "
+            << finiteDecimal( aDrawing.at( "lineSpacing" ).get<double>() ) << ")\n";
+
+    if( thickness != 0 )
+        aOutput << aIndent << "    (thickness " << millimetres( thickness ) << ")\n";
+
+    if( aDrawing.at( "bold" ).get<bool>() )
+        aOutput << aIndent << "    (bold yes)\n";
+
+    if( aDrawing.at( "italic" ).get<bool>() )
+        aOutput << aIndent << "    (italic yes)\n";
+
+    if( !aDrawing.at( "color" ).is_null() )
+        appendSchematicColor( aOutput, aDrawing.at( "color" ), aIndent + "    " );
+
+    aOutput << aIndent << "  )\n";
+
+    if( horizontal != "center" || vertical != "center"
+        || aDrawing.at( "mirror" ).get<bool>() )
+    {
+        aOutput << aIndent << "  (justify";
+
+        if( horizontal != "center" )
+            aOutput << ' ' << horizontal;
+
+        if( vertical != "center" )
+            aOutput << ' ' << vertical;
+
+        if( aDrawing.at( "mirror" ).get<bool>() )
+            aOutput << " mirror";
+
+        aOutput << ")\n";
+    }
+
+    if( !aDrawing.at( "hyperlink" ).get<std::string>().empty() )
+    {
+        aOutput << aIndent << "  (href "
+                << quoted( aDrawing.at( "hyperlink" ).get<std::string>() ) << ")\n";
+    }
+
+    aOutput << aIndent << ")\n";
+}
+
+
+std::string textExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
     std::ostringstream output;
     output << "(text " << quoted( aDrawing.at( "content" ).get<std::string>() ) << "\n"
            << "    (exclude_from_sim "
            << ( aDrawing.at( "exclude_from_sim" ).get<bool>() ? "yes" : "no" ) << ")\n"
            << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
            << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
+           << finiteDecimal( aDrawing.at( "rotationDegrees" ).get<double>() ) << ")\n";
+    appendSchematicTextEffects( output, aDrawing, "    " );
+    output << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
+std::string textBoxExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    const JSON& boxSize = aDrawing.at( "boxSize" );
+    const JSON& margins = aDrawing.at( "margins" );
+    const JSON& stroke = aDrawing.at( "stroke" );
+    const JSON& fill = aDrawing.at( "fill" );
+    std::ostringstream output;
+    output << "(text_box " << quoted( aDrawing.at( "content" ).get<std::string>() ) << "\n"
+           << "    (exclude_from_sim "
+           << ( aDrawing.at( "exclude_from_sim" ).get<bool>() ? "yes" : "no" ) << ")\n"
+           << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
            << finiteDecimal( aDrawing.at( "rotationDegrees" ).get<double>() ) << ")\n"
-           << "    (effects\n"
-           << "      (font\n";
+           << "    (size " << millimetres( boxSize.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( boxSize.at( "yNm" ).get<int64_t>() ) << ")\n"
+           << "    (margins " << millimetres( margins.at( "leftNm" ).get<int64_t>() )
+           << ' ' << millimetres( margins.at( "topNm" ).get<int64_t>() ) << ' '
+           << millimetres( margins.at( "rightNm" ).get<int64_t>() ) << ' '
+           << millimetres( margins.at( "bottomNm" ).get<int64_t>() ) << ")\n"
+           << "    (stroke\n"
+           << "      (width " << millimetres( stroke.at( "widthNm" ).get<int64_t>() )
+           << ")\n"
+           << "      (type " << stroke.at( "lineStyle" ).get<std::string>() << ")\n";
 
-    if( aDrawing.at( "font" ).get<std::string>() != "stroke" )
-        output << "        (face " << quoted( aDrawing.at( "font" ).get<std::string>() ) << ")\n";
-
-    output << "        (size " << millimetres( size.at( "xNm" ).get<int64_t>() ) << ' '
-           << millimetres( size.at( "yNm" ).get<int64_t>() ) << ")\n"
-           << "        (line_spacing "
-           << finiteDecimal( aDrawing.at( "lineSpacing" ).get<double>() ) << ")\n";
-
-    if( thickness != 0 )
-        output << "        (thickness " << millimetres( thickness ) << ")\n";
-
-    if( aDrawing.at( "bold" ).get<bool>() )
-        output << "        (bold yes)\n";
-
-    if( aDrawing.at( "italic" ).get<bool>() )
-        output << "        (italic yes)\n";
-
-    if( !aDrawing.at( "color" ).is_null() )
-        appendSchematicColor( output, aDrawing.at( "color" ), "        " );
-
-    output << "      )\n";
-
-    if( horizontal != "center" || vertical != "center"
-        || aDrawing.at( "mirror" ).get<bool>() )
-    {
-        output << "      (justify";
-
-        if( horizontal != "center" )
-            output << ' ' << horizontal;
-
-        if( vertical != "center" )
-            output << ' ' << vertical;
-
-        if( aDrawing.at( "mirror" ).get<bool>() )
-            output << " mirror";
-
-        output << ")\n";
-    }
-
-    if( !aDrawing.at( "hyperlink" ).get<std::string>().empty() )
-        output << "      (href " << quoted( aDrawing.at( "hyperlink" ).get<std::string>() )
-               << ")\n";
+    if( !stroke.at( "color" ).is_null() )
+        appendSchematicColor( output, stroke.at( "color" ), "      " );
 
     output << "    )\n"
-           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "    (fill\n"
+           << "      (type " << fill.at( "type" ).get<std::string>() << ")\n";
+
+    if( !fill.at( "color" ).is_null() )
+        appendSchematicColor( output, fill.at( "color" ), "      " );
+
+    output << "    )\n";
+    appendSchematicTextEffects( output, aDrawing, "    " );
+    output << "    (uuid " << quoted( aUuid ) << ")\n"
            << "  )";
     return output.str();
 }
@@ -764,8 +819,8 @@ std::string directivePropertyExpression( const JSON& aProperty )
 
     output << "      (effects\n"
            << "        (font\n"
-           << "          (size " << millimetres( size.at( "xNm" ).get<int64_t>() ) << ' '
-           << millimetres( size.at( "yNm" ).get<int64_t>() ) << ")\n";
+           << "          (size " << millimetres( size.at( "yNm" ).get<int64_t>() ) << ' '
+           << millimetres( size.at( "xNm" ).get<int64_t>() ) << ")\n";
 
     if( thickness != 0 )
         output << "          (thickness " << millimetres( thickness ) << ")\n";
@@ -910,6 +965,52 @@ bool validBusAliasShape( const JSON& aAlias )
 }
 
 
+bool validSchematicColorShape( const JSON& aColor )
+{
+    if( aColor.is_null() )
+        return true;
+
+    if( !aColor.is_object() )
+        return false;
+
+    for( const char* channel : { "r", "g", "b", "a" } )
+    {
+        if( !aColor.contains( channel ) || !aColor[channel].is_number_integer()
+            || aColor[channel].get<int>() < 0 || aColor[channel].get<int>() > 255 )
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool validSchematicTextEffectsShape( const JSON& aDrawing )
+{
+    return aDrawing.contains( "size" ) && aDrawing["size"].is_object()
+           && aDrawing["size"].contains( "xNm" )
+           && aDrawing["size"]["xNm"].is_number_integer()
+           && aDrawing["size"].contains( "yNm" )
+           && aDrawing["size"]["yNm"].is_number_integer()
+           && aDrawing.contains( "font" ) && aDrawing["font"].is_string()
+           && aDrawing.contains( "lineSpacing" ) && aDrawing["lineSpacing"].is_number()
+           && aDrawing.contains( "thicknessNm" )
+           && aDrawing["thicknessNm"].is_number_integer()
+           && aDrawing.contains( "color" )
+           && validSchematicColorShape( aDrawing["color"] )
+           && aDrawing.contains( "justify" ) && aDrawing["justify"].is_object()
+           && aDrawing["justify"].contains( "horizontal" )
+           && aDrawing["justify"]["horizontal"].is_string()
+           && aDrawing["justify"].contains( "vertical" )
+           && aDrawing["justify"]["vertical"].is_string()
+           && aDrawing.contains( "mirror" ) && aDrawing["mirror"].is_boolean()
+           && aDrawing.contains( "bold" ) && aDrawing["bold"].is_boolean()
+           && aDrawing.contains( "italic" ) && aDrawing["italic"].is_boolean()
+           && aDrawing.contains( "hyperlink" ) && aDrawing["hyperlink"].is_string();
+}
+
+
 bool validDrawingShape( const JSON& aDrawing )
 {
     if( !aDrawing.is_object() || !aDrawing.contains( "kind" )
@@ -1002,6 +1103,62 @@ bool validDrawingShape( const JSON& aDrawing )
                     return false;
                 }
             }
+        }
+
+        return true;
+    }
+
+    if( kind == "text_box" )
+    {
+        static const std::set<std::string> LINE_STYLES = {
+            "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+        };
+        static const std::set<std::string> FILL_TYPES = {
+            "none", "outline", "background", "color", "hatch", "reverse_hatch",
+            "cross_hatch"
+        };
+
+        if( !aDrawing.contains( "content" ) || !aDrawing["content"].is_string()
+            || !aDrawing.contains( "position" ) || !aDrawing["position"].is_object()
+            || !aDrawing["position"].contains( "xNm" )
+            || !aDrawing["position"]["xNm"].is_number_integer()
+            || !aDrawing["position"].contains( "yNm" )
+            || !aDrawing["position"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "rotationDegrees" )
+            || !aDrawing["rotationDegrees"].is_number()
+            || !aDrawing.contains( "exclude_from_sim" )
+            || !aDrawing["exclude_from_sim"].is_boolean()
+            || !aDrawing.contains( "boxSize" ) || !aDrawing["boxSize"].is_object()
+            || !aDrawing["boxSize"].contains( "xNm" )
+            || !aDrawing["boxSize"]["xNm"].is_number_integer()
+            || !aDrawing["boxSize"].contains( "yNm" )
+            || !aDrawing["boxSize"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "margins" ) || !aDrawing["margins"].is_object()
+            || !aDrawing["margins"].contains( "leftNm" )
+            || !aDrawing["margins"]["leftNm"].is_number_integer()
+            || !aDrawing["margins"].contains( "topNm" )
+            || !aDrawing["margins"]["topNm"].is_number_integer()
+            || !aDrawing["margins"].contains( "rightNm" )
+            || !aDrawing["margins"]["rightNm"].is_number_integer()
+            || !aDrawing["margins"].contains( "bottomNm" )
+            || !aDrawing["margins"]["bottomNm"].is_number_integer()
+            || !aDrawing.contains( "stroke" ) || !aDrawing["stroke"].is_object()
+            || !aDrawing["stroke"].contains( "widthNm" )
+            || !aDrawing["stroke"]["widthNm"].is_number_integer()
+            || !aDrawing["stroke"].contains( "lineStyle" )
+            || !aDrawing["stroke"]["lineStyle"].is_string()
+            || !LINE_STYLES.contains( aDrawing["stroke"]["lineStyle"].get<std::string>() )
+            || !aDrawing["stroke"].contains( "color" )
+            || !validSchematicColorShape( aDrawing["stroke"]["color"] )
+            || !aDrawing.contains( "fill" ) || !aDrawing["fill"].is_object()
+            || !aDrawing["fill"].contains( "type" )
+            || !aDrawing["fill"]["type"].is_string()
+            || !FILL_TYPES.contains( aDrawing["fill"]["type"].get<std::string>() )
+            || !aDrawing["fill"].contains( "color" )
+            || !validSchematicColorShape( aDrawing["fill"]["color"] )
+            || !validSchematicTextEffectsShape( aDrawing ) )
+        {
+            return false;
         }
 
         return true;
@@ -1623,6 +1780,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                            ? directiveExpression( drawing, uuid )
                                    : kind == "text"
                                            ? textExpression( drawing, uuid )
+                                   : kind == "text_box"
+                                           ? textBoxExpression( drawing, uuid )
                                    : kind == "rule_area"
                                            ? ruleAreaExpression( drawing, uuid )
                                            : schematicLineExpression( drawing, uuid );

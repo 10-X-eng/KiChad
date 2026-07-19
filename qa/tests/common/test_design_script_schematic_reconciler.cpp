@@ -414,6 +414,7 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectDrawingsByStableUuid )
     const std::string ruleUuid = "11111111-2222-4333-8444-55555555a2ea";
     const std::string uuid = "11111111-2222-4333-8444-55555555d1ec";
     const std::string textUuid = "11111111-2222-4333-8444-555555557e57";
+    const std::string textBoxUuid = "11111111-2222-4333-8444-555555557b07";
     const nlohmann::json ruleArea = {
         { "file", "hierarchy.kicad_sch" },
         { "kind", "rule_area" },
@@ -446,6 +447,17 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectDrawingsByStableUuid )
           "(text \"AI note\" (exclude_from_sim no) (at 25 35 0) "
           "(effects (font (size 1.27 1.27))) (uuid \"" + textUuid + "\"))" }
     };
+    const nlohmann::json textBox = {
+        { "file", "hierarchy.kicad_sch" },
+        { "kind", "text_box" },
+        { "logicalId", "constraint-summary" },
+        { "uuid", textBoxUuid },
+        { "source",
+          "(text_box \"AI constraints\" (exclude_from_sim no) (at 60 60 0) "
+          "(size 20 10) (margins 0.5 0.5 0.5 0.5) "
+          "(stroke (width 0.2) (type solid)) (fill (type none)) "
+          "(effects (font (size 1.27 1.27))) (uuid \"" + textBoxUuid + "\"))" }
+    };
     auto rootFile = std::find_if(
             operation["files"].begin(), operation["files"].end(),
             []( const nlohmann::json& aFile )
@@ -456,13 +468,15 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectDrawingsByStableUuid )
     ( *rootFile )["items"].push_back( ruleArea );
     ( *rootFile )["items"].push_back( directive );
     ( *rootFile )["items"].push_back( text );
+    ( *rootFile )["items"].push_back( textBox );
     std::string newDocument = ( *rootFile )["newDocumentSource"];
     const size_t insertion = newDocument.find( "  (sheet_instances" );
     BOOST_REQUIRE_NE( insertion, std::string::npos );
     newDocument.insert( insertion,
                         "  " + ruleArea["source"].get<std::string>() + "\n  "
                                 + directive["source"].get<std::string>() + "\n  "
-                                + text["source"].get<std::string>() + "\n" );
+                                + text["source"].get<std::string>() + "\n  "
+                                + textBox["source"].get<std::string>() + "\n" );
     ( *rootFile )["newDocumentSource"] = newDocument;
     nlohmann::json ruleOwnership = ruleArea;
     ruleOwnership.erase( "source" );
@@ -473,6 +487,9 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectDrawingsByStableUuid )
     nlohmann::json textOwnership = text;
     textOwnership.erase( "source" );
     operation["managedItems"].push_back( textOwnership );
+    nlohmann::json textBoxOwnership = textBox;
+    textBoxOwnership.erase( "source" );
+    operation["managedItems"].push_back( textBoxOwnership );
     const nlohmann::json absent = {
         { { "path", "hierarchy.kicad_sch" }, { "present", false } },
         { { "path", "power.kicad_sch" }, { "present", false } }
@@ -499,6 +516,8 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectDrawingsByStableUuid )
     BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( uuid ),
                     std::string::npos );
     BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( textUuid ),
+                    std::string::npos );
+    BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( textBoxUuid ),
                     std::string::npos );
 
     nlohmann::json installed = nlohmann::json::array();

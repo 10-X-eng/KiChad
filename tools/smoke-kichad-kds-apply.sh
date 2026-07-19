@@ -154,6 +154,17 @@ for attempt in $(seq 1 30); do
         grep -Fq '(justify right top mirror)' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(href "https://github.com/10-X-eng/KiChad")' \
             "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(text_box "AI-readable constraint summary\nwith bounded context"' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(at 125 70 22.5)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(size 30 12)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(margins 0.5 0.75 1 1.25)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(size 1.7 1.3)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(width -0.000001)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(type cross_hatch)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(color 112 128 144 0.8)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(href "https://github.com/10-X-eng/KiChad/issues")' \
+            "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"

@@ -1655,6 +1655,53 @@ BOOST_AUTO_TEST_CASE( CompilesCompleteStableSchematicFreeText )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesCompleteStableSchematicTextBox )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_text_box)
+  (sheet root (parent none) (file "schematic_text_box.kicad_sch") (title "Text Box"))
+  (text_box "AI constraint summary\nwith bounded context"
+    (id constraint-summary) (sheet root) (at 25mm 35mm) (rotation 22.5deg)
+    (box_size 30mm 12mm) (margins 0.5mm 0.75mm 1mm 1.25mm)
+    (exclude_from_sim false) (stroke none dash_dot #10203080)
+    (fill cross_hatch #40506099)
+    (text_size 1.2mm 1.5mm) (font "DejaVu Sans")
+    (line_spacing 1.25) (thickness 0.2mm) (color #708090cc)
+    (justify left top) (mirror true) (bold true) (italic true)
+    (hyperlink "https://example.com/constraint-summary"))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& textBox = result.ir["schematic"]["drawings"][0];
+    BOOST_CHECK_EQUAL( textBox["kind"], "text_box" );
+    BOOST_CHECK_EQUAL( textBox["id"], "constraint-summary" );
+    BOOST_CHECK_EQUAL( textBox["content"], "AI constraint summary\nwith bounded context" );
+    BOOST_CHECK_CLOSE( textBox["rotationDegrees"].get<double>(), 22.5, 0.000001 );
+    BOOST_CHECK_EQUAL( textBox["boxSize"]["xNm"], 30000000 );
+    BOOST_CHECK_EQUAL( textBox["margins"]["bottomNm"], 1250000 );
+    BOOST_CHECK_EQUAL( textBox["stroke"]["widthNm"], -1 );
+    BOOST_CHECK_EQUAL( textBox["stroke"]["lineStyle"], "dash_dot" );
+    BOOST_CHECK_EQUAL( textBox["stroke"]["color"]["a"], 128 );
+    BOOST_CHECK_EQUAL( textBox["fill"]["type"], "cross_hatch" );
+    BOOST_CHECK_EQUAL( textBox["fill"]["color"]["a"], 153 );
+    BOOST_CHECK_EQUAL( textBox["size"]["yNm"], 1500000 );
+    BOOST_CHECK_EQUAL( textBox["color"]["a"], 204 );
+    BOOST_CHECK( textBox["mirror"].get<bool>() );
+    BOOST_CHECK( textBox["bold"].get<bool>() );
+    BOOST_CHECK( textBox["italic"].get<bool>() );
+
+    std::string invalid = program;
+    const size_t position = invalid.find( "25mm 35mm" );
+    BOOST_REQUIRE_NE( position, std::string::npos );
+    invalid.replace( position, 9, "1990mm 35mm" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "invalid_schematic_text_box_extent" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design
