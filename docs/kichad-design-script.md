@@ -249,6 +249,48 @@ through ninety days with `maxAgeDays`. The gate checks the cached facts determin
 not silently access the network or claim that a saved URL still has the same content. Codex must
 refresh the form with live web search before treating stale evidence as production-ready.
 
+### Fabrication export
+
+KDS output declarations feed one production implementation profile,
+`kichad-production-10.0.4-v1`; there is no second job-file or output-profile representation. A
+production-ready plan requires all of the following declarations in the same sidecar:
+
+```scheme
+(check erc)
+(check drc)
+(check sourcing)
+(check fabrication)
+(output gerbers)
+(output drill)
+(output pick_place)
+(output bom)
+; optional: (output step)
+; optional: (output pdf)
+```
+
+The KDS project name, root schematic stem, and board stem must match, and the explicit KDS stackup
+selects every copper, solder-mask, solder-paste, and silkscreen production layer; `Edge.Cuts` is
+always added. `fabricate.plan` is read-only. `fabricate.export` additionally requires the exact
+compiled KDS SHA-256, a complete pre-turn project snapshot, and visible final confirmation from the
+KiChad host. The plan rejects a native board whose enabled plot layers, ordered physical stack,
+thicknesses, materials, dielectric properties/locks, finish, impedance, edge-connector, or plating
+policy differs from compiled KDS. Only KiCad 10.0.4 board format `20260206` and schematic format
+`20260306` are accepted.
+
+Export copies the required project inputs and local 3D models into a bounded private snapshot before
+running the real sibling KiCad CLI. Native ERC and DRC (including schematic parity) and the KDS
+sourcing gate must be clean. Exclusions or ignored checks stop release unless the user explicitly
+approves waivers and `allowWaivers` is set; the manifest then records release status `waived` rather
+than `clean`.
+
+The output is one project-side `fabrication/` directory containing Gerber layer files and a Gerber
+job, Excellon drill files plus PDF maps and report, placement CSV, a BOM derived directly from KDS
+sourcing forms, optional STEP/PDF files, and `manifest.json`. KiChad bounds and signature-validates
+every artifact, records exact byte counts and SHA-256 values, and installs the complete directory
+atomically. A gate, exporter, validation, stale-input, manifest, or installation failure leaves the
+previous fabrication directory intact. Native KiCad creation timestamps are preserved, so separate
+exports may have different artifact hashes even when their KDS and native design inputs are equal.
+
 ### Schematic hierarchy
 
 KDS has one explicit hierarchy representation. Every declared hierarchy has exactly one root sheet;
@@ -926,8 +968,9 @@ than an emulated rule checker: ERC must return a clean structured report, while 
 incomplete pre-apply board must return its four DRC violations and one schematic-parity warning in
 the correct categories. The sourcing operation has separate unit coverage against exact KDS source,
 including complete physical coverage, exempt footprintless virtual components, lifecycle, stock,
-freshness, malformed input, and project confinement. KDS `(check ...)` declarations are still
-compiler intent; apply does not yet execute them as an automatic production gate.
+freshness, malformed input, and project confinement. Normal KDS apply does not automatically run
+declared checks; `fabricate.export` is the implemented production boundary that reruns ERC, DRC, and
+sourcing before it generates or installs a package.
 
 ## Production support rule
 

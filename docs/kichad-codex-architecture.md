@@ -37,7 +37,7 @@ The panel's **Revert turn** action closes open editors through the normal KiCad 
 that exact pre-turn state.  If a snapshot cannot be established, mutating native tools stay locked;
 read-only conversation and inspection can continue.
 
-The first five advertised native tools are `project`, `inspect`, `design`, `pcb`, and `verify`.
+The six advertised native tools are `project`, `inspect`, `design`, `pcb`, `verify`, and `fabricate`.
 `project` reports the active design context and snapshot gate.  `inspect` parses KiCad 10 schematic,
 board, symbol, and footprint s-expressions in-process and returns structural summaries or bounded
 matching expressions.
@@ -86,6 +86,25 @@ relaxed from one through ninety days in the explicit call. The result uses the s
 shape as ERC/DRC: complete severity counts and a bounded pageable issue list. This deterministic
 gate validates the evidence cached by Codex's live search; it does not claim to re-fetch or
 independently attest third-party web content.
+
+`fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
+project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
+sidecar. The fixed `kichad-production-10.0.4-v1` profile requires explicit stackup intent, ERC, DRC,
+sourcing, and fabrication checks, plus Gerber, drill, placement, and BOM outputs; STEP and PDF are
+optional declarations. Final export requires the pre-turn snapshot and a separate visible host
+confirmation that the model cannot forge in tool arguments. Planning structurally compares the
+native board's enabled production layers and complete ordered stackup—including thicknesses,
+materials, dielectric values/locks, finish, impedance, connector, and plating policy—to compiled
+KDS intent. KiChad copies the bounded verification
+and plotting inputs into a private directory, reruns native ERC/DRC and KDS sourcing there, and
+rejects errors, warnings, stale input, or unapproved ignored-check/exclusion state. It then invokes
+only the exact sibling `kicad-cli`, creates the KDS-sourced BOM, validates expected artifact counts,
+paths, sizes, signatures, Gerber-job structure, and SHA-256 values, and writes a structured manifest.
+The validated staging directory atomically replaces only `fabrication/`; installation failure rolls
+the prior directory back. Private snapshots, logs, and staging are removed on every tested success
+and failure path; a backup-cleanup failure is surfaced as `backupRetained` after a verified install
+instead of deleting the new package. KiCad-generated plot timestamps remain in native outputs and
+are reflected in the per-run hashes rather than normalized away.
 
 `tools/smoke-kichad-live-ipc.sh` provides an explicit, opt-in integration proof against an already
 open disposable board copy.  It creates, commits, field-mask updates, commits, deletes, and commits a
@@ -210,8 +229,9 @@ instead of creating narrowly named one-off tools.
 7. `inspect` — return compact structured design context plus rendered schematic/PCB/3D images.
 8. `verify` — run structured checks. Native ERC, DRC (including schematic parity), and KDS sourcing
    gates are implemented; connectivity and manufacturability gates remain to be added here.
-9. `fabricate` — generate and verify Gerber, drill, position, BOM, and other fabrication outputs
-   behind an explicit final-action permission gate.
+9. `fabricate` — the implemented fixed production profile generates and validates Gerber plus job
+   data, Excellon drill plus maps/report, placement CSV, KDS-sourced BOM, and optional STEP/PDF,
+   behind snapshot, clean-gate, waiver, and explicit final-action permission gates.
 
 The host advertises only implemented tools.  A tool is not exposed with a stub implementation.
 

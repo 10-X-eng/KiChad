@@ -48,6 +48,17 @@ from any other KiCad version, and returns complete counts plus bounded pageable 
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
 
+The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v1` release
+profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
+the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
+Gerber, drill, placement, and BOM intent plus an explicit physical stackup. Export reruns the gates
+and the matching sibling `kicad-cli` from a private bounded project snapshot, so KiCad cannot rewrite
+live local settings while checking or plotting. A visible final-action confirmation is mandatory;
+ignored checks or exclusions also require explicit waiver approval. KiChad validates every native
+artifact, writes a hash manifest, and atomically replaces only `fabrication/`; any failure preserves
+the prior package. Native KiCad plot timestamps are retained, so the manifest records exact bytes
+for each run rather than claiming byte-identical Gerbers across separate runs.
+
 KiChad forces the Codex app-server's built-in web search to live, high-context mode for new and
 resumed project conversations. The embedded agent instructions require current manufacturer,
 datasheet, lifecycle, and distributor evidence before a component can be accepted into a design;
@@ -116,6 +127,12 @@ the real 10.0.4 ERC/DRC JSON contracts and schematic-parity category. Unit cover
 proves the deterministic KDS sourcing gate, including physical-versus-virtual coverage, freshness,
 lifecycle, stock, malformed evidence, and failure paths. It never connects to or stops an existing
 KiChad process.
+
+For the real fabrication integration proof, build `qa_common` and `kicad-cli`, then run
+`tools/smoke-kichad-fabrication.sh --allow-mutation`. The harness uses isolated configuration and a
+disposable copy of the exact current-format fixture, runs native ERC/DRC and every production export,
+checks the installed manifest and artifacts, proves live `.kicad_prl` state is untouched, and removes
+the temporary project afterward.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

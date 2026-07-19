@@ -1,0 +1,14 @@
+{
+  "board": {
+    "design_settings": {
+      "rules": {
+        "min_clearance": 0.0,
+        "min_track_width": 0.0
+      }
+    }
+  },
+  "meta": {
+    "filename": "fabrication_clean.kicad_pro",
+    "version": 1
+  }
+}

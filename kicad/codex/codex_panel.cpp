@@ -17,6 +17,7 @@
 #include <wx/choice.h>
 #include <wx/filename.h>
 #include <wx/intl.h>
+#include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/statline.h>
 #include <wx/stattext.h>
@@ -66,7 +67,10 @@ const char* agentInstructions()
            "Treat the versioned project.kicad_kds KiChad Design Script sidecar as the only "
            "representation of design intent: read and edit the exact KDS source, describe the "
            "language when needed, compile before saving, and use native backends to produce KiCad "
-           "artifacts. Never create or depend on a separate context projection. Never use shell, "
+           "artifacts. Before a final release, call fabricate plan with the exact compiled KDS "
+           "digest and request fabricate export only when its production plan is ready. Never set "
+           "allowWaivers unless the user explicitly approved releasing ignored checks or "
+           "exclusions. Never create or depend on a separate context projection. Never use shell, "
            "arbitrary code execution, GUI automation, MCP, or direct ad-hoc file rewriting.";
 }
 
@@ -637,6 +641,31 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
         wxString  activeProject =
                 m_projectPathProvider ? m_projectPathProvider() : wxString();
         bool mutationAvailable = !m_turnSnapshotHash.IsEmpty();
+        bool finalActionApproved = false;
+
+        if( CODEX_TOOL_REGISTRY::RequiresFinalConfirmation( tool, arguments ) )
+        {
+            wxString confirmationMessage =
+                    _( "Codex is requesting a final fabrication export. KiChad will rerun ERC, "
+                       "DRC, and sourcing gates, then atomically replace the project's "
+                       "fabrication output directory only if every requested artifact validates.\n\n" );
+
+            if( arguments.is_object() && arguments.contains( "allowWaivers" )
+                && arguments["allowWaivers"].is_boolean()
+                && arguments["allowWaivers"].get<bool>() )
+            {
+                confirmationMessage +=
+                        _( "This request also authorizes release when ERC or DRC contains "
+                           "ignored checks or exclusions; the manifest will mark the package "
+                           "as waived.\n\n" );
+            }
+
+            confirmationMessage += _( "Allow this export?" );
+            wxMessageDialog confirmation(
+                    this, confirmationMessage, _( "Confirm fabrication export" ),
+                    wxYES_NO | wxNO_DEFAULT | wxICON_WARNING );
+            finalActionApproved = confirmation.ShowModal() == wxID_YES;
+        }
 
         try
         {
@@ -646,14 +675,16 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
             worker->second = std::thread(
                             [this, taskId, tool = std::move( tool ),
                              arguments = std::move( arguments ),
-                             activeProject = std::move( activeProject ), mutationAvailable]()
+                             activeProject = std::move( activeProject ), mutationAvailable,
+                             finalActionApproved]()
                             {
                                 std::string serialized;
 
                                 try
                                 {
                                     JSON result = m_toolRegistry.HandleWithContext(
-                                            tool, arguments, activeProject, mutationAvailable );
+                                            tool, arguments, activeProject, mutationAvailable,
+                                            wxString(), finalActionApproved );
                                     serialized = result.dump();
                                 }
                                 catch( const std::exception& )

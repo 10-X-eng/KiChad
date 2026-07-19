@@ -27,20 +27,27 @@ public:
     using JSON = nlohmann::json;
     using NATIVE_CHECK_RUNNER = std::function<bool( const std::string&, const wxFileName&,
                                                      std::string&, std::string& )>;
-    static constexpr int SCHEMA_VERSION = 6;
+    using NATIVE_FABRICATION_RUNNER =
+            std::function<bool( const wxFileName&, const JSON&, const wxFileName&,
+                                std::string& )>;
+    static constexpr int SCHEMA_VERSION = 7;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
                                   std::function<wxString()> aIpcSocketDirectoryProvider = {},
                                   std::function<bool( const wxFileName&, std::string& )>
                                           aSchematicValidator = {},
-                                  NATIVE_CHECK_RUNNER aNativeCheckRunner = {} );
+                                  NATIVE_CHECK_RUNNER aNativeCheckRunner = {},
+                                  NATIVE_FABRICATION_RUNNER aNativeFabricationRunner = {} );
 
     JSON Specs() const;
+    static bool RequiresFinalConfirmation( const std::string& aTool,
+                                           const JSON& aArguments );
     JSON Handle( const std::string& aTool, const JSON& aArguments ) const;
     JSON HandleWithContext( const std::string& aTool, const JSON& aArguments,
                             const wxString& aProjectPath, bool aMutationAvailable,
-                            const wxString& aIpcSocketDirectory = wxString() ) const;
+                            const wxString& aIpcSocketDirectory = wxString(),
+                            bool aFinalActionApproved = false ) const;
 
 private:
     JSON handleProject( const JSON& aArguments, const wxString& aProjectPath,
@@ -52,6 +59,8 @@ private:
                     bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
     JSON handleVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON handleSourcingVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
+    JSON handleFabricate( const JSON& aArguments, const wxString& aProjectPath,
+                          bool aMutationAvailable, bool aFinalActionApproved ) const;
     JSON success( const JSON& aPayload ) const;
     JSON failure( const std::string& aCode, const std::string& aMessage ) const;
     wxString projectPath() const;
@@ -61,6 +70,7 @@ private:
     std::function<wxString()> m_ipcSocketDirectoryProvider;
     std::function<bool( const wxFileName&, std::string& )> m_schematicValidator;
     NATIVE_CHECK_RUNNER m_nativeCheckRunner;
+    NATIVE_FABRICATION_RUNNER m_nativeFabricationRunner;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

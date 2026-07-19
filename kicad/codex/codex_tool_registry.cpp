@@ -27,10 +27,13 @@
 #include <array>
 #include <boost/process.hpp>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string_view>
 #include <thread>
 #include <tuple>
@@ -58,6 +61,8 @@
 namespace
 {
 
+using JSON = nlohmann::json;
+
 constexpr wxFileOffset MAX_INSPECTION_BYTES = 16 * 1024 * 1024;
 constexpr size_t       MAX_EXPRESSION_BYTES = 32 * 1024;
 constexpr size_t       MAX_RESULT_BYTES = 256 * 1024;
@@ -74,11 +79,223 @@ constexpr wxFileOffset MAX_VERIFICATION_REPORT_BYTES = 64 * 1024 * 1024;
 constexpr size_t       MAX_VERIFICATION_RESULT_BYTES = 240 * 1024;
 constexpr size_t       MAX_VERIFICATION_IGNORED_CHECKS = 200;
 constexpr size_t       MAX_VERIFICATION_IGNORED_BYTES = 64 * 1024;
+constexpr uintmax_t    MAX_VERIFICATION_SNAPSHOT_BYTES = 512ULL * 1024ULL * 1024ULL;
+constexpr size_t       MAX_VERIFICATION_SNAPSHOT_FILES = 10000;
 constexpr size_t       MAX_PCB_FOOTPRINTS = 10000;
 constexpr size_t       MAX_PCB_ZONES = 10000;
 constexpr auto         MAX_ZONE_REFILL_WAIT = std::chrono::seconds( 30 );
 constexpr auto         MAX_SCHEMATIC_VALIDATION_WAIT = std::chrono::seconds( 30 );
 constexpr auto         MAX_NATIVE_CHECK_WAIT = std::chrono::seconds( 60 );
+constexpr auto         MAX_NATIVE_FABRICATION_WAIT = std::chrono::seconds( 120 );
+constexpr uintmax_t    MAX_FABRICATION_FILE_BYTES = 512ULL * 1024ULL * 1024ULL;
+constexpr uintmax_t    MAX_FABRICATION_TOTAL_BYTES = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+constexpr size_t       MAX_FABRICATION_FILES = 512;
+
+
+class PRIVATE_TEMPORARY_DIRECTORY
+{
+public:
+    ~PRIVATE_TEMPORARY_DIRECTORY()
+    {
+        if( !m_path.empty() )
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all( m_path, ignored );
+        }
+    }
+
+    bool Create( const std::string& aPrefix, std::string& aError )
+    {
+        std::error_code filesystemError;
+        const std::filesystem::path temporaryRoot =
+                std::filesystem::temp_directory_path( filesystemError );
+
+        if( filesystemError )
+        {
+            aError = "could not resolve the private temporary directory";
+            return false;
+        }
+
+        m_path = temporaryRoot / ( aPrefix + KIID().AsString().ToStdString() );
+        std::filesystem::create_directory( m_path, filesystemError );
+
+        if( filesystemError )
+        {
+            m_path.clear();
+            aError = "could not create the private temporary directory";
+            return false;
+        }
+
+        std::filesystem::permissions( m_path, std::filesystem::perms::owner_all,
+                                      std::filesystem::perm_options::replace,
+                                      filesystemError );
+
+        if( filesystemError )
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all( m_path, ignored );
+            m_path.clear();
+            aError = "could not secure the private temporary directory";
+            return false;
+        }
+
+        return true;
+    }
+
+    const std::filesystem::path& Path() const { return m_path; }
+
+private:
+    std::filesystem::path m_path;
+};
+
+
+bool createFabricationVerificationSnapshot(
+        const wxFileName& aProjectRoot, const wxFileName& aBoard,
+        const wxFileName& aSchematic, const wxFileName& aSidecar,
+        const std::array<std::string, 3>& aRelativePaths,
+        PRIVATE_TEMPORARY_DIRECTORY& aSnapshot, std::string& aError )
+{
+    if( !aSnapshot.Create( "kichad-fabrication-verify-", aError ) )
+        return false;
+
+    const std::filesystem::path sourceRoot( aProjectRoot.GetFullPath().ToStdString() );
+    uintmax_t totalBytes = 0;
+    size_t fileCount = 0;
+    std::set<std::filesystem::path> copied;
+
+    const auto copyFile = [&]( const std::filesystem::path& aSource,
+                               const std::filesystem::path& aRelative )
+    {
+        const std::filesystem::path normalized = aRelative.lexically_normal();
+
+        if( normalized.empty() || normalized.is_absolute()
+            || normalized.begin() == normalized.end() || *normalized.begin() == ".." )
+        {
+            aError = "verification snapshot contains an unsafe project-relative path";
+            return false;
+        }
+
+        std::error_code filesystemError;
+        const std::filesystem::file_status status =
+                std::filesystem::symlink_status( aSource, filesystemError );
+
+        if( filesystemError || !std::filesystem::is_regular_file( status ) )
+        {
+            aError = "verification snapshot input is not a regular file";
+            return false;
+        }
+
+        const uintmax_t bytes = std::filesystem::file_size( aSource, filesystemError );
+
+        if( filesystemError || bytes > MAX_FABRICATION_FILE_BYTES )
+        {
+            aError = "verification snapshot input is unreadable or exceeds 512 MiB";
+            return false;
+        }
+
+        const bool alreadyCopied = copied.contains( normalized );
+
+        if( !alreadyCopied
+            && ( fileCount >= MAX_VERIFICATION_SNAPSHOT_FILES
+                 || totalBytes > MAX_VERIFICATION_SNAPSHOT_BYTES - bytes ) )
+        {
+            aError = "verification snapshot exceeds 10,000 files or 512 MiB";
+            return false;
+        }
+
+        const std::filesystem::path destination = aSnapshot.Path() / normalized;
+        std::filesystem::create_directories( destination.parent_path(), filesystemError );
+
+        if( filesystemError )
+        {
+            aError = "could not create the verification snapshot directory structure";
+            return false;
+        }
+
+        std::filesystem::copy_file( aSource, destination,
+                                    std::filesystem::copy_options::overwrite_existing,
+                                    filesystemError );
+
+        if( filesystemError )
+        {
+            aError = "could not copy a complete verification snapshot input";
+            return false;
+        }
+
+        if( !alreadyCopied )
+        {
+            copied.emplace( normalized );
+            totalBytes += bytes;
+            ++fileCount;
+        }
+
+        return true;
+    };
+
+    std::error_code filesystemError;
+    std::filesystem::recursive_directory_iterator iterator(
+            sourceRoot, std::filesystem::directory_options::skip_permission_denied,
+            filesystemError );
+    const std::filesystem::recursive_directory_iterator end;
+
+    while( iterator != end && !filesystemError )
+    {
+        const std::filesystem::directory_entry& entry = *iterator;
+        const std::filesystem::path relative = entry.path().lexically_relative( sourceRoot );
+        const std::string name = entry.path().filename().string();
+
+        if( entry.is_directory( filesystemError ) )
+        {
+            if( name == ".git" || name == "fabrication"
+                || name.starts_with( ".kichad-fabrication-" ) )
+            {
+                iterator.disable_recursion_pending();
+            }
+        }
+        else if( !filesystemError )
+        {
+            std::string extension = entry.path().extension().string();
+            std::transform( extension.begin(), extension.end(), extension.begin(),
+                            []( unsigned char aCharacter )
+                            {
+                                return static_cast<char>( std::tolower( aCharacter ) );
+                            } );
+            const bool selected = extension == ".kicad_sch" || extension == ".kicad_pro"
+                                  || extension == ".kicad_prl"
+                                  || extension == ".kicad_dru"
+                                  || extension == ".kicad_wks"
+                                  || extension == ".step" || extension == ".stp"
+                                  || extension == ".wrl"
+                                  || name == "sym-lib-table" || name == "fp-lib-table";
+
+            if( selected && !copyFile( entry.path(), relative ) )
+                return false;
+        }
+
+        iterator.increment( filesystemError );
+    }
+
+    if( filesystemError )
+    {
+        aError = "could not enumerate project inputs for the verification snapshot";
+        return false;
+    }
+
+    const std::array<const wxFileName*, 3> required = {
+        &aSidecar, &aBoard, &aSchematic
+    };
+
+    for( size_t index = 0; index < required.size(); ++index )
+    {
+        if( !copyFile( required[index]->GetFullPath().ToStdString(),
+                       std::filesystem::path( aRelativePaths[index] ) ) )
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 
 struct PROJECT_LIBRARY_TABLE_UPDATE
@@ -1170,6 +1387,1141 @@ bool runNativeKiCadCheck( const std::string& aCheck, const wxFileName& aInput,
     wxFileName::Rmdir( temporaryRoot.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
 
     return aError.empty();
+}
+
+
+std::string joinCommaSeparated( const JSON& aValues )
+{
+    std::string joined;
+
+    for( const JSON& value : aValues )
+    {
+        if( !joined.empty() )
+            joined += ',';
+
+        joined += value.get<std::string>();
+    }
+
+    return joined;
+}
+
+
+bool runNativeFabricationCommand( const wxFileName& aCli,
+                                  const std::vector<std::string>& aArguments,
+                                  const wxFileName& aLogDirectory, size_t aIndex,
+                                  const std::string& aKind, std::string& aError )
+{
+    namespace bp = boost::process;
+
+    wxFileName stdoutLog( aLogDirectory.GetFullPath(),
+                          wxString::Format( wxS( "%zu.stdout" ), aIndex ) );
+    wxFileName stderrLog( aLogDirectory.GetFullPath(),
+                          wxString::Format( wxS( "%zu.stderr" ), aIndex ) );
+    bool finished = false;
+    int exitCode = -1;
+
+    try
+    {
+        bp::child process( aCli.GetFullPath().ToStdString(), bp::args( aArguments ),
+                           bp::std_out > stdoutLog.GetFullPath().ToStdString(),
+                           bp::std_err > stderrLog.GetFullPath().ToStdString() );
+        const auto deadline = std::chrono::steady_clock::now() + MAX_NATIVE_FABRICATION_WAIT;
+        std::error_code processError;
+
+        while( process.running( processError ) && !processError
+               && std::chrono::steady_clock::now() < deadline )
+        {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        }
+
+        finished = !process.running( processError ) && !processError;
+
+        if( !finished )
+        {
+            process.terminate();
+            process.wait();
+
+            if( processError )
+                aError = "native " + aKind + " export process failed: "
+                         + processError.message();
+        }
+        else
+        {
+            process.wait();
+            exitCode = process.exit_code();
+        }
+    }
+    catch( const std::exception& error )
+    {
+        aError = "could not run native " + aKind + " export: " + error.what();
+    }
+
+    if( aError.empty() && ( !finished || exitCode != 0 ) )
+    {
+        aError = !finished ? "native " + aKind + " export exceeded 120 seconds"
+                           : "native KiCad could not complete the " + aKind + " export";
+
+        if( stderrLog.FileExists() )
+        {
+            wxFile errorFile( stderrLog.GetFullPath(), wxFile::read );
+            const wxFileOffset length = errorFile.IsOpened() ? errorFile.Length() : 0;
+
+            if( length > 0 )
+            {
+                const size_t bounded = std::min<size_t>( static_cast<size_t>( length ), 4096 );
+                std::string detail( bounded, '\0' );
+
+                if( errorFile.Read( detail.data(), detail.size() )
+                    == static_cast<wxFileOffset>( detail.size() ) )
+                {
+                    aError += ": " + detail;
+                }
+            }
+        }
+    }
+
+    return aError.empty();
+}
+
+
+bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
+                                const wxFileName& aStaging, std::string& aError )
+{
+    wxFileName cli;
+
+    if( !findNativeKiCadCli( cli ) )
+    {
+        aError = "the sibling kicad-cli fabrication backend is unavailable";
+        return false;
+    }
+
+    const std::filesystem::path staging( aStaging.GetFullPath().ToStdString() );
+    const std::filesystem::path logs = staging / ".native-logs";
+    std::error_code filesystemError;
+    std::filesystem::create_directories( logs, filesystemError );
+
+    if( filesystemError )
+    {
+        aError = "could not create private native fabrication logs";
+        return false;
+    }
+
+    wxFileName logDirectory = wxFileName::DirName( wxString::FromUTF8( logs.string() ) );
+    size_t commandIndex = 0;
+
+    for( const JSON& job : aPlan.at( "jobs" ) )
+    {
+        const std::string kind = job.at( "kind" ).get<std::string>();
+
+        if( kind == "bom" )
+            continue;
+
+        const std::filesystem::path output =
+                staging / job.at( "relativePath" ).get<std::string>();
+        const std::filesystem::path parent =
+                job.at( "directory" ).get<bool>() ? output : output.parent_path();
+        std::filesystem::create_directories( parent, filesystemError );
+
+        if( filesystemError )
+        {
+            aError = "could not create private " + kind + " staging directory";
+            break;
+        }
+
+        std::vector<std::string> arguments;
+
+        if( kind == "gerbers" )
+        {
+            arguments = { "pcb", "export", "gerbers", "--output", output.string(),
+                          "--layers", joinCommaSeparated( job.at( "layers" ) ),
+                          "--exclude-value", "--subtract-soldermask", "--precision", "6",
+                          "--no-protel-ext", "--check-zones",
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "drill" )
+        {
+            arguments = { "pcb", "export", "drill", "--output", output.string(),
+                          "--format", "excellon", "--drill-origin", "absolute",
+                          "--excellon-zeros-format", "decimal", "--excellon-oval-format",
+                          "alternate", "--excellon-units", "mm", "--excellon-separate-th",
+                          "--generate-map", "--map-format", "pdf", "--generate-report",
+                          "--report-path", ( output / "drill-report.rpt" ).string(),
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "pick_place" )
+        {
+            arguments = { "pcb", "export", "pos", "--output", output.string(),
+                          "--side", "both", "--format", "csv", "--units", "mm",
+                          "--exclude-dnp", aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "step" )
+        {
+            arguments = { "pcb", "export", "step", "--output", output.string(),
+                          "--force", "--no-dnp", "--subst-models", "--include-tracks",
+                          "--include-pads", "--include-zones", "--include-inner-copper",
+                          "--include-silkscreen", "--include-soldermask",
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "pdf" )
+        {
+            arguments = { "pcb", "export", "pdf", "--output", output.string(),
+                          "--layers", joinCommaSeparated( job.at( "layers" ) ),
+                          "--mode-multipage", "--black-and-white", "--subtract-soldermask",
+                          "--check-zones", "--no-property-popups",
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else
+        {
+            aError = "fabrication plan contains an unsupported native job";
+            break;
+        }
+
+        if( !runNativeFabricationCommand( cli, arguments, logDirectory, commandIndex++, kind,
+                                          aError ) )
+        {
+            break;
+        }
+    }
+
+    std::filesystem::remove_all( logs, filesystemError );
+    return aError.empty();
+}
+
+
+JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
+{
+    static constexpr const char* CHECK_ORDER[] = {
+        "erc", "drc", "sourcing", "fabrication"
+    };
+    static constexpr const char* OUTPUT_ORDER[] = {
+        "gerbers", "drill", "pick_place", "bom", "step", "pdf"
+    };
+    static const std::set<std::string> PRODUCTION_OUTPUTS = {
+        "gerbers", "drill", "pick_place", "bom"
+    };
+    std::set<std::string> checks;
+    std::set<std::string> outputs;
+
+    for( const JSON& check : aIr.at( "checks" ) )
+        checks.emplace( check.value( "kind", "" ) );
+
+    for( const JSON& output : aIr.at( "outputs" ) )
+        outputs.emplace( output.value( "kind", "" ) );
+
+    JSON issues = JSON::array();
+
+    for( const char* required : CHECK_ORDER )
+    {
+        if( !checks.contains( required ) )
+        {
+            issues.push_back( { { "type", "missing_check" },
+                                { "severity", "error" },
+                                { "description",
+                                  "Production fabrication intent is missing check "
+                                          + std::string( required ) },
+                                { "check", required } } );
+        }
+    }
+
+    for( const std::string& required : PRODUCTION_OUTPUTS )
+    {
+        if( !outputs.contains( required ) )
+        {
+            issues.push_back( { { "type", "missing_output" },
+                                { "severity", "error" },
+                                { "description",
+                                  "Production fabrication intent is missing output " + required },
+                                { "output", required } } );
+        }
+    }
+
+    const JSON* stackup = nullptr;
+
+    for( const JSON& statement : aIr.at( "pcb" ) )
+    {
+        if( statement.value( "kind", "" ) == "stackup" )
+        {
+            stackup = &statement;
+            break;
+        }
+    }
+
+    JSON layers = JSON::array();
+
+    if( stackup == nullptr )
+    {
+        issues.push_back( { { "type", "missing_stackup" },
+                            { "severity", "error" },
+                            { "description",
+                              "Production fabrication requires one explicit KDS stackup" } } );
+    }
+    else
+    {
+        for( const JSON& entry : stackup->at( "layers" ) )
+        {
+            const std::string category = entry.value( "category", "" );
+            std::string layer = entry.value( "layer", "" );
+
+            if( category != "copper" && category != "soldermask"
+                && category != "solderpaste" && category != "silkscreen" )
+            {
+                continue;
+            }
+
+            if( layer == "F.SilkS" )
+                layer = "F.Silkscreen";
+            else if( layer == "B.SilkS" )
+                layer = "B.Silkscreen";
+
+            layers.push_back( std::move( layer ) );
+        }
+
+        layers.push_back( "Edge.Cuts" );
+    }
+
+    JSON jobs = JSON::array();
+
+    for( const char* kind : OUTPUT_ORDER )
+    {
+        if( !outputs.contains( kind ) )
+            continue;
+
+        JSON job = { { "kind", kind }, { "directory", false } };
+
+        if( std::string_view( kind ) == "gerbers" )
+        {
+            job["relativePath"] = "gerbers";
+            job["directory"] = true;
+            job["layers"] = layers;
+        }
+        else if( std::string_view( kind ) == "drill" )
+        {
+            job["relativePath"] = "drill";
+            job["directory"] = true;
+        }
+        else if( std::string_view( kind ) == "pick_place" )
+        {
+            job["relativePath"] = "assembly/" + aFileStem + "-positions.csv";
+        }
+        else if( std::string_view( kind ) == "bom" )
+        {
+            job["relativePath"] = "assembly/" + aFileStem + "-bom.csv";
+        }
+        else if( std::string_view( kind ) == "step" )
+        {
+            job["relativePath"] = "model/" + aFileStem + ".step";
+        }
+        else if( std::string_view( kind ) == "pdf" )
+        {
+            job["relativePath"] = "documentation/" + aFileStem + ".pdf";
+            job["layers"] = layers;
+        }
+
+        jobs.push_back( std::move( job ) );
+    }
+
+    return { { "profile", "kichad-production-10.0.4-v1" },
+             { "targetDirectory", "fabrication" },
+             { "fileStem", aFileStem },
+             { "productionReady", issues.empty() },
+             { "issues", std::move( issues ) },
+             { "jobs", std::move( jobs ) } };
+}
+
+
+std::string csvField( const std::string& aValue )
+{
+    std::string escaped;
+    escaped.reserve( aValue.size() + 2 );
+    escaped.push_back( '"' );
+
+    for( char character : aValue )
+    {
+        if( character == '"' )
+            escaped.push_back( '"' );
+
+        escaped.push_back( character );
+    }
+
+    escaped.push_back( '"' );
+    return escaped;
+}
+
+
+bool writeFabricationBom( const JSON& aIr, const wxFileName& aStaging,
+                          const JSON& aPlan, size_t& aRows, std::string& aError )
+{
+    const JSON* bomJob = nullptr;
+
+    for( const JSON& job : aPlan.at( "jobs" ) )
+    {
+        if( job.at( "kind" ) == "bom" )
+        {
+            bomJob = &job;
+            break;
+        }
+    }
+
+    if( bomJob == nullptr )
+        return true;
+
+    std::map<std::string, const JSON*> sourcing;
+
+    for( const JSON& source : aIr.at( "sourcing" ) )
+        sourcing.emplace( source.at( "component" ).get<std::string>(), &source );
+
+    std::vector<const JSON*> components;
+
+    for( const JSON& component : aIr.at( "schematic" ).at( "components" ) )
+    {
+        if( component.contains( "footprint" ) && !component.at( "footprint" ).is_null() )
+            components.push_back( &component );
+    }
+
+    std::sort( components.begin(), components.end(),
+               []( const JSON* aLeft, const JSON* aRight )
+               {
+                   return aLeft->at( "reference" ).get<std::string>()
+                          < aRight->at( "reference" ).get<std::string>();
+               } );
+    const std::filesystem::path path =
+            std::filesystem::path( aStaging.GetFullPath().ToStdString() )
+            / bomJob->at( "relativePath" ).get<std::string>();
+    std::error_code filesystemError;
+    std::filesystem::create_directories( path.parent_path(), filesystemError );
+
+    if( filesystemError )
+    {
+        aError = "could not create the private BOM staging directory";
+        return false;
+    }
+
+    std::ofstream output( path, std::ios::binary | std::ios::trunc );
+
+    if( !output )
+    {
+        aError = "could not create the KDS fabrication BOM";
+        return false;
+    }
+
+    output << "Reference,Value,Footprint,Quantity,Manufacturer,MPN,Datasheet,Lifecycle,"
+              "Supplier,SKU,Product URL,Available,Verified On,Unit Price,DNP\n";
+
+    for( const JSON* component : components )
+    {
+        const std::string reference = component->at( "reference" ).get<std::string>();
+        const auto source = sourcing.find( reference );
+
+        if( source == sourcing.end() )
+        {
+            aError = "physical component " + reference + " has no KDS sourcing record";
+            return false;
+        }
+
+        const JSON& evidence = *source->second;
+        const auto text = [&]( const char* aField )
+        {
+            return evidence.contains( aField ) ? evidence.at( aField ).get<std::string>()
+                                                : std::string();
+        };
+        output << csvField( reference ) << ','
+               << csvField( component->at( "value" ).get<std::string>() ) << ','
+               << csvField( component->at( "footprint" ).get<std::string>() ) << ','
+               << evidence.at( "quantity" ).get<int64_t>() << ','
+               << csvField( evidence.at( "manufacturer" ).get<std::string>() ) << ','
+               << csvField( evidence.at( "mpn" ).get<std::string>() ) << ','
+               << csvField( evidence.at( "datasheet" ).get<std::string>() ) << ','
+               << csvField( evidence.at( "lifecycle" ).get<std::string>() ) << ','
+               << csvField( evidence.at( "supplier" ).get<std::string>() ) << ','
+               << csvField( evidence.at( "sku" ).get<std::string>() ) << ','
+               << csvField( evidence.at( "product_url" ).get<std::string>() ) << ','
+               << evidence.at( "available" ).get<int64_t>() << ','
+               << csvField( evidence.at( "verified_on" ).get<std::string>() ) << ','
+               << csvField( text( "unit_price" ) ) << ','
+               << ( component->value( "dnp", false ) ? "true" : "false" ) << '\n';
+        ++aRows;
+    }
+
+    output.flush();
+
+    if( !output )
+    {
+        aError = "could not write the complete KDS fabrication BOM";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool readFileEdges( const std::filesystem::path& aPath, std::string& aPrefix,
+                    std::string& aSuffix )
+{
+    std::ifstream input( aPath, std::ios::binary );
+
+    if( !input )
+        return false;
+
+    constexpr std::streamsize EDGE_BYTES = 8192;
+    aPrefix.resize( static_cast<size_t>( EDGE_BYTES ) );
+    input.read( aPrefix.data(), EDGE_BYTES );
+    aPrefix.resize( static_cast<size_t>( input.gcount() ) );
+    input.clear();
+    input.seekg( 0, std::ios::end );
+    const std::streamoff length = input.tellg();
+    const std::streamoff start = std::max<std::streamoff>( 0, length - EDGE_BYTES );
+    input.seekg( start, std::ios::beg );
+    aSuffix.resize( static_cast<size_t>( length - start ) );
+    input.read( aSuffix.data(), static_cast<std::streamsize>( aSuffix.size() ) );
+    return input.good() || input.eof();
+}
+
+
+bool hashFabricationFile( const std::filesystem::path& aPath, std::string& aDigest )
+{
+    std::ifstream input( aPath, std::ios::binary );
+
+    if( !input )
+        return false;
+
+    std::array<picosha2::byte_t, picosha2::k_digest_size> digest{};
+    picosha2::hash256( input, digest.begin(), digest.end() );
+    aDigest = picosha2::bytes_to_hex_string( digest );
+    return !input.bad() && aDigest.size() == 64;
+}
+
+
+bool validateExactNativeFormat( const wxFileName& aPath, const std::string& aRoot,
+                                const std::string& aVersion, std::string& aError )
+{
+    wxFile input( aPath.GetFullPath(), wxFile::read );
+
+    if( !input.IsOpened() )
+    {
+        aError = "could not open native KiCad input " + aPath.GetFullName().ToStdString();
+        return false;
+    }
+
+    const wxFileOffset length = input.Length();
+
+    if( length <= 0 )
+    {
+        aError = "native KiCad input is empty: " + aPath.GetFullName().ToStdString();
+        return false;
+    }
+
+    const size_t headerBytes =
+            std::min<size_t>( static_cast<size_t>( length ), 16 * 1024 );
+    std::string header( headerBytes, '\0' );
+
+    if( input.Read( header.data(), header.size() )
+        != static_cast<wxFileOffset>( header.size() ) )
+    {
+        aError = "could not read native KiCad input header";
+        return false;
+    }
+
+    const size_t first = header.find_first_not_of( " \t\r\n" );
+    const std::string root = "(" + aRoot;
+    const std::string version = "(version " + aVersion + ")";
+
+    if( first == std::string::npos || header.compare( first, root.size(), root ) != 0
+        || header.find( version, first + root.size() ) == std::string::npos )
+    {
+        aError = aPath.GetFullName().ToStdString()
+                 + " is not in the exact native KiCad 10.0.4 " + aRoot
+                 + " format (expected version " + aVersion + ")";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool validateBoardFabricationIntent( const wxFileName& aBoard, const JSON& aIr,
+                                     const JSON& aPlan, std::string& aError )
+{
+    wxFile input( aBoard.GetFullPath(), wxFile::read );
+
+    if( !input.IsOpened() )
+    {
+        aError = "could not open the native board for fabrication-intent validation";
+        return false;
+    }
+
+    const wxFileOffset length = input.Length();
+
+    if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_STATE_BYTES ) )
+    {
+        aError = "native board must contain 1 byte to 64 MiB for fabrication";
+        return false;
+    }
+
+    std::string source( static_cast<size_t>( length ), '\0' );
+
+    if( input.Read( source.data(), source.size() ) != length )
+    {
+        aError = "could not read the complete native board for fabrication";
+        return false;
+    }
+
+    std::unique_ptr<KICHAD::LOSSLESS_SEXPR_DOCUMENT> document =
+            KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( std::move( source ), &aError );
+
+    if( !document || document->Roots().size() != 1
+        || document->ListHead( document->Roots().front() ) != "kicad_pcb" )
+    {
+        if( aError.empty() )
+            aError = "native board has no unique kicad_pcb root";
+
+        return false;
+    }
+
+    const auto directList = [&]( size_t aParent, const std::string& aHead )
+    {
+        size_t match = KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE;
+
+        for( size_t child : document->Nodes().at( aParent ).children )
+        {
+            if( document->Nodes().at( child ).kind
+                        != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+                || document->ListHead( child ) != aHead )
+            {
+                continue;
+            }
+
+            if( match != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE )
+                return KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE;
+
+            match = child;
+        }
+
+        return match;
+    };
+    const auto scalar = [&]( size_t aParent, const std::string& aHead )
+    {
+        const size_t field = directList( aParent, aHead );
+
+        if( field == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+            || document->Nodes().at( field ).children.size() < 2
+            || document->Nodes().at( document->Nodes().at( field ).children[1] ).kind
+                       == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST )
+        {
+            return std::string();
+        }
+
+        return document->AtomText( document->Nodes().at( field ).children[1] );
+    };
+    const auto numberMatches = []( const std::string& aText, double aExpected )
+    {
+        JSON number = JSON::parse( aText, nullptr, false );
+
+        return !number.is_discarded() && number.is_number()
+               && std::isfinite( number.get<double>() )
+               && std::abs( number.get<double>() - aExpected ) <= 1e-9;
+    };
+    const size_t root = document->Roots().front();
+    const size_t general = directList( root, "general" );
+    const size_t layerTable = directList( root, "layers" );
+    const size_t setup = directList( root, "setup" );
+    const size_t stackup = setup == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+                                   ? KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+                                   : directList( setup, "stackup" );
+
+    if( general == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+        || layerTable == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+        || stackup == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE )
+    {
+        aError = "native board is missing its general, layer-table, or physical stackup data";
+        return false;
+    }
+
+    const JSON* desiredStackup = nullptr;
+
+    for( const JSON& statement : aIr.at( "pcb" ) )
+    {
+        if( statement.value( "kind", "" ) == "stackup" )
+        {
+            desiredStackup = &statement;
+            break;
+        }
+    }
+
+    if( desiredStackup == nullptr )
+    {
+        aError = "compiled KDS has no physical stackup to validate";
+        return false;
+    }
+
+    const double expectedBoardThickness =
+            desiredStackup->at( "thicknessNm" ).get<double>() / 1000000.0;
+
+    if( !numberMatches( scalar( general, "thickness" ), expectedBoardThickness ) )
+    {
+        aError = "native board thickness does not match the compiled KDS stackup";
+        return false;
+    }
+
+    std::set<std::string> enabledLayers;
+
+    for( size_t child : document->Nodes().at( layerTable ).children )
+    {
+        const auto& node = document->Nodes().at( child );
+
+        if( node.kind != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+            || node.children.size() < 3 )
+        {
+            continue;
+        }
+
+        enabledLayers.emplace( document->AtomText( node.children[1] ) );
+
+        if( node.children.size() >= 4
+            && document->Nodes().at( node.children[3] ).kind
+                       != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST )
+        {
+            enabledLayers.emplace( document->AtomText( node.children[3] ) );
+        }
+    }
+
+    for( const JSON& job : aPlan.at( "jobs" ) )
+    {
+        if( !job.contains( "layers" ) )
+            continue;
+
+        for( const JSON& layer : job.at( "layers" ) )
+        {
+            if( !enabledLayers.contains( layer.get<std::string>() ) )
+            {
+                aError = "native board does not enable KDS fabrication layer "
+                         + layer.get<std::string>();
+                return false;
+            }
+        }
+    }
+
+    std::vector<size_t> nativeLayers;
+
+    for( size_t child : document->Nodes().at( stackup ).children )
+    {
+        if( document->Nodes().at( child ).kind
+                    == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+            && document->ListHead( child ) == "layer" )
+        {
+            nativeLayers.push_back( child );
+        }
+    }
+
+    const JSON& desiredLayers = desiredStackup->at( "layers" );
+
+    if( nativeLayers.size() != desiredLayers.size() )
+    {
+        aError = "native board physical stackup layer count does not match compiled KDS";
+        return false;
+    }
+
+    for( size_t index = 0; index < nativeLayers.size(); ++index )
+    {
+        const size_t nativeLayer = nativeLayers[index];
+        const auto& node = document->Nodes().at( nativeLayer );
+        const JSON& desired = desiredLayers[index];
+        const std::string category = desired.at( "category" ).get<std::string>();
+        const std::string identity = node.children.size() >= 2
+                                             ? document->AtomText( node.children[1] )
+                                             : std::string();
+        const bool identityMatches = category == "dielectric"
+                                             ? identity.starts_with( "dielectric " )
+                                             : identity == desired.value( "layer", "" );
+
+        if( !identityMatches
+            || scalar( nativeLayer, "type" )
+                       != desired.at( "typeName" ).get<std::string>() )
+        {
+            aError = "native board physical stackup order or layer type differs from KDS";
+            return false;
+        }
+
+        const int64_t thicknessNm = desired.at( "thicknessNm" ).get<int64_t>();
+
+        if( thicknessNm > 0 )
+        {
+            const size_t thickness = directList( nativeLayer, "thickness" );
+
+            if( thickness == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+                || document->Nodes().at( thickness ).children.size() < 2
+                || !numberMatches(
+                        document->AtomText( document->Nodes().at( thickness ).children[1] ),
+                        static_cast<double>( thicknessNm ) / 1000000.0 ) )
+            {
+                aError = "native board physical layer thickness differs from KDS";
+                return false;
+            }
+
+            if( category == "dielectric" )
+            {
+                const auto& thicknessNode = document->Nodes().at( thickness );
+                const bool nativeLocked =
+                        thicknessNode.children.size() == 3
+                        && document->AtomText( thicknessNode.children[2] ) == "locked";
+
+                if( nativeLocked != desired.at( "locked" ).get<bool>() )
+                {
+                    aError = "native board dielectric thickness lock differs from KDS";
+                    return false;
+                }
+            }
+        }
+
+        for( const auto& [nativeName, desiredName] :
+             std::array<std::pair<const char*, const char*>, 2>{
+                     std::pair{ "material", "material" },
+                     std::pair{ "color", "color" } } )
+        {
+            const std::string desiredText = desired.value( desiredName, "" );
+
+            if( !desiredText.empty() && scalar( nativeLayer, nativeName ) != desiredText )
+            {
+                aError = std::string( "native board physical layer " ) + nativeName
+                         + " differs from KDS";
+                return false;
+            }
+        }
+
+        for( const auto& [nativeName, desiredName] :
+             std::array<std::pair<const char*, const char*>, 2>{
+                     std::pair{ "epsilon_r", "epsilonR" },
+                     std::pair{ "loss_tangent", "lossTangent" } } )
+        {
+            const double desiredNumber = desired.value( desiredName, 0.0 );
+
+            if( desiredNumber > 0.0
+                && !numberMatches( scalar( nativeLayer, nativeName ), desiredNumber ) )
+            {
+                aError = std::string( "native board physical layer " ) + nativeName
+                         + " differs from KDS";
+                return false;
+            }
+        }
+    }
+
+    const std::string expectedImpedance =
+            desiredStackup->at( "impedanceControlled" ).get<bool>() ? "yes" : "no";
+    const std::string expectedConnector = desiredStackup->at( "edgeConnector" );
+    const std::string nativeConnector = scalar( stackup, "edge_connector" );
+    const std::string nativePlating = scalar( stackup, "edge_plating" );
+
+    if( scalar( stackup, "copper_finish" )
+                    != desiredStackup->at( "finish" ).get<std::string>()
+        || scalar( stackup, "dielectric_constraints" ) != expectedImpedance
+        || ( expectedConnector == "none" ? !nativeConnector.empty()
+                                          : nativeConnector != expectedConnector )
+        || ( desiredStackup->at( "edgePlating" ).get<bool>() ? nativePlating != "yes"
+                                                              : !nativePlating.empty() ) )
+    {
+        aError = "native board fabrication policies differ from compiled KDS stackup";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan,
+                                   JSON& aArtifacts, std::string& aError )
+{
+    const std::filesystem::path root( aStaging.GetFullPath().ToStdString() );
+    std::map<std::string, size_t> counts;
+    std::set<std::string> actualGerberFiles;
+    std::set<std::string> jobGerberFiles;
+    std::set<std::string> allowedDirectories;
+    size_t files = 0;
+    uintmax_t totalBytes = 0;
+    std::error_code filesystemError;
+    aArtifacts = JSON::array();
+
+    for( const JSON& job : aPlan.at( "jobs" ) )
+    {
+        std::filesystem::path directory =
+                job.at( "directory" ).get<bool>()
+                        ? std::filesystem::path( job.at( "relativePath" ).get<std::string>() )
+                        : std::filesystem::path( job.at( "relativePath" ).get<std::string>() )
+                                  .parent_path();
+
+        while( !directory.empty() )
+        {
+            allowedDirectories.emplace( directory.generic_string() );
+            directory = directory.parent_path();
+        }
+    }
+
+    for( std::filesystem::recursive_directory_iterator iterator( root, filesystemError ), end;
+         !filesystemError && iterator != end; iterator.increment( filesystemError ) )
+    {
+        const std::filesystem::file_status status = iterator->symlink_status( filesystemError );
+
+        if( filesystemError )
+            break;
+
+        if( std::filesystem::is_symlink( status ) )
+        {
+            aError = "fabrication staging contains a symbolic link";
+            return false;
+        }
+
+        if( std::filesystem::is_directory( status ) )
+        {
+            const std::filesystem::path relative =
+                    std::filesystem::relative( iterator->path(), root, filesystemError );
+
+            if( filesystemError || !allowedDirectories.contains( relative.generic_string() ) )
+            {
+                aError = "fabrication staging contains an unexpected directory";
+                return false;
+            }
+
+            continue;
+        }
+
+        if( !std::filesystem::is_regular_file( status ) )
+        {
+            aError = "fabrication staging contains a non-regular file";
+            return false;
+        }
+
+        const uintmax_t bytes = iterator->file_size( filesystemError );
+
+        if( filesystemError || bytes == 0 || bytes > MAX_FABRICATION_FILE_BYTES
+            || ++files > MAX_FABRICATION_FILES
+            || totalBytes > MAX_FABRICATION_TOTAL_BYTES - bytes )
+        {
+            aError = "fabrication artifacts exceed the bounded file or package limits";
+            return false;
+        }
+
+        totalBytes += bytes;
+        const std::filesystem::path relative =
+                std::filesystem::relative( iterator->path(), root, filesystemError );
+
+        if( filesystemError || relative.empty() || relative.is_absolute() )
+        {
+            aError = "fabrication artifact path is not project-relative";
+            return false;
+        }
+
+        const std::string path = relative.generic_string();
+        const std::string extension = iterator->path().extension().string();
+        std::string kind;
+        std::string prefix;
+        std::string suffix;
+
+        if( !readFileEdges( iterator->path(), prefix, suffix ) )
+        {
+            aError = "could not inspect fabrication artifact " + path;
+            return false;
+        }
+
+        if( path.starts_with( "gerbers/" ) && extension == ".gbr" )
+        {
+            kind = "gerbers";
+            actualGerberFiles.emplace( iterator->path().filename().string() );
+
+            if( prefix.find( "G04" ) == std::string::npos
+                || prefix.find( "TF.GenerationSoftware,KiCad" ) == std::string::npos
+                || suffix.find( "M02*" ) == std::string::npos )
+            {
+                aError = "Gerber artifact failed native signature validation: " + path;
+                return false;
+            }
+        }
+        else if( path.starts_with( "gerbers/" ) && extension == ".gbrjob" )
+        {
+            kind = "gerber_job";
+            std::ifstream jobInput( iterator->path(), std::ios::binary );
+            JSON job = JSON::parse( jobInput, nullptr, false );
+
+            if( job.is_discarded() || !job.is_object() || !job.contains( "Header" )
+                || !job["Header"].is_object()
+                || !job["Header"].contains( "GenerationSoftware" )
+                || !job["Header"]["GenerationSoftware"].is_object()
+                || job["Header"]["GenerationSoftware"].value( "Vendor", "" ) != "KiCad"
+                || job["Header"]["GenerationSoftware"].value( "Application", "" )
+                           != "Pcbnew"
+                || !job.contains( "FilesAttributes" )
+                || !job["FilesAttributes"].is_array() )
+            {
+                aError = "Gerber job artifact failed native schema validation";
+                return false;
+            }
+
+            std::set<std::string> jobFiles;
+
+            for( const JSON& attribute : job["FilesAttributes"] )
+            {
+                const std::string jobPath =
+                        attribute.is_object() && attribute.contains( "Path" )
+                                && attribute["Path"].is_string()
+                                ? attribute["Path"].get<std::string>()
+                                : std::string();
+                const std::filesystem::path jobFile( jobPath );
+
+                if( !attribute.is_object() || !attribute.contains( "Path" )
+                    || !attribute["Path"].is_string()
+                    || jobFile.empty() || jobFile.is_absolute() || jobFile.has_parent_path()
+                    || jobFile.extension() != ".gbr"
+                    || !jobFiles.emplace( jobPath ).second )
+                {
+                    aError = "Gerber job contains an invalid or duplicate file entry";
+                    return false;
+                }
+            }
+
+            if( jobFiles.size() == 0 )
+            {
+                aError = "Gerber job contains no production layer files";
+                return false;
+            }
+
+            jobGerberFiles = std::move( jobFiles );
+        }
+        else if( path.starts_with( "drill/" ) && extension == ".drl" )
+        {
+            kind = "drill_file";
+
+            if( !prefix.starts_with( "M48" ) || suffix.find( "M30" ) == std::string::npos )
+            {
+                aError = "Excellon artifact failed signature validation: " + path;
+                return false;
+            }
+        }
+        else if( path.starts_with( "drill/" ) && extension == ".pdf" )
+        {
+            kind = "drill_map";
+
+            if( !prefix.starts_with( "%PDF-" ) || suffix.find( "%%EOF" ) == std::string::npos )
+            {
+                aError = "drill map failed PDF signature validation: " + path;
+                return false;
+            }
+        }
+        else if( path == "drill/drill-report.rpt" )
+        {
+            kind = "drill_report";
+
+            if( prefix.find( "Drill report" ) == std::string::npos )
+            {
+                aError = "drill report failed native signature validation";
+                return false;
+            }
+        }
+        else if( path.starts_with( "assembly/" ) && path.ends_with( "-positions.csv" ) )
+        {
+            kind = "pick_place";
+
+            if( !prefix.starts_with( "Ref,Val,Package,PosX,PosY,Rot,Side" ) )
+            {
+                aError = "position artifact has the wrong KiCad CSV schema";
+                return false;
+            }
+        }
+        else if( path.starts_with( "assembly/" ) && path.ends_with( "-bom.csv" ) )
+        {
+            kind = "bom";
+
+            if( !prefix.starts_with( "Reference,Value,Footprint,Quantity,Manufacturer,MPN," ) )
+            {
+                aError = "BOM artifact has the wrong KDS sourcing schema";
+                return false;
+            }
+        }
+        else if( path.starts_with( "model/" ) && extension == ".step" )
+        {
+            kind = "step";
+
+            if( !prefix.starts_with( "ISO-10303-21;" )
+                || suffix.find( "END-ISO-10303-21;" ) == std::string::npos )
+            {
+                aError = "STEP artifact failed signature validation";
+                return false;
+            }
+        }
+        else if( path.starts_with( "documentation/" ) && extension == ".pdf" )
+        {
+            kind = "pdf";
+
+            if( !prefix.starts_with( "%PDF-" ) || suffix.find( "%%EOF" ) == std::string::npos )
+            {
+                aError = "documentation artifact failed PDF signature validation";
+                return false;
+            }
+        }
+        else
+        {
+            aError = "fabrication staging contains an unexpected artifact: " + path;
+            return false;
+        }
+
+        std::string digest;
+
+        if( !hashFabricationFile( iterator->path(), digest ) )
+        {
+            aError = "could not hash fabrication artifact " + path;
+            return false;
+        }
+
+        ++counts[kind];
+        aArtifacts.push_back( { { "kind", kind },
+                                { "path", path },
+                                { "bytes", bytes },
+                                { "sha256", std::move( digest ) } } );
+    }
+
+    if( filesystemError )
+    {
+        aError = "could not enumerate the complete fabrication staging directory";
+        return false;
+    }
+
+    if( actualGerberFiles != jobGerberFiles )
+    {
+        aError = "Gerber job file does not enumerate the exact generated layer files";
+        return false;
+    }
+
+    std::sort( aArtifacts.begin(), aArtifacts.end(),
+               []( const JSON& aLeft, const JSON& aRight )
+               {
+                   return aLeft.at( "path" ).get<std::string>()
+                          < aRight.at( "path" ).get<std::string>();
+               } );
+
+    for( const JSON& job : aPlan.at( "jobs" ) )
+    {
+        const std::string kind = job.at( "kind" ).get<std::string>();
+
+        if( kind == "gerbers"
+            && ( counts["gerbers"] != job.at( "layers" ).size()
+                 || counts["gerber_job"] != 1 ) )
+        {
+            aError = "Gerber export did not produce one layer file per layer and one job file";
+        }
+        else if( kind == "drill"
+                 && ( counts["drill_file"] == 0 || counts["drill_map"] == 0
+                      || counts["drill_report"] != 1 ) )
+            aError = "drill export is missing Excellon, map, or report artifacts";
+        else if( kind == "pick_place" && counts["pick_place"] != 1 )
+            aError = "position export did not produce exactly one CSV artifact";
+        else if( kind == "bom" && counts["bom"] != 1 )
+            aError = "BOM export did not produce exactly one CSV artifact";
+        else if( kind == "step" && counts["step"] != 1 )
+            aError = "STEP export did not produce exactly one model artifact";
+        else if( kind == "pdf" && counts["pdf"] != 1 )
+            aError = "documentation export did not produce exactly one PDF artifact";
+
+        if( !aError.empty() )
+            return false;
+    }
+
+    return true;
 }
 
 
@@ -2738,12 +4090,14 @@ CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPath
                                           std::function<wxString()> aIpcSocketDirectoryProvider,
                                           std::function<bool( const wxFileName&, std::string& )>
                                                   aSchematicValidator,
-                                          NATIVE_CHECK_RUNNER aNativeCheckRunner ) :
+                                          NATIVE_CHECK_RUNNER aNativeCheckRunner,
+                                          NATIVE_FABRICATION_RUNNER aNativeFabricationRunner ) :
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
         m_mutationGuard( std::move( aMutationGuard ) ),
         m_ipcSocketDirectoryProvider( std::move( aIpcSocketDirectoryProvider ) ),
         m_schematicValidator( std::move( aSchematicValidator ) ),
-        m_nativeCheckRunner( std::move( aNativeCheckRunner ) )
+        m_nativeCheckRunner( std::move( aNativeCheckRunner ) ),
+        m_nativeFabricationRunner( std::move( aNativeFabricationRunner ) )
 {}
 
 
@@ -2898,7 +4252,50 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                          "freshness. Results have complete counts and bounded pageable issues." },
                        { "inputSchema", std::move( verifySchema ) } } );
 
+    JSON fabricateSchema = { { "type", "object" },
+                             { "additionalProperties", false },
+                             { "required",
+                               JSON::array( { "operation", "path", "boardPath",
+                                              "schematicPath", "expectedSha256" } ) } };
+    fabricateSchema["properties"]["operation"] =
+            { { "type", "string" }, { "enum", JSON::array( { "plan", "export" } ) } };
+    fabricateSchema["properties"]["path"] =
+            { { "type", "string" }, { "maxLength", 4096 },
+              { "description", "Project-relative canonical .kicad_kds sidecar." } };
+    fabricateSchema["properties"]["boardPath"] =
+            { { "type", "string" }, { "maxLength", 4096 },
+              { "description", "Project-relative on-disk .kicad_pcb input." } };
+    fabricateSchema["properties"]["schematicPath"] =
+            { { "type", "string" }, { "maxLength", 4096 },
+              { "description", "Project-relative root .kicad_sch input." } };
+    fabricateSchema["properties"]["expectedSha256"] =
+            { { "type", "string" }, { "minLength", 64 }, { "maxLength", 64 },
+              { "description", "Exact compiled KDS revision to release." } };
+    fabricateSchema["properties"]["allowWaivers"] =
+            { { "type", "boolean" },
+              { "description",
+                "Allow explicitly ignored/excluded ERC or DRC checks in a confirmed export; "
+                "defaults to false." } };
+
+    specs.push_back( { { "type", "function" },
+                       { "name", "fabricate" },
+                       { "description",
+                         "Plan or perform the final KiCad 10 fabrication export declared by the "
+                         "exact KDS revision. Export reruns ERC, DRC, and sourcing gates, writes "
+                         "a private staging package, validates every artifact, and atomically "
+                         "installs it only after visible user confirmation." },
+                       { "inputSchema", std::move( fabricateSchema ) } } );
+
     return specs;
+}
+
+
+bool CODEX_TOOL_REGISTRY::RequiresFinalConfirmation( const std::string& aTool,
+                                                     const JSON& aArguments )
+{
+    return aTool == "fabricate" && aArguments.is_object()
+           && aArguments.contains( "operation" ) && aArguments["operation"].is_string()
+           && aArguments["operation"].get<std::string>() == "export";
 }
 
 
@@ -2914,7 +4311,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Handle( const std::string& aTool,
 
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
         const std::string& aTool, const JSON& aArguments, const wxString& aProjectPath,
-        bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const
+        bool aMutationAvailable, const wxString& aIpcSocketDirectory,
+        bool aFinalActionApproved ) const
 {
     try
     {
@@ -2933,6 +4331,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
 
         if( aTool == "verify" )
             return handleVerify( aArguments, aProjectPath );
+
+        if( aTool == "fabricate" )
+        {
+            return handleFabricate( aArguments, aProjectPath, aMutationAvailable,
+                                    aFinalActionApproved );
+        }
 
         return failure( "unknown_tool", "The requested tool is not advertised by KiChad" );
     }
@@ -5558,6 +6962,516 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleVerify(
         payload["nextOffset"] = static_cast<size_t>( offset ) + returned;
 
     return success( payload );
+}
+
+
+CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
+        const JSON& aArguments, const wxString& aProjectPath, bool aMutationAvailable,
+        bool aFinalActionApproved ) const
+{
+    static const std::set<std::string> ALLOWED_ARGUMENTS = {
+        "operation", "path", "boardPath", "schematicPath", "expectedSha256", "allowWaivers"
+    };
+
+    if( !aArguments.is_object() || aArguments.dump().size() > 32 * 1024 )
+        return failure( "invalid_arguments", "fabricate arguments must be a bounded object" );
+
+    for( auto argument = aArguments.begin(); argument != aArguments.end(); ++argument )
+    {
+        if( !ALLOWED_ARGUMENTS.contains( argument.key() ) )
+            return failure( "invalid_arguments", "fabricate contains an unknown argument" );
+    }
+
+    for( const char* required :
+         { "operation", "path", "boardPath", "schematicPath", "expectedSha256" } )
+    {
+        if( !aArguments.contains( required ) || !aArguments[required].is_string() )
+        {
+            return failure( "invalid_arguments",
+                            std::string( "fabricate." ) + required + " must be a string" );
+        }
+    }
+
+    if( aArguments.contains( "allowWaivers" ) && !aArguments["allowWaivers"].is_boolean() )
+        return failure( "invalid_arguments", "fabricate.allowWaivers must be a boolean" );
+
+    const std::string operation = aArguments["operation"].get<std::string>();
+
+    if( operation != "plan" && operation != "export" )
+        return failure( "invalid_arguments", "fabricate.operation must be 'plan' or 'export'" );
+
+    const std::string expectedSha256 = aArguments["expectedSha256"].get<std::string>();
+
+    if( expectedSha256.size() != 64
+        || !std::all_of( expectedSha256.begin(), expectedSha256.end(),
+                         []( unsigned char aCharacter )
+                         {
+                             return std::isdigit( aCharacter )
+                                    || ( aCharacter >= 'a' && aCharacter <= 'f' );
+                         } ) )
+    {
+        return failure( "invalid_arguments",
+                        "fabricate.expectedSha256 must be one lowercase SHA-256 digest" );
+    }
+
+    if( !wxFileName::DirExists( aProjectPath ) )
+        return failure( "project_unavailable", "No readable project directory is active" );
+
+    const std::string sourceRelativePath = aArguments["path"].get<std::string>();
+    const std::string boardRelativePath = aArguments["boardPath"].get<std::string>();
+    const std::string schematicRelativePath =
+            aArguments["schematicPath"].get<std::string>();
+    wxFileName sidecar;
+    wxFileName board;
+    wxFileName schematic;
+    std::string pathError;
+
+    if( !resolveProjectSidecar( aProjectPath, sourceRelativePath, sidecar, pathError ) )
+        return failure( "invalid_path", pathError );
+
+    if( !sidecar.FileExists() )
+        return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
+
+    if( !resolveProjectFile( aProjectPath, boardRelativePath, board, pathError ) )
+        return failure( "invalid_path", pathError );
+
+    if( board.GetExt() != wxS( "kicad_pcb" ) )
+        return failure( "invalid_path", "fabrication requires a .kicad_pcb board" );
+
+    if( !resolveProjectFile( aProjectPath, schematicRelativePath, schematic, pathError ) )
+        return failure( "invalid_path", pathError );
+
+    if( schematic.GetExt() != wxS( "kicad_sch" ) )
+        return failure( "invalid_path", "fabrication requires a root .kicad_sch schematic" );
+
+    if( !validateExactNativeFormat( board, "kicad_pcb", "20260206", pathError )
+        || !validateExactNativeFormat( schematic, "kicad_sch", "20260306", pathError ) )
+    {
+        return failure( "format_version_mismatch", pathError );
+    }
+
+    std::string source;
+
+    if( !readDesignScriptSidecar( sidecar, source, pathError ) )
+        return failure( "read_failed", pathError );
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    if( !compiled.ok )
+    {
+        return failure( "compile_failed",
+                        "KDS must compile before fabrication; use design.compile for "
+                        "structured diagnostics" );
+    }
+
+    if( compiled.sourceSha256 != expectedSha256 )
+        return failure( "stale_source", "KDS changed after the approved revision was compiled" );
+
+    const std::string fileStem( board.GetName().ToUTF8() );
+    const std::string schematicStem( schematic.GetName().ToUTF8() );
+    const std::string projectName = compiled.ir["project"].value( "name", "" );
+
+    if( fileStem.empty() || fileStem != schematicStem || fileStem != projectName )
+    {
+        return failure( "project_mismatch",
+                        "KDS project, root schematic, and board must have the same file stem" );
+    }
+
+    JSON plan = buildFabricationPlan( compiled.ir, fileStem );
+    plan["operation"] = "plan";
+    plan["path"] = sourceRelativePath;
+    plan["boardPath"] = boardRelativePath;
+    plan["schematicPath"] = schematicRelativePath;
+    plan["sourceSha256"] = compiled.sourceSha256;
+    plan["kicadVersion"] = std::string( GetMajorMinorPatchVersion().ToUTF8() );
+    plan["nativeInputFormats"] = { { "board", "20260206" },
+                                    { "schematic", "20260306" } };
+    std::string boardIntentError;
+    const bool boardIntentValid =
+            validateBoardFabricationIntent( board, compiled.ir, plan, boardIntentError );
+    plan["nativeBoardIntentValid"] = boardIntentValid;
+
+    if( !boardIntentValid )
+    {
+        plan["productionReady"] = false;
+        plan["issues"].push_back( { { "type", "native_board_intent_mismatch" },
+                                    { "severity", "error" },
+                                    { "description", boardIntentError } } );
+    }
+
+    if( operation == "plan" )
+        return success( plan );
+
+    if( !boardIntentValid )
+        return failure( "native_board_intent_mismatch", boardIntentError );
+
+    if( !plan["productionReady"].get<bool>() )
+        return failure( "incomplete_fabrication_intent",
+                        "KDS is missing one or more production checks, outputs, or stackup" );
+
+    if( !aMutationAvailable )
+    {
+        return failure( "snapshot_required",
+                        "A complete pre-turn project snapshot is required for fabrication" );
+    }
+
+    if( !aFinalActionApproved )
+    {
+        return failure( "permission_required",
+                        "Visible user confirmation is required for final fabrication export" );
+    }
+
+    const bool allowWaivers = aArguments.value( "allowWaivers", false );
+    std::string boardSha256;
+    std::string schematicSha256;
+
+    if( !hashFabricationFile( board.GetFullPath().ToStdString(), boardSha256 )
+        || !hashFabricationFile( schematic.GetFullPath().ToStdString(), schematicSha256 ) )
+    {
+        return failure( "read_failed", "could not hash the complete native design inputs" );
+    }
+
+    wxFileName projectRoot = wxFileName::DirName( aProjectPath );
+    projectRoot.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    if( !canonicalizeExisting( projectRoot, true ) )
+        return failure( "project_unavailable", "active project directory could not be resolved" );
+
+    PRIVATE_TEMPORARY_DIRECTORY verificationSnapshot;
+
+    if( !createFabricationVerificationSnapshot(
+                projectRoot, board, schematic, sidecar,
+                { sourceRelativePath, boardRelativePath, schematicRelativePath },
+                verificationSnapshot, pathError ) )
+    {
+        return failure( "verification_snapshot_failed", pathError );
+    }
+
+    const wxString verificationProjectPath =
+            wxString::FromUTF8( verificationSnapshot.Path().string().c_str() );
+    wxFileName verificationBoard;
+
+    if( !resolveProjectFile( verificationProjectPath, boardRelativePath,
+                             verificationBoard, pathError ) )
+    {
+        return failure( "verification_snapshot_failed",
+                        "private board snapshot could not be resolved: " + pathError );
+    }
+
+    const auto decodeResult = [&]( const JSON& aResult, JSON& aData,
+                                   std::string& aError )
+    {
+        if( !aResult.is_object() || !aResult.value( "success", false )
+            || !aResult.contains( "contentItems" ) || !aResult["contentItems"].is_array()
+            || aResult["contentItems"].empty()
+            || !aResult["contentItems"][0].contains( "text" )
+            || !aResult["contentItems"][0]["text"].is_string() )
+        {
+            if( aResult.is_object() && aResult.contains( "contentItems" )
+                && aResult["contentItems"].is_array() && !aResult["contentItems"].empty()
+                && aResult["contentItems"][0].contains( "text" )
+                && aResult["contentItems"][0]["text"].is_string() )
+            {
+                JSON envelope = JSON::parse(
+                        aResult["contentItems"][0]["text"].get<std::string>(), nullptr, false );
+
+                if( envelope.is_object() && envelope.contains( "error" ) )
+                    aError = envelope["error"].value( "message", "verification failed" );
+            }
+
+            if( aError.empty() )
+                aError = "verification tool returned an invalid failure envelope";
+
+            return false;
+        }
+
+        JSON envelope = JSON::parse(
+                aResult["contentItems"][0]["text"].get<std::string>(), nullptr, false );
+
+        if( !envelope.is_object() || !envelope.value( "ok", false )
+            || !envelope.contains( "data" ) || !envelope["data"].is_object() )
+        {
+            aError = "verification tool returned an invalid success envelope";
+            return false;
+        }
+
+        aData = std::move( envelope["data"] );
+        return true;
+    };
+    JSON checks = JSON::object();
+
+    for( const auto& [kind, path] :
+        std::array<std::pair<const char*, std::string>, 3>{
+                 std::pair{ "erc", schematicRelativePath },
+                 std::pair{ "drc", boardRelativePath },
+                 std::pair{ "sourcing", sourceRelativePath } } )
+    {
+        JSON result = handleVerify( { { "operation", kind }, { "path", path } },
+                                    verificationProjectPath );
+        JSON data;
+        std::string checkError;
+
+        if( !decodeResult( result, data, checkError ) )
+            return failure( std::string( kind ) + "_check_failed", checkError );
+
+        if( kind == std::string_view( "sourcing" )
+            && data.value( "sourceSha256", "" ) != compiled.sourceSha256 )
+        {
+            return failure( "stale_source", "sourcing gate checked a different KDS revision" );
+        }
+
+        const bool clean = data.value( "clean", false );
+        const bool waivers = data.value( "waiversPresent", false );
+
+        if( !clean )
+        {
+            const JSON counts = data.value( "counts", JSON::object() );
+            return failure( std::string( kind ) + "_gate_failed",
+                            std::string( kind ) + " gate is not clean ("
+                                    + std::to_string( counts.value( "errors", 0 ) )
+                                    + " errors, "
+                                    + std::to_string( counts.value( "warnings", 0 ) )
+                                    + " warnings)" );
+        }
+
+        if( waivers && !allowWaivers )
+        {
+            return failure( "waiver_confirmation_required",
+                            std::string( kind )
+                                    + " has exclusions or ignored checks; set allowWaivers "
+                                      "only with explicit release approval" );
+        }
+
+        checks[kind] = { { "clean", true },
+                         { "waiversPresent", waivers },
+                         { "counts", data.value( "counts", JSON::object() ) } };
+
+        if( data.contains( "schema" ) )
+            checks[kind]["schema"] = data["schema"];
+
+        if( data.contains( "kicadVersion" ) )
+            checks[kind]["kicadVersion"] = data["kicadVersion"];
+    }
+
+    const auto inputsUnchanged = [&]()
+    {
+        std::string currentBoardHash;
+        std::string currentSchematicHash;
+        std::string currentSource;
+
+        return hashFabricationFile( board.GetFullPath().ToStdString(), currentBoardHash )
+               && hashFabricationFile( schematic.GetFullPath().ToStdString(),
+                                       currentSchematicHash )
+               && currentBoardHash == boardSha256 && currentSchematicHash == schematicSha256
+               && readDesignScriptSidecar( sidecar, currentSource, pathError )
+               && currentSource == source;
+    };
+
+    if( !inputsUnchanged() )
+    {
+        return failure( "stale_inputs",
+                        "board, schematic, or KDS changed while release gates were running" );
+    }
+
+    const std::filesystem::path root( projectRoot.GetFullPath().ToStdString() );
+    const std::string transactionId( KIID().AsString().ToUTF8() );
+    const std::filesystem::path staging =
+            root / ( ".kichad-fabrication-staging-" + transactionId );
+    const std::filesystem::path target = root / "fabrication";
+    const std::filesystem::path backup =
+            root / ( ".kichad-fabrication-backup-" + transactionId );
+    std::error_code filesystemError;
+    std::filesystem::create_directory( staging, filesystemError );
+
+    if( filesystemError )
+        return failure( "staging_failed", "could not create private fabrication staging" );
+
+    std::filesystem::permissions( staging, std::filesystem::perms::owner_all,
+                                  std::filesystem::perm_options::replace, filesystemError );
+
+    if( filesystemError )
+    {
+        std::error_code cleanupError;
+        std::filesystem::remove_all( staging, cleanupError );
+        return failure( "staging_failed", "could not secure private fabrication staging" );
+    }
+
+    const auto cleanupStaging = [&]()
+    {
+        std::error_code cleanupError;
+        std::filesystem::remove_all( staging, cleanupError );
+    };
+    wxFileName stagingDirectory =
+            wxFileName::DirName( wxString::FromUTF8( staging.string().c_str() ) );
+    std::string exportError;
+    const bool exported = m_nativeFabricationRunner
+                                  ? m_nativeFabricationRunner( verificationBoard, plan,
+                                                               stagingDirectory, exportError )
+                                  : runNativeKiCadFabrication( verificationBoard, plan,
+                                                               stagingDirectory, exportError );
+
+    if( !exported )
+    {
+        cleanupStaging();
+
+        if( exportError.empty() )
+            exportError = "native fabrication backend failed without an error message";
+
+        return failure( "export_failed", exportError );
+    }
+
+    size_t bomRows = 0;
+
+    if( !writeFabricationBom( compiled.ir, stagingDirectory, plan, bomRows, exportError ) )
+    {
+        cleanupStaging();
+        return failure( "bom_failed", exportError );
+    }
+
+    JSON artifacts;
+
+    if( !validateFabricationArtifacts( stagingDirectory, plan, artifacts, exportError ) )
+    {
+        cleanupStaging();
+        return failure( "artifact_validation_failed", exportError );
+    }
+
+    if( !inputsUnchanged() )
+    {
+        cleanupStaging();
+        return failure( "stale_inputs",
+                        "board, schematic, or KDS changed during fabrication export" );
+    }
+
+    const bool waiversPresent = checks["erc"].value( "waiversPresent", false )
+                                || checks["drc"].value( "waiversPresent", false );
+    JSON manifest = {
+        { "schema", "kichad.fabrication-manifest.v1" },
+        { "manifestVersion", 1 },
+        { "profile", plan["profile"] },
+        { "kicadVersion", std::string( GetMajorMinorPatchVersion().ToUTF8() ) },
+        { "releaseStatus", waiversPresent ? "waived" : "clean" },
+        { "waiversAllowed", allowWaivers },
+        { "source",
+          { { "kds", { { "path", sourceRelativePath },
+                          { "sha256", compiled.sourceSha256 } } },
+            { "board", { { "path", boardRelativePath }, { "sha256", boardSha256 },
+                           { "formatVersion", "20260206" } } },
+            { "schematic", { { "path", schematicRelativePath },
+                               { "sha256", schematicSha256 },
+                               { "formatVersion", "20260306" } } } } },
+        { "checks", checks },
+        { "bomRows", bomRows },
+        { "artifacts", artifacts }
+    };
+    wxFileName manifestPath( stagingDirectory.GetFullPath(), wxS( "manifest.json" ) );
+
+    if( !writeJsonAtomically( manifestPath, manifest, exportError ) )
+    {
+        cleanupStaging();
+        return failure( "manifest_failed", exportError );
+    }
+
+    std::string manifestSha256;
+
+    if( !hashFabricationFile( manifestPath.GetFullPath().ToStdString(), manifestSha256 ) )
+    {
+        cleanupStaging();
+        return failure( "manifest_failed", "could not hash the fabrication manifest" );
+    }
+
+    const bool targetExists = std::filesystem::exists( target, filesystemError );
+
+    if( filesystemError )
+    {
+        cleanupStaging();
+        return failure( "install_failed", "could not inspect existing fabrication output" );
+    }
+
+    if( targetExists )
+    {
+        const std::filesystem::file_status targetStatus =
+                std::filesystem::symlink_status( target, filesystemError );
+
+        if( filesystemError || std::filesystem::is_symlink( targetStatus )
+            || !std::filesystem::is_directory( targetStatus ) )
+        {
+            cleanupStaging();
+            return failure( "install_failed",
+                            "existing fabrication target must be a real project directory" );
+        }
+
+        std::filesystem::rename( target, backup, filesystemError );
+
+        if( filesystemError )
+        {
+            cleanupStaging();
+            return failure( "install_failed", "could not stage existing fabrication output" );
+        }
+    }
+
+    filesystemError.clear();
+    std::filesystem::rename( staging, target, filesystemError );
+
+    if( filesystemError )
+    {
+        std::error_code restoreError;
+
+        if( targetExists )
+            std::filesystem::rename( backup, target, restoreError );
+
+        cleanupStaging();
+        return failure( "install_failed",
+                        restoreError ? "fabrication installation and rollback both failed"
+                                     : "could not atomically install fabrication output" );
+    }
+
+    std::string installedManifestSha256;
+
+    if( !hashFabricationFile( target / "manifest.json", installedManifestSha256 )
+        || installedManifestSha256 != manifestSha256 )
+    {
+        std::error_code rollbackError;
+        std::filesystem::remove_all( target, rollbackError );
+
+        if( targetExists && !rollbackError )
+            std::filesystem::rename( backup, target, rollbackError );
+
+        return failure( "install_failed",
+                        rollbackError ? "installed manifest verification and rollback failed"
+                                      : "installed manifest verification failed; output restored" );
+    }
+
+    bool backupRetained = false;
+
+    if( targetExists )
+    {
+        filesystemError.clear();
+        std::filesystem::remove_all( backup, filesystemError );
+        backupRetained = static_cast<bool>( filesystemError );
+    }
+
+    uintmax_t artifactBytes = 0;
+
+    for( const JSON& artifact : artifacts )
+        artifactBytes += artifact.at( "bytes" ).get<uintmax_t>();
+
+    return success( { { "operation", "export" },
+                      { "path", sourceRelativePath },
+                      { "boardPath", boardRelativePath },
+                      { "schematicPath", schematicRelativePath },
+                      { "sourceSha256", compiled.sourceSha256 },
+                      { "profile", plan["profile"] },
+                      { "targetDirectory", "fabrication" },
+                      { "releaseStatus", waiversPresent ? "waived" : "clean" },
+                      { "checks", std::move( checks ) },
+                      { "artifactCount", artifacts.size() },
+                      { "artifactBytes", artifactBytes },
+                      { "bomRows", bomRows },
+                      { "manifestSha256", manifestSha256 },
+                      { "transaction", "confirmed staged validation and atomic replacement" },
+                      { "backupRetained", backupRetained } } );
 }
 
 

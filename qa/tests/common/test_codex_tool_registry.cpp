@@ -213,12 +213,13 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     CODEX_TOOL_REGISTRY registry( []() { return wxString(); } );
     JSON                specs = registry.Specs();
 
-    BOOST_REQUIRE_EQUAL( specs.size(), 5 );
+    BOOST_REQUIRE_EQUAL( specs.size(), 6 );
     BOOST_CHECK_EQUAL( specs[0]["name"].get<std::string>(), "project" );
     BOOST_CHECK_EQUAL( specs[1]["name"].get<std::string>(), "inspect" );
     BOOST_CHECK_EQUAL( specs[2]["name"].get<std::string>(), "design" );
     BOOST_CHECK_EQUAL( specs[3]["name"].get<std::string>(), "pcb" );
     BOOST_CHECK_EQUAL( specs[4]["name"].get<std::string>(), "verify" );
+    BOOST_CHECK_EQUAL( specs[5]["name"].get<std::string>(), "fabricate" );
     const JSON& designOperations =
             specs[2]["inputSchema"]["properties"]["operation"]["enum"];
     BOOST_REQUIRE_EQUAL( designOperations.size(), 6 );
@@ -231,6 +232,11 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( verifyOperations[0].get<std::string>(), "erc" );
     BOOST_CHECK_EQUAL( verifyOperations[1].get<std::string>(), "drc" );
     BOOST_CHECK_EQUAL( verifyOperations[2].get<std::string>(), "sourcing" );
+    const JSON& fabricationOperations =
+            specs[5]["inputSchema"]["properties"]["operation"]["enum"];
+    BOOST_REQUIRE_EQUAL( fabricationOperations.size(), 2 );
+    BOOST_CHECK_EQUAL( fabricationOperations[0].get<std::string>(), "plan" );
+    BOOST_CHECK_EQUAL( fabricationOperations[1].get<std::string>(), "export" );
 }
 
 

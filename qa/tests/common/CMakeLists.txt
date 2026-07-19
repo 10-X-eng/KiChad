@@ -40,6 +40,7 @@ set( QA_COMMON_SRCS
     test_collector.cpp
     test_color4d.cpp
     test_commit.cpp
+    test_codex_tool_fabricate.cpp
     test_codex_tool_registry.cpp
     test_codex_thread_store.cpp
     test_design_script_compiler.cpp
