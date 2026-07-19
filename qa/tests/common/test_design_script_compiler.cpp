@@ -1172,6 +1172,18 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesIpcD356ProductionOutput )
+{
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
+                    "(kichad_design (version 1) (project electrical_test) "
+                    "(output ipcd356))" );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 1 );
+    BOOST_CHECK_EQUAL( result.ir["outputs"][0]["kind"].get<std::string>(), "ipcd356" );
+}
+
+
 BOOST_AUTO_TEST_CASE( CompilesCanonicalGlobalAndProjectLibraryDependencies )
 {
     const std::string source = R"KDS((kichad_design

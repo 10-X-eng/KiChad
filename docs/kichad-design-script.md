@@ -252,7 +252,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v1`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v2`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -262,6 +262,7 @@ production-ready plan requires all of the following declarations in the same sid
 (check fabrication)
 (output gerbers)
 (output drill)
+(output ipcd356)
 (output pick_place)
 (output bom)
 ; optional: (output step)
@@ -286,8 +287,9 @@ ignored checks stop release unless the user explicitly approves waivers and `all
 the manifest then records release status `waived` rather than `clean`.
 
 The output is one project-side `fabrication/` directory containing Gerber layer files and a Gerber
-job, Excellon drill files plus PDF maps and report, placement CSV, a BOM derived directly from KDS
-sourcing forms, optional STEP/PDF files, and `manifest.json`. KiChad bounds and signature-validates
+job, Excellon drill files plus PDF maps and report, an IPC-D-356 electrical-test netlist, placement
+CSV, a BOM derived directly from KDS sourcing forms, optional STEP/PDF files, and `manifest.json`.
+KiChad bounds and signature-validates
 every artifact. The BOM reference set must equal all footprint-bearing KDS components, while the
 native placement reference set must equal all non-DNP footprint-bearing KDS components; empty,
 duplicate, missing, or extra references reject the package. KiChad records exact byte counts and

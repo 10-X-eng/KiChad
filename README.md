@@ -48,10 +48,11 @@ from any other KiCad version, and returns complete counts plus bounded pageable 
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
 
-The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v1` release
+The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v2` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
 the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
-Gerber, drill, placement, and BOM intent plus an explicit physical stackup. Export reruns the gates
+Gerber, drill, IPC-D-356 electrical-test, placement, and BOM intent plus an explicit physical
+stackup. Export reruns the gates
 and the matching sibling `kicad-cli` from a private bounded project snapshot, so KiCad cannot rewrite
 live local settings while checking or plotting. The snapshot includes project-local symbol and
 footprint libraries referenced by its native tables. A visible final-action confirmation is

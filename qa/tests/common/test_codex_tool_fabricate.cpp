@@ -195,6 +195,7 @@ std::string productionKds( const std::string& aVerifiedOn )
   (check fabrication)
   (output gerbers)
   (output drill)
+  (output ipcd356)
   (output pick_place)
   (output bom)
   (output step)
@@ -281,7 +282,6 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
 
         if( kind == "gerbers" )
         {
-            size_t index = 0;
             JSON files = JSON::array();
 
             for( const JSON& layer : job.at( "layers" ) )
@@ -292,7 +292,7 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 const std::string source =
                         "G04 #@! TF.GenerationSoftware,KiCad,Pcbnew,10.0.4*\n"
                         "%FSLAX46Y46*%\n"
-                        + std::string( aMalformed && index == 0 ? "M00*\n" : "M02*\n" );
+                        "M02*\n";
 
                 if( !write( output / fileName, source ) )
                 {
@@ -303,7 +303,6 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 files.push_back( { { "Path", fileName },
                                    { "FileFunction", "Other" },
                                    { "FilePolarity", "Positive" } } );
-                ++index;
             }
 
             JSON gerberJob = {
@@ -328,6 +327,21 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 || !write( output / "drill-report.rpt", "Drill report for design.kicad_pcb\n" ) )
             {
                 aError = "could not write fake drill outputs";
+                return false;
+            }
+        }
+        else if( kind == "ipcd356" )
+        {
+            const std::string source = aMalformed
+                                               ? "P  CODE 00\nP  UNITS CUST 0\n"
+                                               : "P  CODE 00\nP  UNITS CUST 0\n"
+                                                 "327NET1             U1    -1          "
+                                                 "A01X+000000Y+000000X0100Y0100R000S1\n"
+                                                 "999\n";
+
+            if( !write( output, source ) )
+            {
+                aError = "could not write fake IPC-D-356 output";
                 return false;
             }
         }
@@ -423,10 +437,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v1" );
+                       "kichad-production-10.0.4-v2" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 6 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 7 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
@@ -730,6 +744,9 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
                                + wxS( "fabrication/gerbers/"
                                       "fabrication_clean-job.gbrjob" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/electrical-test/"
+                                      "fabrication_clean.d356" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/assembly/"
                                       "fabrication_clean-bom.csv" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
@@ -855,14 +872,21 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName positionsPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/assembly/fabrication_component-positions.csv" ) );
+    wxFileName electricalTestPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/electrical-test/fabrication_component.d356" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
+    BOOST_REQUIRE( electricalTestPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );
     BOOST_CHECK( !manifest["checks"]["erc"]["waiversPresent"].get<bool>() );
     BOOST_CHECK( !manifest["checks"]["drc"]["waiversPresent"].get<bool>() );
+    const std::string electricalTest = readText( electricalTestPath );
+    BOOST_CHECK_NE( electricalTest.find( "327TEST_A" ), std::string::npos );
+    BOOST_CHECK_NE( electricalTest.find( "327TEST_B" ), std::string::npos );
     const std::string bom = readText( bomPath );
     BOOST_CHECK_NE( bom.find( "\"R1\",\"10k\","
                               "\"Resistor_SMD:R_0603_1608Metric\",1,"

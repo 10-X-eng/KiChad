@@ -89,10 +89,11 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v1` profile requires explicit stackup intent, ERC, DRC,
-sourcing, and fabrication checks, plus Gerber, drill, placement, and BOM outputs; STEP and PDF are
-optional declarations. Final export requires the pre-turn snapshot and a separate visible host
-confirmation that the model cannot forge in tool arguments. Planning structurally compares the
+sidecar. The fixed `kichad-production-10.0.4-v2` profile requires explicit stackup intent, ERC, DRC,
+sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
+outputs; STEP and PDF are optional declarations. Final export requires the pre-turn snapshot and a
+separate visible host confirmation that the model cannot forge in tool arguments. Planning
+structurally compares the
 native board's enabled production layers and complete ordered stackup—including thicknesses,
 materials, dielectric values/locks, finish, impedance, connector, and plating policy—to compiled
 KDS intent. KiChad copies the bounded verification

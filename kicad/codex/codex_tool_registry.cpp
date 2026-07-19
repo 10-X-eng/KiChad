@@ -1550,6 +1550,11 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
                           "--report-path", ( output / "drill-report.rpt" ).string(),
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "ipcd356" )
+        {
+            arguments = { "pcb", "export", "ipcd356", "--output", output.string(),
+                          aBoard.GetFullPath().ToStdString() };
+        }
         else if( kind == "pick_place" )
         {
             arguments = { "pcb", "export", "pos", "--output", output.string(),
@@ -1596,10 +1601,10 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         "erc", "drc", "sourcing", "fabrication"
     };
     static constexpr const char* OUTPUT_ORDER[] = {
-        "gerbers", "drill", "pick_place", "bom", "step", "pdf"
+        "gerbers", "drill", "ipcd356", "pick_place", "bom", "step", "pdf"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
-        "gerbers", "drill", "pick_place", "bom"
+        "gerbers", "drill", "ipcd356", "pick_place", "bom"
     };
     std::set<std::string> checks;
     std::set<std::string> outputs;
@@ -1715,6 +1720,10 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
             job["relativePath"] = "drill";
             job["directory"] = true;
         }
+        else if( std::string_view( kind ) == "ipcd356" )
+        {
+            job["relativePath"] = "electrical-test/" + aFileStem + ".d356";
+        }
         else if( std::string_view( kind ) == "pick_place" )
         {
             job["relativePath"] = "assembly/" + aFileStem + "-positions.csv";
@@ -1736,7 +1745,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v1" },
+    return { { "profile", "kichad-production-10.0.4-v2" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -2583,6 +2592,18 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path.starts_with( "electrical-test/" ) && extension == ".d356" )
+        {
+            kind = "ipcd356";
+
+            if( !prefix.starts_with( "P  CODE 00" )
+                || prefix.find( "P  UNITS CUST 0" ) == std::string::npos
+                || ( !suffix.ends_with( "999\n" ) && !suffix.ends_with( "999\r\n" ) ) )
+            {
+                aError = "IPC-D-356 artifact failed native signature validation";
+                return false;
+            }
+        }
         else if( path.starts_with( "assembly/" ) && path.ends_with( "-positions.csv" ) )
         {
             kind = "pick_place";
@@ -2700,6 +2721,8 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                  && ( counts["drill_file"] == 0 || counts["drill_map"] == 0
                       || counts["drill_report"] != 1 ) )
             aError = "drill export is missing Excellon, map, or report artifacts";
+        else if( kind == "ipcd356" && counts["ipcd356"] != 1 )
+            aError = "IPC-D-356 export did not produce exactly one electrical-test artifact";
         else if( kind == "pick_place" && counts["pick_place"] != 1 )
             aError = "position export did not produce exactly one CSV artifact";
         else if( kind == "bom" && counts["bom"] != 1 )

@@ -85,6 +85,7 @@
   (check fabrication)
   (output gerbers)
   (output drill)
+  (output ipcd356)
   (output pick_place)
   (output bom)
   (output step)
