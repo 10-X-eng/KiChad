@@ -42,6 +42,7 @@ set( QA_PCBNEW_SRCS
     test_board_commit.cpp
     test_clipboard_group.cpp
     test_board_statistics.cpp
+    test_board_stackup_serialization.cpp
     test_cam_backdrill.cpp
     test_clip_line_to_pad.cpp
     test_component_classes.cpp

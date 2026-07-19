@@ -13,6 +13,7 @@
 
 #include <kicad/codex/codex_tool_registry.h>
 #include <kicad/codex/design_script_pcb_planner.h>
+#include <kicad/codex/kicad_ipc_client.h>
 
 #include <atomic>
 #include <import_export.h>
@@ -39,6 +40,40 @@ using JSON = nlohmann::json;
 JSON envelope( const JSON& aResult )
 {
     return JSON::parse( aResult.at( "contentItems" ).at( 0 ).at( "text" ).get<std::string>() );
+}
+
+
+kiapi::board::BoardStackup mockTwoLayerStackup( const std::string& aFinish )
+{
+    kiapi::board::BoardStackup stackup;
+    stackup.mutable_finish()->set_type_name( aFinish );
+    stackup.mutable_impedance()->set_is_controlled( false );
+    stackup.mutable_edge()->mutable_plating()->set_has_edge_plating( false );
+    auto* copper = stackup.add_layers();
+    copper->set_layer( kiapi::board::types::BL_F_Cu );
+    copper->set_enabled( true );
+    copper->set_type( kiapi::board::BSLT_COPPER );
+    copper->set_type_name( "copper" );
+    copper->mutable_thickness()->set_value_nm( 35000 );
+    auto* dielectric = stackup.add_layers();
+    dielectric->set_layer( kiapi::board::types::BL_UNDEFINED );
+    dielectric->set_enabled( true );
+    dielectric->set_type( kiapi::board::BSLT_DIELECTRIC );
+    dielectric->set_type_name( "core" );
+    dielectric->set_dielectric_layer_id( 1 );
+    dielectric->mutable_thickness()->set_value_nm( 1530000 );
+    auto* properties = dielectric->mutable_dielectric()->add_layer();
+    properties->mutable_thickness()->set_value_nm( 1530000 );
+    properties->set_material_name( "FR4" );
+    properties->set_epsilon_r( 4.5 );
+    properties->set_loss_tangent( 0.02 );
+    auto* bottom = stackup.add_layers();
+    bottom->set_layer( kiapi::board::types::BL_B_Cu );
+    bottom->set_enabled( true );
+    bottom->set_type( kiapi::board::BSLT_COPPER );
+    bottom->set_type_name( "copper" );
+    bottom->mutable_thickness()->set_value_nm( 35000 );
+    return stackup;
 }
 
 
@@ -623,9 +658,12 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     std::map<std::string, google::protobuf::Any> liveItems;
     std::map<std::string, google::protobuf::Any> transactionBefore;
     int commitCount = 0;
+    int stackupUpdateCount = 0;
     bool rejectNextCreate = false;
     bool rejectNextCommitResponse = false;
+    bool rejectNextStackupResponse = false;
     bool transactionActive = false;
+    kiapi::board::BoardStackup currentStackup = mockTwoLayerStackup( "None" );
 
     server.SetCallback(
             [&]( std::string* aSerializedRequest )
@@ -667,6 +705,38 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                         items.set_status( kiapi::common::types::IRS_OK );
                         response.mutable_status()->set_status( kiapi::common::AS_OK );
                         response.mutable_message()->PackFrom( items );
+                    }
+                }
+                else if( request.message().Is<kiapi::board::commands::GetBoardStackup>() )
+                {
+                    kiapi::board::commands::BoardStackupResponse stackup;
+                    stackup.mutable_stackup()->CopyFrom( currentStackup );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( stackup );
+                }
+                else if( request.message().Is<kiapi::board::commands::UpdateBoardStackup>() )
+                {
+                    kiapi::board::commands::UpdateBoardStackup update;
+
+                    if( request.message().UnpackTo( &update ) && update.has_stackup() )
+                    {
+                        currentStackup.CopyFrom( update.stackup() );
+                        ++stackupUpdateCount;
+
+                        if( rejectNextStackupResponse )
+                        {
+                            rejectNextStackupResponse = false;
+                            response.mutable_status()->set_status( kiapi::common::AS_TIMEOUT );
+                            response.mutable_status()->set_error_message(
+                                    "injected lost stackup acknowledgement" );
+                        }
+                        else
+                        {
+                            kiapi::board::commands::BoardStackupResponse stackup;
+                            stackup.mutable_stackup()->CopyFrom( currentStackup );
+                            response.mutable_status()->set_status( kiapi::common::AS_OK );
+                            response.mutable_message()->PackFrom( stackup );
+                        }
                     }
                 }
                 else if( request.message().Is<kiapi::common::commands::BeginCommit>() )
@@ -861,6 +931,14 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
   (net SIGNAL (pin R1 1) (pin R2 1))
   (board
+    (stackup
+      (finish "ENIG") (impedance_controlled false)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 1.53mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
+        (copper B.Cu (thickness 35um))))
     (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
     (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
       (width 0.25mm) (layer F.Cu))))
@@ -878,6 +956,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_CHECK_EQUAL( envelope( applied )["data"]["counts"]["create"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
     BOOST_CHECK_EQUAL( commitCount, 1 );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 1 );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", "managed.kicad_kds" },
@@ -886,6 +966,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     BOOST_CHECK_EQUAL( envelope( repeated )["data"]["counts"]["update"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 2 );
 
     const std::string reduced = R"KDS((kichad_design
   (version 1)
@@ -917,6 +999,14 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
   (net SIGNAL (pin R1 1) (pin R2 1))
   (board
+    (stackup
+      (finish "HASL") (impedance_controlled true)
+      (edge_connector yes) (edge_plating true)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 1.53mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (outline (rect (id edge) (at 0mm 0mm) (size 30mm 10mm)))
     (route SIGNAL (id recovered-trace) (from 1mm 2mm) (to 4mm 4mm)
       (width 0.3mm) (layer F.Cu))))
@@ -927,6 +1017,18 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                                              { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( replaced.at( "success" ).get<bool>(), replaced.dump() );
     hash = envelope( replaced )["data"]["sourceSha256"].get<std::string>();
+
+    rejectNextStackupResponse = true;
+    JSON lostStackup = registry.Handle( "design", { { "operation", "apply" },
+                                                     { "path", "managed.kicad_kds" },
+                                                     { "boardPath", "design.kicad_pcb" },
+                                                     { "expectedSha256", hash } } );
+    BOOST_CHECK( !lostStackup.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( lostStackup )["error"]["code"].get<std::string>(),
+                       "stackup_apply_failed" );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 4 );
+
     rejectNextCreate = true;
     JSON failed = registry.Handle( "design", { { "operation", "apply" },
                                                 { "path", "managed.kicad_kds" },
@@ -935,6 +1037,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_CHECK( !failed.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( failed )["error"]["code"].get<std::string>(), "apply_failed" );
     BOOST_CHECK_EQUAL( liveItems.size(), 1 );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 6 );
     BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
                                            wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
 
@@ -947,6 +1051,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_CHECK_EQUAL( envelope( ambiguous )["error"]["code"].get<std::string>(),
                        "transaction_failed" );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 8 );
     BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
                                            wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
 
@@ -957,6 +1063,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_REQUIRE_MESSAGE( recovered.at( "success" ).get<bool>(), recovered.dump() );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
     BOOST_CHECK_EQUAL( envelope( recovered )["data"]["counts"]["update"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "HASL" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 9 );
     BOOST_CHECK( !wxFileExists( wxFileName( fixture.Root(),
                                             wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
     server.Stop();
@@ -1392,6 +1500,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
+    BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", sourceName },
@@ -1403,6 +1512,35 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 12 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
+    BOOST_CHECK( repeatedData["stackupApplied"].get<bool>() );
+
+    KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.stackup", socketDirectory );
+    KICHAD_IPC_TARGET ipcTarget;
+    std::string       ipcError;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.FindOpenPcb( project.GetFullPath(), board.GetFullPath(),
+                                   ipcTarget, ipcError ),
+            ipcError );
+    kiapi::board::commands::GetBoardStackup stackupRequest;
+    stackupRequest.mutable_board()->CopyFrom( ipcTarget.document );
+    kiapi::common::ApiResponse stackupEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, stackupRequest, stackupEnvelope, ipcError ), ipcError );
+    kiapi::board::commands::BoardStackupResponse stackupResponse;
+    BOOST_REQUIRE( stackupEnvelope.message().UnpackTo( &stackupResponse ) );
+    const kiapi::board::BoardStackup& stackup = stackupResponse.stackup();
+    BOOST_REQUIRE_EQUAL( stackup.layers_size(), 9 );
+    BOOST_CHECK_EQUAL( stackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK( stackup.impedance().is_controlled() );
+    BOOST_CHECK( stackup.edge().connector().bevelled() );
+    BOOST_CHECK( stackup.edge().plating().has_edge_plating() );
+    BOOST_CHECK_EQUAL( stackup.layers( 0 ).color_name(), "White" );
+    BOOST_CHECK_EQUAL( stackup.layers( 3 ).thickness().value_nm(), 35000 );
+    BOOST_CHECK_EQUAL( stackup.layers( 4 ).dielectric_layer_id(), 1 );
+    BOOST_CHECK_EQUAL(
+            stackup.layers( 4 ).dielectric().layer( 0 ).thickness().value_nm(), 1510000 );
+    BOOST_CHECK( stackup.layers( 4 ).dielectric().layer( 0 ).thickness_locked() );
+    BOOST_CHECK_EQUAL( stackup.layers( 6 ).material_name(), "LPI" );
 
     auto getItems = [&]( const std::string& aItemType, size_t aExpectedCount )
     {

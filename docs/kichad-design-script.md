@@ -64,7 +64,16 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
   (net LED_A (pin R1 1) (pin LED1 1))
 
   (board
-    (stackup (copper_layers 2) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG")
+      (impedance_controlled false)
+      (edge_connector none)
+      (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 1.53mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
+        (copper B.Cu (thickness 35um))))
     (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
@@ -109,6 +118,52 @@ rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zon
 board text require logical `id` fields. Those IDs are stable across formatting and statement
 reordering and are the source identity used by transactional backends; component placement uses the
 already-unique reference.
+
+### Stackup form
+
+KDS authors one explicit top-to-bottom physical stack. Copper-layer count and total board thickness
+are derived from it; they are deliberately not accepted as separate fields that could disagree with
+the authored layers.
+
+```scheme
+(stackup
+  (finish "ENIG")
+  (impedance_controlled true|false)
+  (edge_connector none|yes|bevelled)
+  (edge_plating true|false)
+  (layers
+    ; optional top technical layers, only in this order
+    (silkscreen F.SilkS (material "Epoxy ink") (color "White"))
+    (solderpaste F.Paste)
+    (soldermask F.Mask (thickness 10um) (material "LPI")
+      (epsilon_r 3.5) (loss_tangent 0.025) (color "Green"))
+
+    (copper F.Cu (thickness 35um))
+    (dielectric core (thickness 0.486mm) (material "FR408HR")
+      (epsilon_r 3.68) (loss_tangent 0.0092) (locked true))
+    (copper In1.Cu (thickness 18um))
+    (dielectric prepreg (thickness 0.486mm) (material "FR408HR 2116")
+      (epsilon_r 3.66) (loss_tangent 0.0092) (locked false))
+    (copper In2.Cu (thickness 18um))
+    (dielectric core (thickness 0.517mm) (material "FR408HR")
+      (epsilon_r 3.68) (loss_tangent 0.0092) (locked true))
+    (copper B.Cu (thickness 35um))
+
+    ; optional bottom technical layers, only in this order
+    (soldermask B.Mask (thickness 10um) (material "LPI")
+      (epsilon_r 3.5) (loss_tangent 0.025) (color "Green"))
+    (solderpaste B.Paste)
+    (silkscreen B.SilkS (material "Epoxy ink") (color "White"))))
+```
+
+All four global fabrication policies and the `layers` declaration are required. A stack has 2
+through 32 even copper layers ordered `F.Cu`, sequential `In1.Cu` through `In30.Cu`, then `B.Cu`,
+with exactly one `core` or `prepreg` dielectric between adjacent copper layers. Physical board
+layers cannot repeat. Copper and dielectric thickness, dielectric material, relative permittivity,
+loss tangent, and thickness lock are explicit. Solder-mask physical properties and silkscreen
+material/color are explicit when those optional layers are present. Total thickness is the sum of
+copper, dielectric, and solder-mask thicknesses and must not exceed 20 mm. The former
+`copper_layers`/`thickness` shorthand is invalid KDS: there is one stackup representation.
 
 ### Copper zone form
 
@@ -295,9 +350,14 @@ missing ones are recreated, and only previously managed obsolete items are delet
 KiCad transaction. A project-confined apply journal makes an interrupted operation safely
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
-The apply backend currently executes rectangular outlines, component placement, straight traces,
-arcs, vias, copper zones, keepout rule areas, native board text, and all five native dimension
-styles. A zone explicitly declares its net, stable ID, one or more copper layers, bounded
+The apply backend currently executes physical board stackups, rectangular outlines, component
+placement, straight traces, arcs, vias, copper zones, keepout rule areas, native board text, and all
+five native dimension styles. Stackup apply uses KiCad's native protobuf stackup message and editor
+endpoint; it validates the entire ordered structure before mutation, derives enabled physical
+layers and board thickness, and preserves rather than deletes objects when technical layers are
+disabled. Removing a non-empty copper layer is rejected. The pre-apply stack is retained in the
+apply journal and restored if a later transactional item mutation fails. A zone explicitly declares
+its net, stable ID, one or more copper layers, bounded
 polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
 solid or hatched fill, priority, border display, and lock state. No manufacturing setting is
 inherited silently. Zone creation and updates are committed through KiCad 10 IPC, after which
@@ -310,12 +370,15 @@ Placement requires exactly one live footprint with the KDS component reference a
 an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
 state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
 existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
-The backend still refuses stackup or any structurally retained form before mutation until that form
-has its own typed backend and rollback coverage.
+Any other structurally retained form is refused before mutation until it has its own typed backend
+and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
-an isolated temporary project, starts its own build-tree PCB Editor, applies twelve managed items, and
-reapplies the unchanged source to verify updates reuse the same deterministic identities. It also
+an isolated temporary project, starts its own build-tree PCB Editor, applies one lossless physical
+stackup plus twelve managed items, and reapplies the unchanged source to verify updates reuse the
+same deterministic identities. It reads the stackup back from the live editor and verifies finish,
+impedance, bevel, plating, all nine ordered physical layers, thicknesses, material, color, loss,
+permittivity, and dielectric lock. It also
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
 and flipped child layers survive both applies. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked

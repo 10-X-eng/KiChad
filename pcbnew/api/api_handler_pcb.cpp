@@ -218,6 +218,8 @@ API_HANDLER_PCB::API_HANDLER_PCB( PCB_EDIT_FRAME* aFrame ) :
             &API_HANDLER_PCB::handleRemoveFromSelection );
 
     registerHandler<GetBoardStackup, BoardStackupResponse>( &API_HANDLER_PCB::handleGetStackup );
+    registerHandler<UpdateBoardStackup, BoardStackupResponse>(
+            &API_HANDLER_PCB::handleUpdateStackup );
     registerHandler<GetBoardEnabledLayers, BoardEnabledLayersResponse>(
         &API_HANDLER_PCB::handleGetBoardEnabledLayers );
     registerHandler<SetBoardEnabledLayers, BoardEnabledLayersResponse>(
@@ -1223,6 +1225,127 @@ HANDLER_RESULT<BoardStackupResponse> API_HANDLER_PCB::handleGetStackup(
 }
 
 
+HANDLER_RESULT<BoardStackupResponse> API_HANDLER_PCB::handleUpdateStackup(
+        const HANDLER_CONTEXT<UpdateBoardStackup>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    google::protobuf::Any serialized;
+    serialized.PackFrom( aCtx.Request.stackup() );
+    BOARD_STACKUP requested;
+
+    if( !requested.Deserialize( serialized ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( "stackup is incomplete, inconsistent, or outside native bounds" );
+        return tl::unexpected( error );
+    }
+
+    BOARD* pcbBoard = frame()->GetBoard();
+    LSET   previousEnabled = pcbBoard->GetEnabledLayers();
+    LSET   enabled = previousEnabled & ~BOARD_STACKUP::StackupAllowedBrdLayers();
+    int    copperLayerCount = 0;
+
+    for( const board::BoardStackupLayer& layer : aCtx.Request.stackup().layers() )
+    {
+        if( layer.type() == board::BoardStackupLayerType::BSLT_DIELECTRIC
+            || layer.user_name().empty() )
+        {
+            continue;
+        }
+
+        PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
+
+        if( id == UNDEFINED_LAYER )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "stackup user_name is read-only; use the layer-name API" );
+            return tl::unexpected( error );
+        }
+
+        const wxScopedCharBuffer currentName = pcbBoard->GetLayerName( id ).ToUTF8();
+        const std::string currentNameUtf8( currentName.data(), currentName.length() );
+
+        if( layer.user_name() != currentNameUtf8 )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "stackup user_name is read-only; use the layer-name API" );
+            return tl::unexpected( error );
+        }
+    }
+
+    for( const BOARD_STACKUP_ITEM* item : requested.GetList() )
+    {
+        if( item->GetBrdLayerId() != UNDEFINED_LAYER )
+        {
+            enabled.set( item->GetBrdLayerId() );
+
+            if( IsCopperLayer( item->GetBrdLayerId() ) )
+                ++copperLayerCount;
+        }
+    }
+
+    LSET removed = previousEnabled & ~enabled;
+
+    for( PCB_LAYER_ID layer : removed )
+    {
+        if( IsCopperLayer( layer ) && pcbBoard->HasItemsOnLayer( layer ) )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message(
+                    fmt::format( "stackup cannot disable non-empty layer {}",
+                                 pcbBoard->GetLayerName( layer ).ToStdString() ) );
+            return tl::unexpected( error );
+        }
+    }
+
+    BOARD_DESIGN_SETTINGS& settings = pcbBoard->GetDesignSettings();
+    const BOARD_STACKUP    previousStackup = pcbBoard->GetStackupOrDefault();
+    const int              thickness = requested.BuildBoardThicknessFromStackup();
+    const bool             modified = requested != previousStackup
+                                      || enabled != previousEnabled
+                                      || thickness != settings.GetBoardThickness()
+                                      || !settings.m_HasStackup;
+
+    if( modified )
+    {
+        settings.GetStackupDescriptor() = requested;
+        settings.SetBoardThickness( thickness );
+        settings.m_HasStackup = true;
+        pcbBoard->SetEnabledLayers( enabled );
+        pcbBoard->SetCopperLayerCount( copperLayerCount );
+        pcbBoard->SetVisibleLayers( pcbBoard->GetVisibleLayers() | ( enabled ^ previousEnabled ) );
+        frame()->UpdateUserInterface();
+        frame()->OnModify();
+        frame()->Refresh();
+    }
+
+    BoardStackupResponse response;
+    google::protobuf::Any normalized;
+    pcbBoard->GetStackupOrDefault().Serialize( normalized );
+    normalized.UnpackTo( response.mutable_stackup() );
+
+    for( board::BoardStackupLayer& layer : *response.mutable_stackup()->mutable_layers() )
+    {
+        if( layer.type() == board::BoardStackupLayerType::BSLT_DIELECTRIC )
+            continue;
+
+        PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
+        wxCHECK2( id != UNDEFINED_LAYER, continue );
+        layer.set_user_name( pcbBoard->GetLayerName( id ).ToUTF8() );
+    }
+
+    return response;
+}
+
+
 HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleGetBoardEnabledLayers(
         const HANDLER_CONTEXT<GetBoardEnabledLayers>& aCtx )
 {
@@ -1260,11 +1383,12 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
-    if( aCtx.Request.copper_layer_count() % 2 != 0 )
+    if( aCtx.Request.copper_layer_count() < 2
+        || aCtx.Request.copper_layer_count() % 2 != 0 )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-        e.set_error_message( "copper_layer_count must be an even number" );
+        e.set_error_message( "copper_layer_count must be an even number of at least 2" );
         return tl::unexpected( e );
     }
 
@@ -1287,34 +1411,35 @@ HANDLER_RESULT<BoardEnabledLayersResponse> API_HANDLER_PCB::handleSetBoardEnable
     BOARD* board = frame()->GetBoard();
 
     LSET previousEnabled = board->GetEnabledLayers();
-    LSET changedLayers = enabled ^ previousEnabled;
-
-    board->SetEnabledLayers( enabled );
-    board->SetVisibleLayers( board->GetVisibleLayers() | changedLayers );
-
     LSEQ removedLayers;
 
     for( PCB_LAYER_ID layer_id : previousEnabled )
     {
-        if( !enabled[layer_id] && board->HasItemsOnLayer( layer_id ) )
+        if( !enabled[layer_id] && IsCopperLayer( layer_id )
+            && board->HasItemsOnLayer( layer_id ) )
             removedLayers.push_back( layer_id );
     }
 
-    bool modified = false;
-
     if( !removedLayers.empty() )
     {
-        m_frame->GetToolManager()->RunAction( PCB_ACTIONS::selectionClear );
-
-        for( PCB_LAYER_ID layer_id : removedLayers )
-            modified |= board->RemoveAllItemsOnLayer( layer_id );
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message(
+                fmt::format( "cannot disable non-empty layer {}",
+                             board->GetLayerName( removedLayers.front() ).ToStdString() ) );
+        return tl::unexpected( error );
     }
 
     if( enabled != previousEnabled )
+    {
+        LSET changedLayers = enabled ^ previousEnabled;
+        board->SetEnabledLayers( enabled );
+        board->SetCopperLayerCount( copperLayerCount );
+        board->SetVisibleLayers( board->GetVisibleLayers() | changedLayers );
         frame()->UpdateUserInterface();
-
-    if( modified )
         frame()->OnModify();
+        frame()->Refresh();
+    }
 
     BoardEnabledLayersResponse response;
 

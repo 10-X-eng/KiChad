@@ -42,8 +42,9 @@ message BoardStackupResponse
   kiapi.board.BoardStackup stackup = 1;
 }
 
-// Changes the stackup for the given board according to the contents of the message (**not yet implemented**)
-// WARNING: any existing content on layers that are removed by this call is deleted.  This operation cannot be undone.
+// Changes the stackup for the given board according to the contents of the message.
+// No board items are deleted.  Removing a non-empty copper layer is rejected; items on disabled
+// technical layers are preserved and become available again if the layer is re-enabled.
 // Returns BoardStackupResponse with the updated stackup, in normalized form
 message UpdateBoardStackup
 {
@@ -66,7 +67,8 @@ message BoardEnabledLayersResponse
 }
 
 // Changes which layers are enabled in the board stackup
-// WARNING: any existing content on layers that are removed by this call is deleted.  This operation cannot be undone.
+// No board items are deleted.  Removing a non-empty copper layer is rejected; items on disabled
+// technical layers are preserved and become available again if the layer is re-enabled.
 // Returns BoardEnabledLayersResponse with the updated layer set.
 message SetBoardEnabledLayers
 {

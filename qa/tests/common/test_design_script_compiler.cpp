@@ -38,7 +38,14 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
   (net LED_A (pin R1 1) (pin LED1 1))
   (sheet root (title "Main"))
   (board
-    (stackup (copper_layers 2) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 1.53mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
@@ -126,6 +133,115 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesOneExplicitLosslessStackupRepresentation )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project controlled_stackup)
+  (board
+    (stackup
+      (finish "ENIG")
+      (impedance_controlled true)
+      (edge_connector bevelled)
+      (edge_plating true)
+      (layers
+        (silkscreen F.SilkS (material "Epoxy ink") (color "White"))
+        (solderpaste F.Paste)
+        (soldermask F.Mask (thickness 10um) (material "LPI")
+          (epsilon_r 3.5) (loss_tangent 0.025) (color "Green"))
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 0.486mm) (material "FR408HR")
+          (epsilon_r 3.68) (loss_tangent 0.0092) (locked true))
+        (copper In1.Cu (thickness 18um))
+        (dielectric prepreg (thickness 0.486mm) (material "FR408HR 2116")
+          (epsilon_r 3.66) (loss_tangent 0.0092) (locked false))
+        (copper In2.Cu (thickness 18um))
+        (dielectric core (thickness 0.517mm) (material "FR408HR")
+          (epsilon_r 3.68) (loss_tangent 0.0092) (locked true))
+        (copper B.Cu (thickness 35um))
+        (soldermask B.Mask (thickness 10um) (material "LPI")
+          (epsilon_r 3.5) (loss_tangent 0.025) (color "Green"))
+        (solderpaste B.Paste)
+        (silkscreen B.SilkS (material "Epoxy ink") (color "White"))))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( compiled.ir["pcb"].size(), 1 );
+    const nlohmann::json& stackup = compiled.ir["pcb"][0];
+    BOOST_CHECK_EQUAL( stackup["kind"].get<std::string>(), "stackup" );
+    BOOST_CHECK_EQUAL( stackup["finish"].get<std::string>(), "ENIG" );
+    BOOST_CHECK( stackup["impedanceControlled"].get<bool>() );
+    BOOST_CHECK_EQUAL( stackup["edgeConnector"].get<std::string>(), "bevelled" );
+    BOOST_CHECK( stackup["edgePlating"].get<bool>() );
+    BOOST_CHECK_EQUAL( stackup["copperLayers"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL( stackup["thicknessNm"].get<int64_t>(), 1615000 );
+    BOOST_REQUIRE_EQUAL( stackup["layers"].size(), 13 );
+    BOOST_CHECK_EQUAL( stackup["layers"][0]["category"].get<std::string>(), "silkscreen" );
+    BOOST_CHECK_EQUAL( stackup["layers"][3]["layer"].get<std::string>(), "F.Cu" );
+    BOOST_CHECK_EQUAL( stackup["layers"][4]["typeName"].get<std::string>(), "core" );
+    BOOST_CHECK_EQUAL( stackup["layers"][4]["dielectricIndex"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( stackup["layers"][5]["layer"].get<std::string>(), "In1.Cu" );
+    BOOST_CHECK_EQUAL( stackup["layers"][8]["dielectricIndex"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( stackup["layers"][9]["layer"].get<std::string>(), "B.Cu" );
+    BOOST_CHECK_EQUAL( stackup["layers"][12]["color"].get<std::string>(), "White" );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsLegacyOrStructurallyAmbiguousStackups )
+{
+    const std::string legacy = R"KDS((kichad_design
+  (version 1)
+  (project legacy_stackup)
+  (board (stackup (copper_layers 4) (thickness 1.6mm))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT legacyResult =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( legacy );
+    BOOST_CHECK( !legacyResult.ok );
+    BOOST_CHECK_NE( legacyResult.diagnostics.dump().find( "unknown_board_field" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( legacyResult.diagnostics.dump().find( "invalid_stackup_layers" ),
+                    std::string::npos );
+
+    const std::string ambiguous = R"KDS((kichad_design
+  (version 1)
+  (project ambiguous_stackup)
+  (board
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector yes) (edge_plating false)
+      (layers
+        (soldermask F.Mask (thickness 0mm) (material "LPI")
+          (epsilon_r 0.5) (loss_tangent 2) (color "Green"))
+        (silkscreen F.SilkS (material "bad\nmaterial") (color "White"))
+        (copper F.Cu (thickness 35um))
+        (copper In2.Cu (thickness 35um))
+        (dielectric foam (thickness 11mm) (material "")
+          (epsilon_r 101) (loss_tangent -0.1) (locked maybe))
+        (copper In1.Cu (thickness 35um))
+        (dielectric core (thickness 11mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))
+        (silkscreen B.SilkS (material "Ink") (color "White"))
+        (soldermask B.Mask (thickness 10um) (material "LPI")
+          (epsilon_r 3.5) (loss_tangent 0.02) (color "Green"))))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT rejected =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( ambiguous );
+    BOOST_CHECK( !rejected.ok );
+    const std::string diagnostics = rejected.diagnostics.dump();
+
+    for( const char* code : { "invalid_stackup_order", "invalid_stackup_layers",
+                              "invalid_stackup_dielectric_type",
+                              "invalid_stackup_layer_thickness", "invalid_stackup_material",
+                              "invalid_stackup_epsilon_r", "invalid_stackup_loss_tangent",
+                              "invalid_stackup_dielectric_lock", "invalid_stackup_thickness" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalBoardIntent )
 {
     const std::string invalid = R"KDS((kichad_design
@@ -135,7 +251,17 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalBoardIntent )
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
   (net POWER (pin R1 1) (pin R2 1))
   (board
-    (stackup (copper_layers 3) (thickness -1mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled maybe)
+      (edge_connector tapered) (edge_plating maybe)
+      (layers
+        (copper F.Cu (thickness -1mm))
+        (dielectric core (thickness 11mm) (material "")
+          (epsilon_r 0.5) (loss_tangent 2) (locked maybe))
+        (copper In1.Cu (thickness 35um))
+        (dielectric prepreg (thickness 11mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (outline (rect (id same) (at 0 0mm) (size -1mm 2mm)))
     (route POWER (id same) (from 0mm 0mm) (to 0mm 0mm)
       (width 0mm) (layer Edge.Cuts))
@@ -169,7 +295,20 @@ BOOST_AUTO_TEST_CASE( EnforcesStackupAndSinglePlacementSemantics )
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
   (net POWER (pin R1 1) (pin R2 1))
   (board
-    (stackup (copper_layers 4) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper In1.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
+        (copper In2.Cu (thickness 35um))
+        (dielectric core (thickness 0.488mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (place R1 (at 1mm 1mm))
     (place R1 (at 2mm 2mm))
     (route POWER (id outside-route) (from 0mm 0mm) (to 1mm 1mm)
@@ -208,7 +347,20 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeCopperZoneIntent )
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
   (net GND (pin R1 1) (pin R2 1))
   (board
-    (stackup (copper_layers 4) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper In1.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
+        (copper In2.Cu (thickness 35um))
+        (dielectric core (thickness 0.488mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (zone GND
       (id gnd-pour)
       (layers F.Cu F.Cu In3.Cu)
@@ -293,7 +445,20 @@ BOOST_AUTO_TEST_CASE( CompilesExplicitKeepoutPoliciesAndRejectsAmbiguousIntent )
   (version 1)
   (project keepout_board)
   (board
-    (stackup (copper_layers 4) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper In1.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
+        (copper In2.Cu (thickness 35um))
+        (dielectric core (thickness 0.488mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (keepout
       (id antenna-clearance)
       (name "Antenna clearance")
@@ -324,7 +489,14 @@ BOOST_AUTO_TEST_CASE( CompilesExplicitKeepoutPoliciesAndRejectsAmbiguousIntent )
   (version 1)
   (project bad_keepout)
   (board
-    (stackup (copper_layers 2) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled false)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 1.53mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
+        (copper B.Cu (thickness 35um))))
     (keepout
       (id ineffective)
       (layers F.Cu F.Cu In1.Cu)
@@ -355,7 +527,20 @@ BOOST_AUTO_TEST_CASE( CompilesBoundedBoardTextAndRejectsUnsafeTypography )
   (version 1)
   (project annotated_board)
   (board
-    (stackup (copper_layers 4) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper In1.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
+        (copper In2.Cu (thickness 35um))
+        (dielectric core (thickness 0.488mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (text "Assembly\nrevision A"
       (id assembly-note)
       (layer F.SilkS)
@@ -398,7 +583,14 @@ BOOST_AUTO_TEST_CASE( CompilesBoundedBoardTextAndRejectsUnsafeTypography )
   (version 1)
   (project invalid_text)
   (board
-    (stackup (copper_layers 2) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled false)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 1.53mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
+        (copper B.Cu (thickness 35um))))
     (text "Bad\rtext"
       (id unsafe-note)
       (layer In1.Cu)
@@ -685,6 +877,10 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK_NE( description.dump().find( "thermal_spoke_width" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "hatch_offsets" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "prohibit" ), std::string::npos );
+    BOOST_CHECK_NE( description.dump().find( "edge_connector none|yes|bevelled" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( description.dump().find( "dielectric core|prepreg" ),
+                    std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "font stroke|NAME" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find(
                             "dimension aligned|orthogonal|radial|leader|center" ),

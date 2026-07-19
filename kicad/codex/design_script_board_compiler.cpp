@@ -223,19 +223,6 @@ bool parseAngle( const std::string& aText, double& aDegrees )
 }
 
 
-bool parseInteger( const DOCUMENT& aDocument, size_t aNode, int& aValue )
-{
-    std::string text;
-
-    if( !scalarText( aDocument, aNode, text ) )
-        return false;
-
-    std::from_chars_result converted =
-            std::from_chars( text.data(), text.data() + text.size(), aValue );
-    return converted.ec == std::errc() && converted.ptr == text.data() + text.size();
-}
-
-
 bool parseUnsignedForm( const DOCUMENT& aDocument, size_t aNode, uint32_t& aValue )
 {
     const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
@@ -447,31 +434,376 @@ bool internalVector( const JSON& aVector )
 JSON compileStackup( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult )
 {
     std::map<std::string, size_t> fields;
-    collectFields( aDocument, aNode, 1, { "copper_layers", "thickness" }, fields, aResult,
-                   "stackup" );
-    int     copperLayers = 0;
-    int64_t thickness = 0;
+    collectFields( aDocument, aNode, 1,
+                   { "finish", "impedance_controlled", "edge_connector", "edge_plating",
+                     "layers" },
+                   fields, aResult, "stackup" );
+    std::string finish;
+    bool        impedanceControlled = false;
+    std::string edgeConnector;
+    bool        edgePlating = false;
 
-    if( !fields.contains( "copper_layers" )
-        || aDocument.Nodes()[fields["copper_layers"]].children.size() != 2
-        || !parseInteger( aDocument,
-                          aDocument.Nodes()[fields["copper_layers"]].children[1], copperLayers )
-        || copperLayers < 2 || copperLayers > 32 || copperLayers % 2 != 0 )
+    if( !fields.contains( "finish" )
+        || !parseScalarForm( aDocument, fields["finish"], finish ) || finish.empty()
+        || finish.size() > 128 || finish.find( '\r' ) != std::string::npos
+        || finish.find( '\n' ) != std::string::npos )
+    {
+        diagnostic( aResult, "error", "invalid_stackup_finish",
+                    "stackup finish requires 1 through 128 UTF-8 bytes on one line" );
+    }
+
+    if( !fields.contains( "impedance_controlled" )
+        || !parseBooleanForm( aDocument, fields["impedance_controlled"],
+                              impedanceControlled ) )
+    {
+        diagnostic( aResult, "error", "invalid_stackup_impedance_policy",
+                    "stackup impedance_controlled must be explicitly true or false" );
+    }
+
+    if( !fields.contains( "edge_connector" )
+        || !parseScalarForm( aDocument, fields["edge_connector"], edgeConnector )
+        || ( edgeConnector != "none" && edgeConnector != "yes"
+             && edgeConnector != "bevelled" ) )
+    {
+        diagnostic( aResult, "error", "invalid_stackup_edge_connector",
+                    "stackup edge_connector must be none, yes, or bevelled" );
+    }
+
+    if( !fields.contains( "edge_plating" )
+        || !parseBooleanForm( aDocument, fields["edge_plating"], edgePlating ) )
+    {
+        diagnostic( aResult, "error", "invalid_stackup_edge_plating",
+                    "stackup edge_plating must be explicitly true or false" );
+    }
+
+    JSON layers = JSON::array();
+    int  copperLayers = 0;
+    int  dielectricLayers = 0;
+    int64_t totalThickness = 0;
+    std::set<std::string> boardLayers;
+
+    if( !fields.contains( "layers" ) )
     {
         diagnostic( aResult, "error", "invalid_stackup_layers",
-                    "stackup requires an even copper_layers value from 2 through 32" );
+                    "stackup requires one explicit top-to-bottom layers declaration" );
+    }
+    else
+    {
+        const DOCUMENT::NODE& declaration = aDocument.Nodes()[fields["layers"]];
+
+        if( declaration.children.size() < 4 )
+        {
+            diagnostic( aResult, "error", "invalid_stackup_layers",
+                        "stackup layers requires at least two copper layers and one dielectric" );
+        }
+
+        for( size_t index = 1; index < declaration.children.size(); ++index )
+        {
+            const size_t layerNode = declaration.children[index];
+            const DOCUMENT::NODE& node = aDocument.Nodes()[layerNode];
+            const std::string category = aDocument.ListHead( layerNode );
+
+            if( category != "copper" && category != "dielectric"
+                && category != "soldermask" && category != "solderpaste"
+                && category != "silkscreen" )
+            {
+                diagnostic( aResult, "error", "invalid_stackup_layer_type",
+                            "stackup layers accepts copper, dielectric, soldermask, "
+                            "solderpaste, or silkscreen" );
+                continue;
+            }
+
+            if( node.children.size() < 2 )
+            {
+                diagnostic( aResult, "error", "invalid_stackup_layer",
+                            "each stackup layer requires a board layer or dielectric type" );
+                continue;
+            }
+
+            std::string identity;
+
+            if( !scalarText( aDocument, node.children[1], identity ) )
+            {
+                diagnostic( aResult, "error", "invalid_stackup_layer",
+                            "stackup layer identity must be a scalar" );
+                continue;
+            }
+
+            std::set<std::string> allowed;
+
+            if( category == "copper" )
+                allowed = { "thickness" };
+            else if( category == "dielectric" )
+                allowed = { "thickness", "material", "epsilon_r", "loss_tangent", "locked" };
+            else if( category == "soldermask" )
+                allowed = { "thickness", "material", "epsilon_r", "loss_tangent", "color" };
+            else if( category == "silkscreen" )
+                allowed = { "material", "color" };
+
+            std::map<std::string, size_t> layerFields;
+            collectFields( aDocument, layerNode, 2, allowed, layerFields, aResult,
+                           "stackup " + category );
+            JSON entry = { { "category", category }, { "enabled", true } };
+            int64_t thickness = 0;
+            std::string material;
+            std::string color;
+            double epsilonR = 0.0;
+            double lossTangent = 0.0;
+            bool locked = false;
+
+            if( category == "dielectric" )
+            {
+                if( identity != "core" && identity != "prepreg" )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_dielectric_type",
+                                "stackup dielectric type must be core or prepreg" );
+                }
+
+                entry["typeName"] = identity;
+                entry["dielectricIndex"] = ++dielectricLayers;
+            }
+            else
+            {
+                const bool correctLayer =
+                        ( category == "copper" && copperLayer( identity ) )
+                        || ( category == "soldermask"
+                             && ( identity == "F.Mask" || identity == "B.Mask" ) )
+                        || ( category == "solderpaste"
+                             && ( identity == "F.Paste" || identity == "B.Paste" ) )
+                        || ( category == "silkscreen"
+                             && ( identity == "F.SilkS" || identity == "B.SilkS" ) );
+
+                if( !correctLayer || !boardLayers.emplace( identity ).second )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_board_layer",
+                                "stackup contains an invalid or duplicate physical board layer" );
+                }
+
+                entry["layer"] = identity;
+
+                if( category == "copper" )
+                {
+                    entry["typeName"] = "copper";
+                    ++copperLayers;
+                }
+                else if( category == "soldermask" )
+                {
+                    entry["typeName"] = identity == "F.Mask" ? "Top Solder Mask"
+                                                                  : "Bottom Solder Mask";
+                }
+                else if( category == "solderpaste" )
+                {
+                    entry["typeName"] = identity == "F.Paste" ? "Top Solder Paste"
+                                                                   : "Bottom Solder Paste";
+                }
+                else
+                {
+                    entry["typeName"] = identity == "F.SilkS" ? "Top Silk Screen"
+                                                                   : "Bottom Silk Screen";
+                }
+            }
+
+            if( category == "copper" || category == "dielectric"
+                || category == "soldermask" )
+            {
+                int64_t maximum = category == "copper" ? 1000000 : 10000000;
+
+                if( !layerFields.contains( "thickness" )
+                    || !parseDistanceForm( aDocument, layerFields["thickness"], thickness )
+                    || thickness <= 0 || thickness > maximum )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_layer_thickness",
+                                "stackup layer thickness is missing or outside its native range" );
+                }
+
+                if( thickness > 0 && totalThickness <= 20000000 - thickness )
+                    totalThickness += thickness;
+                else if( thickness > 0 )
+                    totalThickness = 20000001;
+            }
+
+            if( category == "dielectric" || category == "soldermask" )
+            {
+                if( !layerFields.contains( "material" )
+                    || !parseScalarForm( aDocument, layerFields["material"], material )
+                    || material.empty() || material.size() > 128
+                    || material.find( '\r' ) != std::string::npos
+                    || material.find( '\n' ) != std::string::npos )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_material",
+                                "stackup material requires 1 through 128 UTF-8 bytes on one line" );
+                }
+
+                if( !layerFields.contains( "epsilon_r" )
+                    || !parseNumberForm( aDocument, layerFields["epsilon_r"], epsilonR )
+                    || epsilonR < 1.0 || epsilonR > 100.0 )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_epsilon_r",
+                                "stackup epsilon_r must be from 1 through 100" );
+                }
+
+                if( !layerFields.contains( "loss_tangent" )
+                    || !parseRatioForm( aDocument, layerFields["loss_tangent"], lossTangent ) )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_loss_tangent",
+                                "stackup loss_tangent must be from 0 through 1" );
+                }
+            }
+
+            if( category == "dielectric" )
+            {
+                if( !layerFields.contains( "locked" )
+                    || !parseBooleanForm( aDocument, layerFields["locked"], locked ) )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_dielectric_lock",
+                                "stackup dielectric locked must be explicitly true or false" );
+                }
+            }
+
+            if( category == "silkscreen" )
+            {
+                if( !layerFields.contains( "material" )
+                    || !parseScalarForm( aDocument, layerFields["material"], material )
+                    || material.empty() || material.size() > 128
+                    || material.find( '\r' ) != std::string::npos
+                    || material.find( '\n' ) != std::string::npos )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_material",
+                                "stackup material requires 1 through 128 UTF-8 bytes on one line" );
+                }
+            }
+
+            if( category == "silkscreen" || category == "soldermask" )
+            {
+                if( !layerFields.contains( "color" )
+                    || !parseScalarForm( aDocument, layerFields["color"], color )
+                    || color.empty() || color.size() > 64
+                    || color.find( '\r' ) != std::string::npos
+                    || color.find( '\n' ) != std::string::npos )
+                {
+                    diagnostic( aResult, "error", "invalid_stackup_color",
+                                "stackup color requires 1 through 64 UTF-8 bytes on one line" );
+                }
+            }
+
+            entry["thicknessNm"] = thickness;
+            entry["material"] = material;
+            entry["epsilonR"] = epsilonR;
+            entry["lossTangent"] = lossTangent;
+            entry["color"] = color;
+            entry["locked"] = locked;
+            layers.emplace_back( std::move( entry ) );
+        }
     }
 
-    if( !fields.contains( "thickness" )
-        || !parseDistanceForm( aDocument, fields["thickness"], thickness ) || thickness <= 0 )
+    if( copperLayers < 2 || copperLayers > 32 || copperLayers % 2 != 0
+        || dielectricLayers != copperLayers - 1 )
     {
-        diagnostic( aResult, "error", "invalid_stackup_thickness",
-                    "stackup requires a positive physical thickness" );
+        diagnostic( aResult, "error", "invalid_stackup_layers",
+                    "stackup requires 2 through 32 even copper layers with one dielectric "
+                    "between every adjacent pair" );
     }
+
+    int prefixRank = -1;
+    int suffixRank = -1;
+    bool sawCopper = false;
+    bool expectDielectric = false;
+    int  expectedInner = 1;
+
+    for( const JSON& entry : layers )
+    {
+        const std::string category = entry.value( "category", "" );
+        const std::string layer = entry.value( "layer", "" );
+
+        if( !sawCopper )
+        {
+            if( category == "copper" )
+            {
+                sawCopper = true;
+                expectDielectric = true;
+
+                if( layer != "F.Cu" )
+                    diagnostic( aResult, "error", "invalid_stackup_order",
+                                "the first copper layer in a stackup must be F.Cu" );
+            }
+            else
+            {
+                int rank = layer == "F.SilkS" ? 0 : layer == "F.Paste" ? 1
+                                                                  : layer == "F.Mask" ? 2 : -1;
+
+                if( rank < 0 || rank <= prefixRank )
+                    diagnostic( aResult, "error", "invalid_stackup_order",
+                                "top technical layers must be F.SilkS, F.Paste, F.Mask in order" );
+
+                prefixRank = rank;
+            }
+
+            continue;
+        }
+
+        if( layer == "B.Cu" )
+        {
+            if( expectDielectric )
+                diagnostic( aResult, "error", "invalid_stackup_order",
+                            "every adjacent copper pair requires one dielectric" );
+
+            expectDielectric = false;
+            suffixRank = 0;
+            continue;
+        }
+
+        if( suffixRank >= 0 )
+        {
+            int rank = layer == "B.Mask" ? 1 : layer == "B.Paste" ? 2
+                                                            : layer == "B.SilkS" ? 3 : -1;
+
+            if( rank < 0 || rank <= suffixRank )
+                diagnostic( aResult, "error", "invalid_stackup_order",
+                            "bottom technical layers must be B.Mask, B.Paste, B.SilkS in order" );
+
+            suffixRank = rank;
+            continue;
+        }
+
+        if( expectDielectric )
+        {
+            if( category != "dielectric" )
+                diagnostic( aResult, "error", "invalid_stackup_order",
+                            "a dielectric must follow every copper layer except B.Cu" );
+
+            expectDielectric = false;
+        }
+        else
+        {
+            const std::string expected = expectedInner <= copperLayers - 2
+                                                 ? "In" + std::to_string( expectedInner ) + ".Cu"
+                                                 : "B.Cu";
+
+            if( category != "copper" || layer != expected )
+                diagnostic( aResult, "error", "invalid_stackup_order",
+                            "copper layers must be F.Cu, sequential inner layers, then B.Cu" );
+
+            ++expectedInner;
+            expectDielectric = true;
+        }
+    }
+
+    if( suffixRank < 0 )
+        diagnostic( aResult, "error", "invalid_stackup_order",
+                    "the final copper layer in a stackup must be B.Cu" );
+
+    if( totalThickness <= 0 || totalThickness > 20000000 )
+        diagnostic( aResult, "error", "invalid_stackup_thickness",
+                    "derived stackup thickness must be positive and at most 20mm" );
 
     return { { "kind", "stackup" },
+             { "finish", finish },
+             { "impedanceControlled", impedanceControlled },
+             { "edgeConnector", edgeConnector },
+             { "edgePlating", edgePlating },
+             { "layers", std::move( layers ) },
              { "copperLayers", copperLayers },
-             { "thicknessNm", thickness },
+             { "thicknessNm", totalThickness },
              { "typed", true } };
 }
 

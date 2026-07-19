@@ -869,6 +869,54 @@ bool queryPcbInventory( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
 }
 
 
+bool queryPcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                      kiapi::board::BoardStackup& aStackup, std::string& aError )
+{
+    kiapi::board::commands::GetBoardStackup request;
+    request.mutable_board()->CopyFrom( aTarget.document );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::board::commands::BoardStackupResponse stackupResponse;
+
+    if( !response.message().UnpackTo( &stackupResponse )
+        || !stackupResponse.has_stackup() )
+    {
+        aError = "KiCad returned an invalid board stackup";
+        return false;
+    }
+
+    aStackup.CopyFrom( stackupResponse.stackup() );
+    return true;
+}
+
+
+bool updatePcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                       const kiapi::board::BoardStackup& aStackup, std::string& aError )
+{
+    kiapi::board::commands::UpdateBoardStackup request;
+    request.mutable_board()->CopyFrom( aTarget.document );
+    request.mutable_stackup()->CopyFrom( aStackup );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::board::commands::BoardStackupResponse stackupResponse;
+
+    if( !response.message().UnpackTo( &stackupResponse )
+        || !stackupResponse.has_stackup() )
+    {
+        aError = "KiCad returned an invalid updated board stackup";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool queryPcbFootprintInventory( const KICHAD_IPC_CLIENT& aClient,
                                  const KICHAD_IPC_TARGET& aTarget,
                                  const std::set<std::string>& aReferences,
@@ -1560,6 +1608,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 items.push_back( { { "action", "place" },
                                    { "component", plannedOperation["component"] } } );
             }
+            else if( action == "update_stackup" )
+            {
+                items.push_back( { { "action", "configure_stackup" },
+                                   { "physicalLayers",
+                                     plannedOperation["stackup"]["layers"].size() } } );
+            }
             else
             {
                 items.push_back( { { "action", "unsupported" },
@@ -1646,6 +1700,27 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "backend_incomplete", message );
         }
 
+        std::unique_ptr<kiapi::board::BoardStackup> desiredStackup;
+
+        for( const JSON& action : planned.operations )
+        {
+            if( action.value( "action", "" ) != "update_stackup" )
+                continue;
+
+            if( desiredStackup )
+                return failure( "invalid_plan", "KDS planned more than one board stackup" );
+
+            desiredStackup = std::make_unique<kiapi::board::BoardStackup>();
+            google::protobuf::util::JsonParseOptions options;
+            options.ignore_unknown_fields = false;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::JsonStringToMessage(
+                            action.at( "stackup" ).dump(), desiredStackup.get(), options );
+
+            if( !status.ok() )
+                return failure( "invalid_plan", "KDS produced an invalid native stackup" );
+        }
+
         const std::string sourceRelativePath = aArguments["path"].get<std::string>();
         const std::string projectName = compiled.ir["project"]["name"].get<std::string>();
         KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::CONTEXT reconcileContext = {
@@ -1666,6 +1741,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         }
 
         JSON managedOperations = JSON::array();
+        JSON reconcileOperations = JSON::array();
         std::set<std::string> placementReferences;
 
         for( const JSON& plannedOperation : planned.operations )
@@ -1673,9 +1749,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             const std::string action = plannedOperation.value( "action", "" );
 
             if( action == "upsert" )
+            {
                 managedOperations.push_back( plannedOperation );
+                reconcileOperations.push_back( plannedOperation );
+            }
             else if( action == "place_by_reference" )
+            {
                 placementReferences.emplace( plannedOperation["component"].get<std::string>() );
+                reconcileOperations.push_back( plannedOperation );
+            }
         }
 
         KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::RESULT preflight =
@@ -1708,6 +1790,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !client.FindOpenPcb( aProjectPath, board.GetFullPath(), target, pathError ) )
             return failure( "pcb_not_open", pathError );
 
+        kiapi::board::BoardStackup previousStackup;
+
+        if( desiredStackup && !queryPcbStackup( client, target, previousStackup, pathError ) )
+            return failure( "stackup_inventory_failed", pathError );
+
         JSON liveInventory;
 
         if( !queryPcbInventory( client, target, relevantIds, liveInventory, pathError ) )
@@ -1721,7 +1808,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::RESULT reconciled =
                 KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
-                        planned.operations, previousState, liveInventory, reconcileContext );
+                        reconcileOperations, previousState, liveInventory, reconcileContext );
 
         if( !reconciled.ok )
         {
@@ -1756,13 +1843,63 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                               { "previousState", previousState },
                               { "preparedState", reconciled.nextState } };
 
+        if( desiredStackup )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousStackup, &serializedPrevious, options );
+
+            if( !status.ok() )
+                return failure( "journal_failed", "could not serialize the prior board stackup" );
+
+            applyJournal["previousStackup"] = JSON::parse( serializedPrevious );
+        }
+
         if( !writeJsonAtomically( journalPath, applyJournal, pathError ) )
             return failure( "journal_failed", pathError );
+
+        bool stackupApplied = false;
+
+        if( desiredStackup )
+        {
+            if( !updatePcbStackup( client, target, *desiredStackup, pathError ) )
+            {
+                std::string rollbackError;
+
+                if( !updatePcbStackup( client, target, previousStackup, rollbackError ) )
+                    pathError += "; stackup rollback also failed: " + rollbackError;
+
+                return failure( "stackup_apply_failed",
+                                pathError + "; the apply journal was retained for safe recovery" );
+            }
+
+            stackupApplied = true;
+        }
+
+        auto rollbackStackup = [&]( std::string& aMessage )
+        {
+            if( !stackupApplied )
+                return;
+
+            std::string rollbackError;
+
+            if( !updatePcbStackup( client, target, previousStackup, rollbackError ) )
+                aMessage += "; stackup rollback also failed: " + rollbackError;
+        };
 
         if( reconciled.actions.empty() )
         {
             if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
-                return failure( "state_write_failed", pathError );
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                rollbackStackup( message );
+                return failure( "state_write_failed", message );
+            }
 
             const bool journalRemoved = wxRemoveFile( journalPath.GetFullPath() );
             JSON payload = { { "operation", "apply" },
@@ -1770,7 +1907,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "boardPath", boardRelativePath },
                              { "sourceSha256", compiled.sourceSha256 },
                              { "counts", reconciled.counts },
-                             { "transaction", "no board changes" },
+                             { "transaction",
+                               stackupApplied ? "stackup applied" : "no board changes" },
+                             { "stackupApplied", stackupApplied },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -1779,8 +1918,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         if( !commit.Begin( pathError ) )
         {
-            return failure( "transaction_failed",
-                            pathError + "; the apply journal was retained for safe recovery" );
+            std::string message = pathError
+                                  + "; the apply journal was retained for safe recovery";
+            rollbackStackup( message );
+            return failure( "transaction_failed", message );
         }
 
         if( !executePcbActions( client, target, reconciled.actions, pathError ) )
@@ -1791,6 +1932,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
+
+            rollbackStackup( message );
 
             return failure( "apply_failed", message );
         }
@@ -1803,6 +1946,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
+
+            rollbackStackup( message );
 
             return failure( "transaction_failed", message );
         }
@@ -1830,6 +1975,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "managedItems",
                            reconciled.nextState["managedPcbItems"].size() },
                          { "transaction", "committed" },
+                         { "stackupApplied", stackupApplied },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };

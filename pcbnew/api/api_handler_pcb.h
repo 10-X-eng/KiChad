@@ -92,6 +92,9 @@ private:
     HANDLER_RESULT<BoardStackupResponse> handleGetStackup(
             const HANDLER_CONTEXT<GetBoardStackup>& aCtx );
 
+    HANDLER_RESULT<BoardStackupResponse> handleUpdateStackup(
+            const HANDLER_CONTEXT<UpdateBoardStackup>& aCtx );
+
     HANDLER_RESULT<BoardEnabledLayersResponse> handleGetBoardEnabledLayers(
             const HANDLER_CONTEXT<GetBoardEnabledLayers>& aCtx );
 

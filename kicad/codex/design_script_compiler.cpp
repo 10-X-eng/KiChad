@@ -540,6 +540,13 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(via NET (id ID) (at X Y) ...) (zone NET ...) (text ...) (dimension ...) "
                       "(keepout ...))" } },
                   { { "form",
+                      "(stackup (finish NAME) (impedance_controlled BOOL) "
+                      "(edge_connector none|yes|bevelled) (edge_plating BOOL) "
+                      "(layers (silkscreen LAYER ...) (solderpaste LAYER) "
+                      "(soldermask LAYER ...) (copper LAYER (thickness D)) "
+                      "(dielectric core|prepreg (thickness D) (material NAME) "
+                      "(epsilon_r N) (loss_tangent N) (locked BOOL)) ...))" } },
+                  { { "form",
                       "(zone NET (id ID) (layers F.Cu ...) "
                       "(outline (polygon (point X Y) ... (hole (point X Y) ...))) "
                       "(clearance D) (min_thickness D) "

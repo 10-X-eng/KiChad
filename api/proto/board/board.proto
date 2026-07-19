@@ -37,6 +37,8 @@ message BoardImpedanceControl
 
 message BoardEdgeConnector
 {
+  // True when the connector fingers require a bevelled board edge.
+  bool bevelled = 1;
 }
 
 message Castellation
@@ -78,6 +80,9 @@ message BoardStackupDielectricProperties
   double loss_tangent = 2;
   string material_name = 3;
   kiapi.common.types.Distance thickness = 4;
+  bool thickness_locked = 5;
+  // KiCad stores stackup colors as a named or #RRGGBBAA string.  Preserve that source value.
+  string color_name = 6;
 }
 
 message BoardStackupDielectricLayer
@@ -93,12 +98,22 @@ message BoardStackupLayer
   bool enabled = 3;
   BoardStackupLayerType type = 4;
   BoardStackupDielectricLayer dielectric = 5;
-  kiapi.common.types.Color color = 6;
+  kiapi.common.types.Color color = 6; // Legacy RGBA field; updates must use color_name.
   string material_name = 7;
 
   // The name of the layer shown in the KiCad GUI, which may be a default value like "F.Cu" or may
   // have been customized by the user.  This field does not apply to dielectric layers.
   string user_name = 8;
+
+  // The physical type string stored by KiCad (for example copper, core, prepreg, or soldermask).
+  string type_name = 9;
+  // Lossless named/custom color used by the stackup editor and board file.
+  string color_name = 10;
+  // Native dielectric properties for solder-mask layers.
+  double epsilon_r = 11;
+  double loss_tangent = 12;
+  // One-based physical dielectric slot between adjacent copper layers; zero otherwise.
+  uint32 dielectric_layer_id = 13;
 }
 
 message BoardStackup

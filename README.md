@@ -69,7 +69,10 @@ transaction API; it is never run implicitly by the build.
 For the self-contained KDS transaction proof, run
 `tools/smoke-kichad-kds-apply.sh --allow-mutation`. It launches a disposable build-tree PCB Editor
 with an isolated configuration and project copy, applies the committed KDS fixture, and proves that
-a repeated apply updates the same twelve managed objects without duplicates. It creates and fills a
+a repeated apply updates the same twelve managed objects without duplicates. It also applies and
+reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
+connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
+KiCad's native stackup API. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.

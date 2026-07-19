@@ -97,6 +97,77 @@ JSON polySetProto( const JSON& aPolygons )
 }
 
 
+JSON planStackup( const JSON& aStatement )
+{
+    const std::map<std::string, std::string> typeEnums = {
+        { "copper", "BSLT_COPPER" }, { "dielectric", "BSLT_DIELECTRIC" },
+        { "silkscreen", "BSLT_SILKSCREEN" }, { "soldermask", "BSLT_SOLDERMASK" },
+        { "solderpaste", "BSLT_SOLDERPASTE" }
+    };
+    JSON edge = { { "plating",
+                    { { "hasEdgePlating", aStatement.at( "edgePlating" ) } } } };
+    const std::string edgeConnector = aStatement.at( "edgeConnector" ).get<std::string>();
+
+    if( edgeConnector != "none" )
+        edge["connector"] = { { "bevelled", edgeConnector == "bevelled" } };
+
+    JSON layers = JSON::array();
+
+    for( const JSON& source : aStatement.at( "layers" ) )
+    {
+        const std::string category = source.at( "category" ).get<std::string>();
+        JSON layer = {
+            { "layer", category == "dielectric"
+                               ? "BL_UNDEFINED"
+                               : layerEnum( source.at( "layer" ).get<std::string>() ) },
+            { "enabled", true },
+            { "type", typeEnums.at( category ) },
+            { "typeName", source.at( "typeName" ) }
+        };
+        const int64_t thickness = source.at( "thicknessNm" ).get<int64_t>();
+
+        if( thickness > 0 )
+            layer["thickness"] = { { "valueNm", std::to_string( thickness ) } };
+
+        if( category == "dielectric" )
+        {
+            layer["dielectricLayerId"] = source.at( "dielectricIndex" );
+            layer["dielectric"] = {
+                { "layer",
+                  JSON::array( { { { "epsilonR", source.at( "epsilonR" ) },
+                                   { "lossTangent", source.at( "lossTangent" ) },
+                                   { "materialName", source.at( "material" ) },
+                                   { "thickness",
+                                     { { "valueNm", std::to_string( thickness ) } } },
+                                   { "thicknessLocked", source.at( "locked" ) },
+                                   { "colorName", source.at( "color" ) } } } ) } };
+        }
+        else if( category == "soldermask" )
+        {
+            layer["materialName"] = source.at( "material" );
+            layer["colorName"] = source.at( "color" );
+            layer["epsilonR"] = source.at( "epsilonR" );
+            layer["lossTangent"] = source.at( "lossTangent" );
+        }
+        else if( category == "silkscreen" )
+        {
+            layer["materialName"] = source.at( "material" );
+            layer["colorName"] = source.at( "color" );
+        }
+
+        layers.emplace_back( std::move( layer ) );
+    }
+
+    return { { "action", "update_stackup" },
+             { "stackup",
+               { { "finish", { { "typeName", aStatement.at( "finish" ) } } },
+                 { "impedance",
+                   { { "isControlled", aStatement.at( "impedanceControlled" ) } } },
+                 { "edge", std::move( edge ) },
+                 { "layers", std::move( layers ) } } } };
+}
+
+
 std::string lockedEnum( const JSON& aStatement )
 {
     return aStatement.value( "locked", false ) ? "LS_LOCKED" : "LS_UNLOCKED";
@@ -612,7 +683,8 @@ std::string DESIGN_SCRIPT_PCB_PLANNER::StableUuid( const std::string& aProject,
 DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& aCompilerIr )
 {
     RESULT result;
-    result.counts = { { "upserts", 0 }, { "placements", 0 }, { "unsupported", 0 } };
+    result.counts = { { "upserts", 0 }, { "placements", 0 },
+                      { "stackups", 0 }, { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
         || aCompilerIr.value( "version", 0 ) != 1 || !aCompilerIr.contains( "project" )
@@ -645,6 +717,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             {
                 result.operations.emplace_back( planOutline( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "stackup" )
+            {
+                result.operations.emplace_back( planStackup( statement ) );
+                ++result.counts["stackups"].get_ref<int64_t&>();
             }
             else if( kind == "trace" || kind == "arc" )
             {
@@ -692,9 +769,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                 result.operations.push_back( { { "action", "unsupported" },
                                                { "statementKind", kind },
                                                { "reason",
-                                                 kind == "stackup"
-                                                         ? "KiCad 10 IPC stackup mutation is not implemented"
-                                                         : "backend type checker is not implemented" } } );
+                                                 "backend type checker is not implemented" } } );
                 ++result.counts["unsupported"].get_ref<int64_t&>();
             }
         }
@@ -703,7 +778,8 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
     {
         diagnostic( result, "error", "invalid_board_ir", error.what() );
         result.operations = JSON::array();
-        result.counts = { { "upserts", 0 }, { "placements", 0 }, { "unsupported", 0 } };
+        result.counts = { { "upserts", 0 }, { "placements", 0 },
+                          { "stackups", 0 }, { "unsupported", 0 } };
         return result;
     }
 

@@ -15,6 +15,7 @@
 #include <kicad/codex/design_script_pcb_planner.h>
 
 #include <import_export.h>
+#include <api/board/board.pb.h>
 #include <api/board/board_types.pb.h>
 #include <google/protobuf/util/json_util.h>
 
@@ -85,14 +86,27 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
 }
 
 
-BOOST_AUTO_TEST_CASE( RefusesTypedStatementsWithoutNativeBackend )
+BOOST_AUTO_TEST_CASE( LowersExplicitStackupIntoOneLosslessNativeMessage )
 {
     const std::string source = R"KDS((kichad_design
   (version 1)
   (project future_board)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (board
-    (stackup (copper_layers 4) (thickness 1.6mm))
+    (stackup
+      (finish "ENIG") (impedance_controlled true)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric core (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper In1.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.486mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
+        (copper In2.Cu (thickness 35um))
+        (dielectric core (thickness 0.488mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
+        (copper B.Cu (thickness 35um))))
     (place R1 (at 1mm 1mm))))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -102,9 +116,25 @@ BOOST_AUTO_TEST_CASE( RefusesTypedStatementsWithoutNativeBackend )
 
     KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
-    BOOST_CHECK( !plan.fullyLowered );
-    BOOST_CHECK_EQUAL( plan.counts["unsupported"].get<int>(), 1 );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( plan.counts["unsupported"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( plan.counts["stackups"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["placements"].get<int>(), 1 );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 2 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"].get<std::string>(), "update_stackup" );
+    checkProtobufJson<kiapi::board::BoardStackup>( plan.operations[0]["stackup"] );
+    const nlohmann::json& stackup = plan.operations[0]["stackup"];
+    BOOST_CHECK_EQUAL( stackup["finish"]["typeName"].get<std::string>(), "ENIG" );
+    BOOST_CHECK( stackup["impedance"]["isControlled"].get<bool>() );
+    BOOST_REQUIRE_EQUAL( stackup["layers"].size(), 7 );
+    BOOST_CHECK_EQUAL( stackup["layers"][0]["type"].get<std::string>(), "BSLT_COPPER" );
+    BOOST_CHECK_EQUAL( stackup["layers"][1]["dielectricLayerId"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL(
+            stackup["layers"][1]["dielectric"]["layer"][0]["thickness"]["valueNm"]
+                    .get<std::string>(),
+            "486000" );
+    BOOST_CHECK_EQUAL( stackup["layers"][2]["layer"].get<std::string>(), "BL_In1_Cu" );
+    BOOST_CHECK_EQUAL( stackup["layers"][6]["layer"].get<std::string>(), "BL_B_Cu" );
 }
 
 

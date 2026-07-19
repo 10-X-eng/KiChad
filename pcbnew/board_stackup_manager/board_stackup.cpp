@@ -33,6 +33,10 @@
 #include <api/board/board.pb.h>
 #include <api/api_enums.h>
 
+#include <cmath>
+#include <memory>
+#include <set>
+
 
 bool DIELECTRIC_PRMS::operator==( const DIELECTRIC_PRMS& aOther ) const
 {
@@ -117,6 +121,8 @@ bool BOARD_STACKUP_ITEM::operator==( const BOARD_STACKUP_ITEM& aOther ) const
     if( m_LayerId           != aOther.m_LayerId ) return false;
     if( m_DielectricLayerId != aOther.m_DielectricLayerId ) return false;
     if( m_enabled           != aOther.m_enabled ) return false;
+
+    if( m_DielectricPrmsList.size() != aOther.m_DielectricPrmsList.size() ) return false;
 
     if( !std::equal( std::begin( m_DielectricPrmsList ), std::end( m_DielectricPrmsList ),
                      std::begin( aOther.m_DielectricPrmsList ),
@@ -406,6 +412,8 @@ bool BOARD_STACKUP::operator==( const BOARD_STACKUP& aOther ) const
     if( m_EdgePlating              != aOther.m_EdgePlating ) return false;
     if( m_FinishType               != aOther.m_FinishType ) return false;
 
+    if( m_list.size() != aOther.m_list.size() ) return false;
+
     if( !std::equal( std::begin( m_list ), std::end( m_list ), std::begin( aOther.m_list ),
                      []( const BOARD_STACKUP_ITEM* aA, const BOARD_STACKUP_ITEM* aB )
                      {
@@ -424,27 +432,42 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
     using namespace kiapi::board;
     BoardStackup stackup;
 
+    stackup.mutable_finish()->set_type_name( m_FinishType.ToUTF8() );
+    stackup.mutable_impedance()->set_is_controlled( m_HasDielectricConstrains );
+
+    if( m_EdgeConnectorConstraints != BS_EDGE_CONNECTOR_NONE )
+    {
+        stackup.mutable_edge()->mutable_connector()->set_bevelled(
+                m_EdgeConnectorConstraints == BS_EDGE_CONNECTOR_BEVELLED );
+    }
+
+    stackup.mutable_edge()->mutable_plating()->set_has_edge_plating( m_EdgePlating );
+
     for( const BOARD_STACKUP_ITEM* item : m_list )
     {
         BoardStackupLayer* layer = stackup.mutable_layers()->Add();
 
         layer->mutable_thickness()->set_value_nm( item->GetThickness() );
         layer->set_layer( ToProtoEnum<PCB_LAYER_ID, types::BoardLayer>( item->GetBrdLayerId() ) );
+        layer->set_enabled( item->IsEnabled() );
         layer->set_type(
                 ToProtoEnum<BOARD_STACKUP_ITEM_TYPE, BoardStackupLayerType>( item->GetType() ) );
+        layer->set_type_name( item->GetTypeName().ToUTF8() );
 
         switch( item->GetType() )
         {
         case BS_ITEM_TYPE_COPPER:
         {
-            layer->set_material_name( "copper" );
             // (no copper params yet...)
             break;
         }
 
         case BS_ITEM_TYPE_DIELECTRIC:
         {
-            BoardStackupDielectricLayer* dielectric = layer->mutable_dielectric()->New();
+            BoardStackupDielectricLayer* dielectric = layer->mutable_dielectric();
+            int                          totalThickness = 0;
+
+            layer->set_dielectric_layer_id( item->GetDielectricLayerId() );
 
             for( int i = 0; i < item->GetSublayersCount(); ++i )
             {
@@ -453,10 +476,27 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
                 props->set_loss_tangent( item->GetLossTangent( i ) );
                 props->set_material_name( item->GetMaterial( i ).ToUTF8() );
                 props->mutable_thickness()->set_value_nm( item->GetThickness( i ) );
+                props->set_thickness_locked( item->IsThicknessLocked( i ) );
+                props->set_color_name( item->GetColor( i ).ToUTF8() );
+                totalThickness += item->GetThickness( i );
             }
+
+            layer->mutable_thickness()->set_value_nm( totalThickness );
 
             break;
         }
+
+        case BS_ITEM_TYPE_SOLDERMASK:
+            layer->set_color_name( item->GetColor().ToUTF8() );
+            layer->set_material_name( item->GetMaterial().ToUTF8() );
+            layer->set_epsilon_r( item->GetEpsilonR() );
+            layer->set_loss_tangent( item->GetLossTangent() );
+            break;
+
+        case BS_ITEM_TYPE_SILKSCREEN:
+            layer->set_color_name( item->GetColor().ToUTF8() );
+            layer->set_material_name( item->GetMaterial().ToUTF8() );
+            break;
 
         default:
             break;
@@ -469,8 +509,292 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
 
 bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
 {
-    // Read-only for now
-    return false;
+    using namespace kiapi::board;
+    BoardStackup serialized;
+
+    if( !aContainer.UnpackTo( &serialized ) || !serialized.has_finish()
+        || !serialized.has_impedance() || !serialized.has_edge()
+        || serialized.layers_size() < 3 || serialized.layers_size() > 128 )
+    {
+        return false;
+    }
+
+    auto validText = []( const std::string& aText, size_t aMaximum )
+    {
+        const wxString decoded = wxString::FromUTF8( aText.data(), aText.size() );
+        return !aText.empty() && !decoded.empty() && aText.size() <= aMaximum
+               && aText.find( '\r' ) == std::string::npos
+               && aText.find( '\n' ) == std::string::npos;
+    };
+    auto validDielectric = []( double aEpsilon, double aLoss )
+    {
+        return std::isfinite( aEpsilon ) && aEpsilon >= 1.0 && aEpsilon <= 100.0
+               && std::isfinite( aLoss ) && aLoss >= 0.0 && aLoss <= 1.0;
+    };
+
+    if( !validText( serialized.finish().type_name(), 128 ) )
+        return false;
+
+    if( serialized.edge().has_castellation()
+        && serialized.edge().castellation().has_castellated_pads() )
+    {
+        return false;
+    }
+
+    BOARD_STACKUP decoded;
+    decoded.m_FinishType = wxString::FromUTF8( serialized.finish().type_name() );
+    decoded.m_HasDielectricConstrains = serialized.impedance().is_controlled();
+    decoded.m_EdgeConnectorConstraints = BS_EDGE_CONNECTOR_NONE;
+    decoded.m_EdgePlating = serialized.edge().has_plating()
+                                    && serialized.edge().plating().has_edge_plating();
+
+    if( serialized.edge().has_connector() )
+    {
+        decoded.m_EdgeConnectorConstraints = serialized.edge().connector().bevelled()
+                                                     ? BS_EDGE_CONNECTOR_BEVELLED
+                                                     : BS_EDGE_CONNECTOR_IN_USE;
+    }
+
+    std::set<PCB_LAYER_ID> boardLayers;
+    int                    copperLayers = 0;
+    int                    dielectricLayers = 0;
+    int64_t                totalThickness = 0;
+    bool                   sawCopper = false;
+    bool                   expectDielectric = false;
+    int                    expectedInner = 1;
+    int                    prefixRank = -1;
+    int                    suffixRank = -1;
+
+    for( const BoardStackupLayer& layer : serialized.layers() )
+    {
+        if( !layer.enabled() )
+            return false;
+
+        BOARD_STACKUP_ITEM_TYPE type = FromProtoEnum<BOARD_STACKUP_ITEM_TYPE>( layer.type() );
+
+        if( type == BS_ITEM_TYPE_UNDEFINED || type < BS_ITEM_TYPE_COPPER
+            || type > BS_ITEM_TYPE_SILKSCREEN )
+        {
+            return false;
+        }
+
+        const PCB_LAYER_ID boardLayer = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
+        const bool isDielectric = type == BS_ITEM_TYPE_DIELECTRIC;
+
+        if( isDielectric != ( boardLayer == UNDEFINED_LAYER ) )
+            return false;
+
+        if( !isDielectric && !boardLayers.emplace( boardLayer ).second )
+            return false;
+
+        const bool validBoardLayer =
+                ( type == BS_ITEM_TYPE_COPPER && IsCopperLayer( boardLayer ) )
+                || ( type == BS_ITEM_TYPE_SOLDERMASK
+                     && ( boardLayer == F_Mask || boardLayer == B_Mask ) )
+                || ( type == BS_ITEM_TYPE_SOLDERPASTE
+                     && ( boardLayer == F_Paste || boardLayer == B_Paste ) )
+                || ( type == BS_ITEM_TYPE_SILKSCREEN
+                     && ( boardLayer == F_SilkS || boardLayer == B_SilkS ) );
+
+        if( !isDielectric && !validBoardLayer )
+            return false;
+
+        if( !validText( layer.type_name(), 128 ) )
+            return false;
+
+        if( layer.has_color() )
+            return false;
+
+        std::unique_ptr<BOARD_STACKUP_ITEM> item( new BOARD_STACKUP_ITEM( type ) );
+        item->SetEnabled( true );
+        item->SetBrdLayerId( boardLayer );
+        item->SetTypeName( wxString::FromUTF8( layer.type_name() ) );
+
+        if( type == BS_ITEM_TYPE_DIELECTRIC )
+        {
+            ++dielectricLayers;
+
+            if( layer.dielectric_layer_id() != static_cast<uint32_t>( dielectricLayers )
+                || layer.dielectric().layer_size() < 1
+                || layer.dielectric().layer_size() > 32 )
+            {
+                return false;
+            }
+
+            item->SetDielectricLayerId( dielectricLayers );
+            int64_t dielectricThickness = 0;
+
+            if( !layer.material_name().empty() || !layer.color_name().empty()
+                || layer.epsilon_r() != 0.0 || layer.loss_tangent() != 0.0 )
+            {
+                return false;
+            }
+
+            for( int i = 0; i < layer.dielectric().layer_size(); ++i )
+            {
+                const BoardStackupDielectricProperties& props = layer.dielectric().layer( i );
+                const int64_t thickness = props.thickness().value_nm();
+
+                if( thickness <= 0 || thickness > 10000000
+                    || !validText( props.material_name(), 128 )
+                    || !validDielectric( props.epsilon_r(), props.loss_tangent() )
+                    || ( !props.color_name().empty()
+                         && !validText( props.color_name(), 64 ) ) )
+                {
+                    return false;
+                }
+
+                if( i > 0 )
+                    item->AddDielectricPrms( i );
+
+                item->SetThickness( static_cast<int>( thickness ), i );
+                item->SetThicknessLocked( props.thickness_locked(), i );
+                item->SetMaterial( wxString::FromUTF8( props.material_name() ), i );
+                item->SetEpsilonR( props.epsilon_r(), i );
+                item->SetLossTangent( props.loss_tangent(), i );
+                item->SetColor( wxString::FromUTF8( props.color_name() ), i );
+                dielectricThickness += thickness;
+                totalThickness += thickness;
+
+                if( totalThickness > 20000000 )
+                    return false;
+            }
+
+            if( layer.thickness().value_nm() != dielectricThickness )
+                return false;
+        }
+        else
+        {
+            if( layer.has_dielectric() || layer.dielectric_layer_id() != 0 )
+                return false;
+
+            const int64_t thickness = layer.thickness().value_nm();
+            const bool needsThickness = type == BS_ITEM_TYPE_COPPER
+                                        || type == BS_ITEM_TYPE_SOLDERMASK;
+
+            if( ( needsThickness
+                  && ( thickness <= 0
+                       || thickness > ( type == BS_ITEM_TYPE_COPPER ? 1000000 : 10000000 ) ) )
+                || ( !needsThickness && thickness != 0 ) )
+            {
+                return false;
+            }
+
+            if( needsThickness )
+            {
+                item->SetThickness( static_cast<int>( thickness ) );
+                totalThickness += thickness;
+
+                if( totalThickness > 20000000 )
+                    return false;
+            }
+
+            if( type == BS_ITEM_TYPE_SOLDERMASK )
+            {
+                if( !validText( layer.material_name(), 128 )
+                    || !validText( layer.color_name(), 64 )
+                    || !validDielectric( layer.epsilon_r(), layer.loss_tangent() ) )
+                {
+                    return false;
+                }
+
+                item->SetMaterial( wxString::FromUTF8( layer.material_name() ) );
+                item->SetColor( wxString::FromUTF8( layer.color_name() ) );
+                item->SetEpsilonR( layer.epsilon_r() );
+                item->SetLossTangent( layer.loss_tangent() );
+            }
+            else if( type == BS_ITEM_TYPE_SILKSCREEN )
+            {
+                if( !validText( layer.material_name(), 128 )
+                    || !validText( layer.color_name(), 64 ) )
+                {
+                    return false;
+                }
+
+                item->SetMaterial( wxString::FromUTF8( layer.material_name() ) );
+                item->SetColor( wxString::FromUTF8( layer.color_name() ) );
+            }
+            else if( !layer.material_name().empty() || !layer.color_name().empty()
+                     || layer.epsilon_r() != 0.0 || layer.loss_tangent() != 0.0 )
+            {
+                return false;
+            }
+
+            if( type == BS_ITEM_TYPE_COPPER )
+                ++copperLayers;
+        }
+
+        if( !sawCopper )
+        {
+            if( type == BS_ITEM_TYPE_COPPER )
+            {
+                if( boardLayer != F_Cu )
+                    return false;
+
+                sawCopper = true;
+                expectDielectric = true;
+            }
+            else
+            {
+                const int rank = boardLayer == F_SilkS ? 0 : boardLayer == F_Paste ? 1
+                                                        : boardLayer == F_Mask ? 2 : -1;
+
+                if( rank < 0 || rank <= prefixRank )
+                    return false;
+
+                prefixRank = rank;
+            }
+        }
+        else if( boardLayer == B_Cu )
+        {
+            if( expectDielectric )
+                return false;
+
+            suffixRank = 0;
+        }
+        else if( suffixRank >= 0 )
+        {
+            const int rank = boardLayer == B_Mask ? 1 : boardLayer == B_Paste ? 2
+                                                       : boardLayer == B_SilkS ? 3 : -1;
+
+            if( rank < 0 || rank <= suffixRank )
+                return false;
+
+            suffixRank = rank;
+        }
+        else if( expectDielectric )
+        {
+            if( type != BS_ITEM_TYPE_DIELECTRIC )
+                return false;
+
+            expectDielectric = false;
+        }
+        else
+        {
+            const PCB_LAYER_ID expected = expectedInner <= copperLayers - 1
+                                                  ? ToLAYER_ID( static_cast<int>( In1_Cu )
+                                                               + ( expectedInner - 1 ) * 2 )
+                                                  : B_Cu;
+
+            if( type != BS_ITEM_TYPE_COPPER || boardLayer != expected )
+                return false;
+
+            ++expectedInner;
+            expectDielectric = true;
+        }
+
+        decoded.Add( item.release() );
+    }
+
+    if( copperLayers < 2 || copperLayers > MAX_CU_LAYERS || copperLayers % 2 != 0
+        || dielectricLayers != copperLayers - 1 || suffixRank < 0 || totalThickness <= 0 )
+    {
+        return false;
+    }
+
+    decoded.m_HasThicknessConstrains = true;
+    *this = decoded;
+    return true;
 }
 
 
