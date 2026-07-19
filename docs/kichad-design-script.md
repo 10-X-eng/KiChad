@@ -285,10 +285,14 @@ Executable symbols currently resolve only from project-local `.kicad_sym` files.
 each file within the project, rejects symlinks and paths that escape the project, bounds individual
 files to 16 MiB and the total inventory to 32 MiB, and extracts the exact named symbol through the
 lossless parser. The cached native symbol is not synthesized from a placeholder: its original
-graphics, fields, pin numbers, and pin coordinates become compiler input. Derived `extends`
-symbols are rejected until inheritance can be flattened without losing semantics. Global symbol
-libraries remain valid dependencies for board-only programs but are not accepted for executable
-schematic placement because their contents depend on the host installation.
+graphics, fields, pin numbers, and pin coordinates become compiler input. Same-library `extends`
+chains are supported to a bounded depth of 64. The resolver detects missing parents and cycles,
+inherits the root graphics and pins, and applies KiCad's mandatory-field and custom-field override
+rules from root to leaf. It renames inherited units and emits a fully flattened cache symbol because
+KiCad forbids inheritance inside schematic `lib_symbols`; unsupported embedded-file overrides are
+rejected rather than dropped. Global symbol libraries remain valid dependencies for board-only
+programs but are not accepted for executable schematic placement because their contents depend on
+the host installation.
 
 The resolver also preserves the exact library symbol's native `exclude_from_sim`, `in_bom`,
 `on_board`, and `in_pos_files` semantics on every placed unit. Missing fields use KiCad 10's native
@@ -872,11 +876,11 @@ components, nets, no-connect state, sourcing, board statement kinds, global rule
 custom rules, checks, and outputs. Global rules, net classes, custom rules, and executable board forms have
 backend-specific type checking and rollback coverage. Project symbol/footprint tables are
 executable with native parser validation, atomic installation, journaling, and rollback coverage.
-Project-local non-derived symbol content, physical and virtual/power component unit placement,
+Project-local root and derived symbol content, physical and virtual/power component unit placement,
 native inclusion flags, connectivity, and no-connect state are executable with lossless
 reconciliation, stable identity, native netlist validation,
-journaling, rollback, and a disposable live integration proof. Derived symbols, global installed
-symbol content, library authoring, footprint/model content, and other schematic
+journaling, rollback, and a disposable live integration proof. Global installed symbol content,
+library authoring, footprint/model content, and other schematic
 drawing forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
 hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

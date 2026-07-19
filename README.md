@@ -75,8 +75,9 @@ title-block company field, creates stable sheet/pin/interface UUIDs, proves the 
 byte-idempotent, injects a native-validation failure to prove exact rollback, and exports the
 resulting hierarchy through the real `kicad-cli` schematic loader. The same proof resolves exact
 project-local resistor symbols, places units on root and child sheets with rotation/mirroring,
-places a real virtual `GND` power symbol with the canonical `(footprint none)` spelling, preserves
-each symbol's native BOM/board/position/simulation flags, attaches project-global signal and power
+places a real derived virtual `GND` power symbol with the canonical `(footprint none)` spelling,
+flattens its inheritance into the native cache, preserves each symbol's native
+BOM/board/position/simulation flags, attaches project-global signal and power
 nets to resolved pin coordinates, and checks their exact nodes in the exported netlist. The native schematic proof also
 reconciles net-derived local/global labels, a name-owned bus alias, plus stable-ID wires, junctions,
 buses, and diagonal bus entries. It also applies and

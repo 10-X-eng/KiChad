@@ -110,7 +110,7 @@
     )
     (embedded_fonts no)
   )
-  (symbol "GND"
+  (symbol "GND_BASE"
     (power)
     (pin_names
       (offset 0)
@@ -163,7 +163,7 @@
         (hide yes)
       )
     )
-    (symbol "GND_0_1"
+    (symbol "GND_BASE_0_1"
       (polyline
         (pts
           (xy 0 0) (xy 0 -1.27) (xy 1.27 -1.27) (xy 0 -2.54)
@@ -178,7 +178,7 @@
         )
       )
     )
-    (symbol "GND_1_1"
+    (symbol "GND_BASE_1_1"
       (pin power_in line
         (at 0 0 270)
         (length 0)
@@ -197,6 +197,54 @@
             )
           )
         )
+      )
+    )
+    (embedded_fonts no)
+  )
+  (symbol "GND"
+    (extends "GND_BASE")
+    (property "Reference" "#PWR"
+      (at 0 -6.35 0)
+      (effects
+        (font
+          (size 1.27 1.27)
+        )
+        (hide yes)
+      )
+    )
+    (property "Value" "GND"
+      (at 0 -3.81 0)
+      (effects
+        (font
+          (size 1.27 1.27)
+        )
+      )
+    )
+    (property "Footprint" ""
+      (at 0 0 0)
+      (effects
+        (font
+          (size 1.27 1.27)
+        )
+        (hide yes)
+      )
+    )
+    (property "Datasheet" ""
+      (at 0 0 0)
+      (effects
+        (font
+          (size 1.27 1.27)
+        )
+        (hide yes)
+      )
+    )
+    (property "Description" "Derived GROUND power symbol"
+      (at 0 0 0)
+      (effects
+        (font
+          (size 1.27 1.27)
+        )
+        (hide yes)
       )
     )
     (embedded_fonts no)

@@ -118,6 +118,8 @@ for attempt in $(seq 1 30); do
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(property "Description" "Derived GROUND power symbol"' \
+            "${project_dir}/live_apply.kicad_sch"
         echo "KiChad live KDS apply smoke test passed."
         exit 0
     fi

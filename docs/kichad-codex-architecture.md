@@ -136,8 +136,10 @@ named native symbol and unit pin geometry; the planner then emits stable placed-
 transforms each KDS net or no-connect endpoint onto a real pin coordinate. Project-global KDS nets
 lower to native global labels, so connectivity spans hierarchy screens without a second net
 representation. Cached symbols are reconciled by library ID inside each screen's `lib_symbols`
-container while unrelated cache entries retain their bytes. Any unresolved, derived, missing, or
-unmanaged-colliding symbol aborts before installation. The same atomic file journal and native
+container while unrelated cache entries retain their bytes. Bounded same-library inheritance is
+flattened with KiCad's field override semantics because schematic caches cannot contain `extends`;
+missing parents, cycles, unsupported inherited content, unresolved pins, and unmanaged collisions
+abort before installation. The same atomic file journal and native
 hierarchy netlist validation cover sheets, cached symbols, placed units, connectivity, and rollback.
 
 Native schematic wires, junctions, buses, and bus entries flow through the same compiler/planner

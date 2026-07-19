@@ -81,7 +81,7 @@ BOOST_AUTO_TEST_CASE( ResolvesExactProjectSymbolCacheAndPinsDeterministically )
 }
 
 
-BOOST_AUTO_TEST_CASE( RejectsGlobalMissingDerivedAndMalformedSymbols )
+BOOST_AUTO_TEST_CASE( ResolvesDerivedSymbolsAndRejectsUnsafeInheritance )
 {
     const std::string globalProgram = R"KDS((kichad_design
   (version 1) (project global)
@@ -117,18 +117,73 @@ BOOST_AUTO_TEST_CASE( RejectsGlobalMissingDerivedAndMalformedSymbols )
     BOOST_CHECK_NE( result.diagnostics.dump().find( "missing_symbol_library_source" ),
                     std::string::npos );
 
-    const std::string derivedLibrary = R"SYM((kicad_symbol_lib
+    const std::string missingParentLibrary = R"SYM((kicad_symbol_lib
   (version 20241209)
   (generator "kicad_symbol_editor")
   (symbol "Derived" (extends "Base")))
 )SYM";
     result = KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
-            compiled.ir, { { "Local", derivedLibrary } } );
+            compiled.ir, { { "Local", missingParentLibrary } } );
     BOOST_CHECK( !result.ok );
-    BOOST_CHECK_NE( result.diagnostics.dump().find( "derived_symbol_not_supported" ),
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "unresolved_symbol_parent" ),
                     std::string::npos );
 
-    std::string futureLibrary = derivedLibrary;
+    const std::string derivedLibrary = R"SYM((kicad_symbol_lib
+  (version 20241209)
+  (generator "kicad_symbol_editor")
+  (symbol "Base"
+    (exclude_from_sim yes)
+    (in_bom no)
+    (on_board no)
+    (in_pos_files no)
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Base" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Description" "Base description"
+      (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "Base_1_1"
+      (pin passive line (at 0 2.54 270) (length 1.27)
+        (name "P" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27)))))))
+  (symbol "Intermediate"
+    (extends "Base")
+    (property "Description" "Intermediate description"
+      (at 0 0 0) (effects (font (size 1.27 1.27)))))
+  (symbol "Derived"
+    (extends "Intermediate")
+    (property "Value" "Derived" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Description" "" (at 0 0 0) (effects (font (size 1.27 1.27))))))
+)SYM";
+    result = KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
+            compiled.ir, { { "Local", derivedLibrary } } );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE( result.symbols.contains( "Local:Derived" ) );
+    BOOST_CHECK_EQUAL( result.symbols["Local:Derived"]["inheritanceDepth"], 2 );
+    BOOST_CHECK_EQUAL( result.symbols["Local:Derived"]["properties"]["Value"], "Derived" );
+    BOOST_CHECK_EQUAL( result.symbols["Local:Derived"]["properties"]["Description"],
+                       "Intermediate description" );
+    BOOST_CHECK_EQUAL( result.symbols["Local:Derived"]["flags"]["excludeFromSim"], false );
+    BOOST_CHECK_EQUAL( result.symbols["Local:Derived"]["flags"]["inBom"], true );
+    BOOST_CHECK_NE( result.symbols["Local:Derived"]["cacheSource"].get<std::string>().find(
+                            "(symbol \"Local:Derived\"" ), std::string::npos );
+    BOOST_CHECK_EQUAL( result.symbols["Local:Derived"]["cacheSource"].get<std::string>().find(
+                               "(extends" ), std::string::npos );
+    BOOST_CHECK_NE( result.symbols["Local:Derived"]["cacheSource"].get<std::string>().find(
+                            "(symbol \"Derived_1_1\"" ), std::string::npos );
+    BOOST_REQUIRE_EQUAL( result.symbols["Local:Derived"]["units"]["1"].size(), 1 );
+
+    const std::string recursiveLibrary = R"SYM((kicad_symbol_lib
+  (version 20241209)
+  (generator "kicad_symbol_editor")
+  (symbol "Derived" (extends "Intermediate"))
+  (symbol "Intermediate" (extends "Derived")))
+)SYM";
+    result = KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
+            compiled.ir, { { "Local", recursiveLibrary } } );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "recursive_symbol_inheritance" ),
+                    std::string::npos );
+
+    std::string futureLibrary = missingParentLibrary;
     const size_t version = futureLibrary.find( "20241209" );
     BOOST_REQUIRE_NE( version, std::string::npos );
     futureLibrary.replace( version, 8, "20990101" );

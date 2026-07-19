@@ -34,6 +34,8 @@ using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT;
 constexpr size_t MAX_LIBRARY_BYTES = 16 * 1024 * 1024;
 constexpr size_t MAX_RESOLVED_SYMBOLS = 4096;
 constexpr size_t MAX_PINS_PER_UNIT = 1024;
+constexpr size_t MAX_INHERITANCE_DEPTH = 64;
+constexpr size_t MAX_PROPERTIES_PER_SYMBOL = 1024;
 constexpr int64_t MAX_SYMBOL_LIBRARY_VERSION = 20251024;
 
 
@@ -112,6 +114,66 @@ bool optionalNativeBool( const DOCUMENT& aDocument, size_t aParent,
         return false;
 
     aValue = value == "yes";
+    return true;
+}
+
+
+struct DIRECT_PROPERTY
+{
+    std::string name;
+    std::string value;
+    std::string source;
+    size_t      node;
+};
+
+
+bool directProperties( const DOCUMENT& aDocument, size_t aSymbol,
+                       std::vector<DIRECT_PROPERTY>& aProperties )
+{
+    const std::vector<size_t> properties = directLists( aDocument, aSymbol, "property" );
+
+    if( properties.size() > MAX_PROPERTIES_PER_SYMBOL )
+        return false;
+
+    std::set<std::string> names;
+
+    for( size_t property : properties )
+    {
+        const DOCUMENT::NODE& node = aDocument.Nodes().at( property );
+        size_t nameIndex = 1;
+
+        if( node.children.size() > nameIndex
+            && aDocument.Nodes().at( node.children[nameIndex] ).kind
+                       != DOCUMENT::NODE_KIND::LIST
+            && aDocument.AtomText( node.children[nameIndex] ) == "private" )
+        {
+            ++nameIndex;
+        }
+
+        const size_t valueIndex = nameIndex + 1;
+
+        if( node.children.size() <= valueIndex
+            || aDocument.Nodes().at( node.children[nameIndex] ).kind
+                       == DOCUMENT::NODE_KIND::LIST
+            || aDocument.Nodes().at( node.children[valueIndex] ).kind
+                       == DOCUMENT::NODE_KIND::LIST )
+        {
+            return false;
+        }
+
+        DIRECT_PROPERTY parsed = { aDocument.AtomText( node.children[nameIndex] ),
+                                   aDocument.AtomText( node.children[valueIndex] ),
+                                   aDocument.RawText( property ), property };
+
+        if( parsed.name.empty() || parsed.name.size() > 256
+            || !names.emplace( parsed.name ).second )
+        {
+            return false;
+        }
+
+        aProperties.emplace_back( std::move( parsed ) );
+    }
+
     return true;
 }
 
@@ -229,6 +291,154 @@ bool splitLibraryId( const std::string& aLibraryId, std::string& aNickname,
     aNickname = aLibraryId.substr( 0, separator );
     aItem = aLibraryId.substr( separator + 1 );
     return !aNickname.empty() && !aItem.empty();
+}
+
+
+bool applyPropertyOverrides( std::string& aCacheSource,
+                             const std::vector<DIRECT_PROPERTY>& aOverrides,
+                             JSON& aProperties, std::string& aError )
+{
+    std::unique_ptr<DOCUMENT> cache = DOCUMENT::Parse( aCacheSource, &aError );
+
+    if( !cache || cache->Roots().size() != 1
+        || cache->ListHead( cache->Roots().front() ) != "symbol" )
+    {
+        aError = aError.empty() ? "flattened cache is not one symbol" : aError;
+        return false;
+    }
+
+    const size_t root = cache->Roots().front();
+    std::vector<DIRECT_PROPERTY> existing;
+
+    if( !directProperties( *cache, root, existing ) )
+    {
+        aError = "flattened cache contains malformed or duplicate properties";
+        return false;
+    }
+
+    std::map<std::string, size_t> nodes;
+
+    for( const DIRECT_PROPERTY& property : existing )
+        nodes[property.name] = property.node;
+
+    // Mandatory native fields only override an inherited value when the derived field is nonempty.
+    const std::set<std::string> mandatory = { "Reference", "Value", "Footprint",
+                                               "Datasheet", "Description" };
+    std::string insertions;
+
+    for( const DIRECT_PROPERTY& property : aOverrides )
+    {
+        if( mandatory.contains( property.name ) && property.value.empty() )
+            continue;
+
+        if( nodes.contains( property.name ) )
+        {
+            if( !cache->ReplaceNode( nodes.at( property.name ), property.source, &aError ) )
+                return false;
+        }
+        else
+        {
+            insertions += "\n    " + property.source;
+        }
+
+        aProperties[property.name] = property.value;
+    }
+
+    if( !insertions.empty()
+        && !cache->InsertBeforeClosingList( root, insertions, &aError ) )
+    {
+        return false;
+    }
+
+    return cache->Render( aCacheSource, &aError );
+}
+
+
+bool finalizeCacheSource( std::string& aCacheSource, const std::string& aLibraryId,
+                          const JSON& aFlags, bool aNormalizeFlags, std::string& aError )
+{
+    std::unique_ptr<DOCUMENT> cache = DOCUMENT::Parse( aCacheSource, &aError );
+
+    if( !cache || cache->Roots().size() != 1
+        || cache->ListHead( cache->Roots().front() ) != "symbol" )
+    {
+        aError = aError.empty() ? "flattened cache is not one symbol" : aError;
+        return false;
+    }
+
+    const size_t root = cache->Roots().front();
+    const DOCUMENT::NODE& rootNode = cache->Nodes().at( root );
+
+    if( rootNode.children.size() < 2
+        || !cache->ReplaceNode( rootNode.children[1], quoted( aLibraryId ), &aError ) )
+    {
+        return false;
+    }
+
+    std::string nickname;
+    std::string itemName;
+
+    if( !splitLibraryId( aLibraryId, nickname, itemName ) )
+    {
+        aError = "flattened cache has an invalid library ID";
+        return false;
+    }
+
+    for( size_t unitNode : directLists( *cache, root, "symbol" ) )
+    {
+        const DOCUMENT::NODE& unit = cache->Nodes().at( unitNode );
+        int64_t unitNumber = 0;
+        int64_t bodyStyle = 0;
+
+        if( unit.children.size() < 2
+            || cache->Nodes().at( unit.children[1] ).kind == DOCUMENT::NODE_KIND::LIST
+            || !unitIdentity( cache->AtomText( unit.children[1] ), unitNumber, bodyStyle )
+            || !cache->ReplaceNode( unit.children[1],
+                                    quoted( itemName + "_" + std::to_string( unitNumber )
+                                            + "_" + std::to_string( bodyStyle ) ),
+                                    &aError ) )
+        {
+            aError = aError.empty() ? "flattened cache contains a malformed unit name" : aError;
+            return false;
+        }
+    }
+
+    if( aNormalizeFlags )
+    {
+        const std::vector<std::pair<std::string, bool>> flags = {
+            { "exclude_from_sim", aFlags.at( "excludeFromSim" ).get<bool>() },
+            { "in_bom", aFlags.at( "inBom" ).get<bool>() },
+            { "on_board", aFlags.at( "onBoard" ).get<bool>() },
+            { "in_pos_files", aFlags.at( "inPosFiles" ).get<bool>() }
+        };
+        std::string insertions;
+
+        for( const auto& [ head, value ] : flags )
+        {
+            const std::vector<size_t> nodes = directLists( *cache, root, head );
+
+            if( nodes.size() > 1 )
+            {
+                aError = "flattened cache contains duplicate native inclusion flags";
+                return false;
+            }
+
+            const std::string expression = "(" + head + " " + ( value ? "yes" : "no" ) + ")";
+
+            if( nodes.empty() )
+                insertions += "\n    " + expression;
+            else if( !cache->ReplaceNode( nodes.front(), expression, &aError ) )
+                return false;
+        }
+
+        if( !insertions.empty()
+            && !cache->InsertBeforeClosingList( root, insertions, &aError ) )
+        {
+            return false;
+        }
+    }
+
+    return cache->Render( aCacheSource, &aError );
 }
 
 } // namespace
@@ -386,21 +596,20 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
 
         const DOCUMENT& library = *parsedLibraries.at( nickname );
         const size_t root = library.Roots().front();
-        std::vector<size_t> matches;
+        std::map<std::string, std::vector<size_t>> symbolsByName;
 
         for( size_t symbol : directLists( library, root, "symbol" ) )
         {
             const DOCUMENT::NODE& node = library.Nodes().at( symbol );
 
             if( node.children.size() >= 2
-                && library.Nodes().at( node.children[1] ).kind != DOCUMENT::NODE_KIND::LIST
-                && library.AtomText( node.children[1] ) == itemName )
+                && library.Nodes().at( node.children[1] ).kind != DOCUMENT::NODE_KIND::LIST )
             {
-                matches.push_back( symbol );
+                symbolsByName[library.AtomText( node.children[1] )].push_back( symbol );
             }
         }
 
-        if( matches.size() != 1 )
+        if( !symbolsByName.contains( itemName ) || symbolsByName.at( itemName ).size() != 1 )
         {
             diagnostic( result, "unresolved_symbol",
                         "project library " + nickname + " must contain exactly one symbol "
@@ -408,26 +617,81 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
             continue;
         }
 
-        const size_t symbol = matches.front();
+        std::vector<size_t> inheritanceChain;
+        std::set<std::string> visitedNames;
+        std::string currentName = itemName;
+        bool inheritanceValid = true;
 
-        if( !directLists( library, symbol, "extends" ).empty() )
+        while( true )
         {
-            diagnostic( result, "derived_symbol_not_supported",
-                        "symbol " + libraryId
-                                + " uses inheritance, which is not yet safely cache-resolved" );
-            continue;
+            if( inheritanceChain.size() >= MAX_INHERITANCE_DEPTH )
+            {
+                diagnostic( result, "symbol_inheritance_too_deep",
+                            "symbol " + libraryId
+                                    + " exceeds the 64-level inheritance bound" );
+                inheritanceValid = false;
+                break;
+            }
+
+            if( !visitedNames.emplace( currentName ).second )
+            {
+                diagnostic( result, "recursive_symbol_inheritance",
+                            "symbol " + libraryId + " has a recursive inheritance chain" );
+                inheritanceValid = false;
+                break;
+            }
+
+            auto current = symbolsByName.find( currentName );
+
+            if( current == symbolsByName.end() || current->second.size() != 1 )
+            {
+                diagnostic( result, "unresolved_symbol_parent",
+                            "symbol " + libraryId + " requires exactly one parent "
+                                    + currentName + " in the same project library" );
+                inheritanceValid = false;
+                break;
+            }
+
+            const size_t currentSymbol = current->second.front();
+            inheritanceChain.push_back( currentSymbol );
+            const std::vector<size_t> extends = directLists( library, currentSymbol, "extends" );
+
+            if( extends.empty() )
+                break;
+
+            std::string parentName;
+
+            if( extends.size() != 1
+                || !directScalar( library, currentSymbol, "extends", parentName )
+                || parentName.empty() || parentName.size() > 256 )
+            {
+                diagnostic( result, "invalid_symbol_inheritance",
+                            "symbol " + libraryId
+                                    + " has a duplicate or malformed extends field" );
+                inheritanceValid = false;
+                break;
+            }
+
+            currentName = parentName;
         }
+
+        if( !inheritanceValid )
+            continue;
+
+        const size_t symbol = inheritanceChain.back();
 
         bool excludeFromSim = false;
         bool inBom = true;
         bool onBoard = true;
         bool inPosFiles = true;
+        const size_t flagSymbol =
+                inheritanceChain.size() == 1 ? symbol : inheritanceChain[1];
 
-        if( !optionalNativeBool( library, symbol, "exclude_from_sim", false,
+        if( !optionalNativeBool( library, flagSymbol, "exclude_from_sim", false,
                                  excludeFromSim )
-            || !optionalNativeBool( library, symbol, "in_bom", true, inBom )
-            || !optionalNativeBool( library, symbol, "on_board", true, onBoard )
-            || !optionalNativeBool( library, symbol, "in_pos_files", true, inPosFiles ) )
+            || !optionalNativeBool( library, flagSymbol, "in_bom", true, inBom )
+            || !optionalNativeBool( library, flagSymbol, "on_board", true, onBoard )
+            || !optionalNativeBool( library, flagSymbol, "in_pos_files", true, inPosFiles ) )
         {
             diagnostic( result, "invalid_symbol_flags",
                         "symbol " + libraryId
@@ -441,19 +705,18 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
                        { "inPosFiles", inPosFiles } };
 
         JSON properties = JSON::object();
+        std::vector<DIRECT_PROPERTY> rootProperties;
 
-        for( size_t property : directLists( library, symbol, "property" ) )
+        if( !directProperties( library, symbol, rootProperties ) )
         {
-            const DOCUMENT::NODE& node = library.Nodes().at( property );
-
-            if( node.children.size() >= 3
-                && library.Nodes().at( node.children[1] ).kind != DOCUMENT::NODE_KIND::LIST
-                && library.Nodes().at( node.children[2] ).kind != DOCUMENT::NODE_KIND::LIST )
-            {
-                properties[library.AtomText( node.children[1] )] =
-                        library.AtomText( node.children[2] );
-            }
+            diagnostic( result, "invalid_symbol_properties",
+                        "symbol " + libraryId
+                                + " has malformed, duplicate, or excessive properties" );
+            continue;
         }
+
+        for( const DIRECT_PROPERTY& property : rootProperties )
+            properties[property.name] = property.value;
 
         std::map<int64_t, JSON> pinsByUnit;
         std::set<int64_t> presentUnits;
@@ -545,30 +808,42 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
 
         std::string cacheSource = library.RawText( symbol );
         std::string editError;
-        std::unique_ptr<DOCUMENT> cacheDocument = DOCUMENT::Parse( cacheSource, &editError );
+        bool cacheValid = true;
 
-        if( !cacheDocument || cacheDocument->Roots().size() != 1 )
+        for( size_t index = inheritanceChain.size(); index > 1; --index )
         {
-            diagnostic( result, "invalid_symbol_cache_source",
-                        libraryId + ": " + editError );
-            continue;
+            const size_t derived = inheritanceChain[index - 2];
+            std::vector<DIRECT_PROPERTY> overrides;
+            bool embeddedFonts = false;
+
+            if( !directLists( library, derived, "symbol" ).empty()
+                || !directLists( library, derived, "embedded_files" ).empty()
+                || !optionalNativeBool( library, derived, "embedded_fonts", false,
+                                        embeddedFonts )
+                || embeddedFonts
+                || !directProperties( library, derived, overrides )
+                || !applyPropertyOverrides( cacheSource, overrides, properties, editError ) )
+            {
+                cacheValid = false;
+                break;
+            }
         }
 
-        const size_t cacheRoot = cacheDocument->Roots().front();
-        const DOCUMENT::NODE& cacheNode = cacheDocument->Nodes().at( cacheRoot );
-
-        if( cacheNode.children.size() < 2
-            || !cacheDocument->ReplaceNode( cacheNode.children[1], quoted( libraryId ),
-                                            &editError )
-            || !cacheDocument->Render( cacheSource, &editError ) )
+        if( !cacheValid
+            || !finalizeCacheSource( cacheSource, libraryId, flags,
+                                     inheritanceChain.size() > 1, editError ) )
         {
             diagnostic( result, "invalid_symbol_cache_source",
-                        libraryId + ": " + editError );
+                        libraryId + ": "
+                                + ( editError.empty()
+                                            ? "derived symbol contains unsupported content"
+                                            : editError ) );
             continue;
         }
 
         result.symbols[libraryId] = { { "libraryId", libraryId },
                                       { "cacheSource", cacheSource },
+                                      { "inheritanceDepth", inheritanceChain.size() - 1 },
                                       { "flags", std::move( flags ) },
                                       { "properties", std::move( properties ) },
                                       { "units", std::move( units ) } };
