@@ -218,26 +218,18 @@ failure. Installed/global library declarations remain nickname dependencies and 
 into the project tables; model declarations remain KDS dependencies because KiCad has no model
 table.
 
-The complete tool surface is capped at nine host functions. Each function accepts schema-validated
-requests and returns structured results; functionality is added to these tools
-instead of creating narrowly named one-off tools.
+The complete advertised surface currently contains six schema-validated host functions. Each tool
+owns its schema, validation, and handler in exactly one `codex_tool_<name>.cpp` file: `project`,
+`inspect`, `design`, `pcb`, `verify`, and `fabricate`. The small registry only assembles those six
+specifications, routes calls, and wraps structured results; it contains no tool implementation.
+Shared confinement, native-format, IPC, and atomic-file primitives live behind a narrow internal
+interface rather than being duplicated across tools.
 
-1. `design` — load, save, compile, preview, and apply a versioned `.kicad_kds` sidecar.
-2. `project` — create/open projects, read context, set stackup/rules/net classes, and manage whole
-   turn snapshots.
-3. `source_parts` — query distributor data and propose sourcing evidence updates. KDS remains the
-   only persistent sourcing record; this function must not create a parallel cache.
-4. `library` — inspect or create verified KLC-compliant symbols, footprints, and model mappings.
-5. `schematic` — losslessly inspect and mutate schematics, connectivity, hierarchy, annotations,
-   and netlists.
-6. `board` — inspect and mutate the live board through the KiCad 10 IPC API and transactions,
-   including placement, copper, routing, zones, vias, constraints, and dimensions.
-7. `inspect` — return compact structured design context plus rendered schematic/PCB/3D images.
-8. `verify` — run structured checks. Native ERC, DRC (including schematic parity), and KDS sourcing
-   gates are implemented; connectivity and manufacturability gates remain to be added here.
-9. `fabricate` — the implemented fixed production profile generates and validates Gerber plus job
-   data, Excellon drill plus maps/report, placement CSV, KDS-sourced BOM, and optional STEP/PDF,
-   behind snapshot, clean-gate, waiver, and explicit final-action permission gates.
+Functionality is expanded inside these stable tools instead of creating narrowly named one-off
+tools. KDS remains the one persistent AI-native representation: library, schematic, board,
+sourcing, verification, and production capabilities are language facets compiled and applied by
+`design`, while `pcb` provides exact live KiCad protobuf access and the other tools provide bounded
+context, verification, and release operations.
 
 The host advertises only implemented tools.  A tool is not exposed with a stub implementation.
 

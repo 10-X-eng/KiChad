@@ -103,6 +103,12 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/lossless_sexpr_document.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_paths.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_thread_store.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_design.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_fabricate.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_inspect.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_pcb.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_project.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_verify.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
@@ -112,6 +118,8 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_resolver.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/kicad_ipc_transaction.cpp
 
     libeval/test_numeric_evaluator.cpp
 

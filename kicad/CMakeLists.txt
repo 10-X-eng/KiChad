@@ -22,6 +22,12 @@ include_directories(
 
 set( KICAD_SRCS
     codex/codex_app_server_client.cpp
+    codex/codex_tool_design.cpp
+    codex/codex_tool_fabricate.cpp
+    codex/codex_tool_inspect.cpp
+    codex/codex_tool_pcb.cpp
+    codex/codex_tool_project.cpp
+    codex/codex_tool_verify.cpp
     codex/design_script_board_compiler.cpp
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
@@ -31,10 +37,12 @@ set( KICAD_SRCS
     codex/design_script_schematic_reconciler.cpp
     codex/design_script_symbol_resolver.cpp
     codex/kicad_ipc_client.cpp
+    codex/kicad_ipc_transaction.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp
     codex/codex_thread_store.cpp
     codex/codex_tool_registry.cpp
+    codex/codex_tool_support.cpp
     codex/lossless_sexpr_document.cpp
     dialogs/dialog_destination.cpp
     dialogs/dialog_destination_base.cpp
