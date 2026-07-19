@@ -1196,6 +1196,18 @@ BOOST_AUTO_TEST_CASE( CompilesIpc2581ProductionOutput )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesOdbppProductionOutput )
+{
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
+                    "(kichad_design (version 1) (project odb_manufacturing_data) "
+                    "(output odbpp))" );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 1 );
+    BOOST_CHECK_EQUAL( result.ir["outputs"][0]["kind"].get<std::string>(), "odbpp" );
+}
+
+
 BOOST_AUTO_TEST_CASE( CompilesCanonicalGlobalAndProjectLibraryDependencies )
 {
     const std::string source = R"KDS((kichad_design

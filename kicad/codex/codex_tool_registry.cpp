@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <boost/process.hpp>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -54,7 +55,9 @@
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
 #include <wx/utils.h>
+#include <wx/wfstream.h>
 #include <wx/xml/xml.h>
+#include <wx/zipstrm.h>
 
 #include <picosha2.h>
 
@@ -1562,6 +1565,12 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
                           "--precision", "6", "--version", "C", "--units", "mm",
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "odbpp" )
+        {
+            arguments = { "pcb", "export", "odb", "--output", output.string(),
+                          "--precision", "4", "--compression", "zip", "--units", "mm",
+                          aBoard.GetFullPath().ToStdString() };
+        }
         else if( kind == "pick_place" )
         {
             arguments = { "pcb", "export", "pos", "--output", output.string(),
@@ -1608,7 +1617,8 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         "erc", "drc", "sourcing", "fabrication"
     };
     static constexpr const char* OUTPUT_ORDER[] = {
-        "gerbers", "drill", "ipcd356", "ipc2581", "pick_place", "bom", "step", "pdf"
+        "gerbers", "drill", "ipcd356", "ipc2581", "odbpp", "pick_place", "bom", "step",
+        "pdf"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
         "gerbers", "drill", "ipcd356", "pick_place", "bom"
@@ -1735,6 +1745,10 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         {
             job["relativePath"] = "manufacturing/" + aFileStem + ".ipc2581.xml";
         }
+        else if( std::string_view( kind ) == "odbpp" )
+        {
+            job["relativePath"] = "manufacturing/" + aFileStem + ".odb.zip";
+        }
         else if( std::string_view( kind ) == "pick_place" )
         {
             job["relativePath"] = "assembly/" + aFileStem + "-positions.csv";
@@ -1756,7 +1770,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v3" },
+    return { { "profile", "kichad-production-10.0.4-v4" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -2162,6 +2176,333 @@ bool validateIpc2581Artifact( const std::filesystem::path& aPath, const JSON& aP
         if( !componentReferences.contains( expected.get<std::string>() ) )
         {
             aError = "IPC-2581 artifact is missing a compiled KDS component reference";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool validateOdbArchive( const std::filesystem::path& aPath, const JSON& aPlan,
+                         std::string& aError )
+{
+    constexpr size_t MAX_ODB_ARCHIVE_ENTRIES = 20'000;
+    constexpr uintmax_t MAX_ODB_CONTROL_FILE_BYTES = 32ULL * 1024ULL * 1024ULL;
+    constexpr size_t MAX_ODB_PATH_BYTES = 1024;
+    constexpr size_t MAX_ODB_PATH_PARTS = 32;
+    static const std::set<std::string> ALLOWED_ROOTS = {
+        "matrix", "steps", "input", "symbols", "fonts", "misc", "wheels", "user"
+    };
+    static const std::set<std::string> REQUIRED_DIRECTORIES = {
+        "matrix/", "steps/", "steps/pcb/", "steps/pcb/layers/",
+        "steps/pcb/netlists/", "steps/pcb/netlists/cadnet/", "steps/pcb/eda/",
+        "fonts/", "misc/"
+    };
+    static const std::set<std::string> REQUIRED_FILES = {
+        "matrix/matrix",
+        "steps/pcb/stephdr",
+        "steps/pcb/profile",
+        "steps/pcb/eda/data",
+        "steps/pcb/netlists/cadnet/netlist",
+        "steps/pcb/layers/f.cu/features",
+        "steps/pcb/layers/b.cu/features",
+        "steps/pcb/layers/edge.cuts/features",
+        "fonts/standard",
+        "misc/info"
+    };
+    const auto safePath = [&]( const std::string& aName, bool aDirectory )
+    {
+        if( aName.empty() || aName.size() > MAX_ODB_PATH_BYTES || aName.front() == '/'
+            || aName.find( '\\' ) != std::string::npos
+            || aName.find( ':' ) != std::string::npos
+            || aName.find( "//" ) != std::string::npos
+            || aName.ends_with( '/' ) != aDirectory )
+        {
+            return false;
+        }
+
+        for( unsigned char character : aName )
+        {
+            if( character < 0x20 || character > 0x7e )
+                return false;
+        }
+
+        size_t parts = 0;
+        size_t start = 0;
+        std::string root;
+
+        while( start < aName.size() )
+        {
+            const size_t end = aName.find( '/', start );
+            const size_t length = ( end == std::string::npos ? aName.size() : end ) - start;
+            const std::string_view part( aName.data() + start, length );
+
+            if( part.empty() || part == "." || part == ".." || ++parts > MAX_ODB_PATH_PARTS )
+                return false;
+
+            if( root.empty() )
+                root.assign( part );
+
+            if( end == std::string::npos )
+                break;
+
+            start = end + 1;
+        }
+
+        return ALLOWED_ROOTS.contains( root );
+    };
+    const auto lowerAscii = []( std::string aValue )
+    {
+        std::transform( aValue.begin(), aValue.end(), aValue.begin(),
+                        []( unsigned char aCharacter )
+                        {
+                            return static_cast<char>( std::tolower( aCharacter ) );
+                        } );
+        return aValue;
+    };
+    const std::string nativePath = aPath.string();
+    wxFFileInputStream archiveInput( wxString::FromUTF8( nativePath.c_str() ) );
+
+    if( !archiveInput.IsOk() )
+    {
+        aError = "could not read ODB++ archive";
+        return false;
+    }
+
+    wxZipInputStream archive( archiveInput, wxConvUTF8 );
+    const int advertisedEntries = archive.GetTotalEntries();
+
+    if( !archive.IsOk() || advertisedEntries <= 0
+        || static_cast<size_t>( advertisedEntries ) > MAX_ODB_ARCHIVE_ENTRIES
+        || !archive.GetComment().empty() )
+    {
+        aError = "ODB++ ZIP has invalid archive metadata or entry count";
+        return false;
+    }
+
+    std::set<std::string> archivePaths;
+    std::set<std::string> caseFoldedPaths;
+    std::map<std::string, std::string> inspectedFiles;
+    uintmax_t totalBytes = 0;
+    size_t entryCount = 0;
+    std::array<char, 64 * 1024> readBuffer;
+
+    while( auto entry = std::unique_ptr<wxZipEntry>( archive.GetNextEntry() ) )
+    {
+        if( ++entryCount > MAX_ODB_ARCHIVE_ENTRIES )
+        {
+            aError = "ODB++ ZIP exceeds the bounded entry count";
+            return false;
+        }
+
+        const bool directory = entry->IsDir();
+        std::string path = entry->GetInternalName().ToStdString();
+
+        if( directory && !path.ends_with( '/' ) )
+            path.push_back( '/' );
+
+        const int flags = entry->GetFlags();
+        constexpr int ALLOWED_FLAGS = wxZIP_DEFLATE_MASK | wxZIP_SUMS_FOLLOW
+                                      | wxZIP_LANG_ENC_UTF8;
+
+        if( !safePath( path, directory ) )
+        {
+            aError = "ODB++ ZIP contains an unsafe entry path: " + path;
+            return false;
+        }
+
+        if( !archivePaths.emplace( path ).second
+            || !caseFoldedPaths.emplace( lowerAscii( path ) ).second )
+        {
+            aError = "ODB++ ZIP contains a duplicate or case-ambiguous entry: " + path;
+            return false;
+        }
+
+        if( ( flags & ~ALLOWED_FLAGS ) != 0
+            || ( flags & ( wxZIP_ENCRYPTED | wxZIP_STRONG_ENC ) ) != 0 )
+        {
+            aError = "ODB++ ZIP contains unsupported or encrypted flags: " + path;
+            return false;
+        }
+
+        if( ( entry->GetMethod() != wxZIP_METHOD_STORE
+              && entry->GetMethod() != wxZIP_METHOD_DEFLATE )
+            || !entry->GetComment().empty() || entry->GetExtraLen() != 0
+            || entry->GetLocalExtraLen() != 0 )
+        {
+            aError = "ODB++ ZIP contains unsupported compression or entry metadata: " + path;
+            return false;
+        }
+
+        const wxFileOffset size = entry->GetSize();
+        const wxFileOffset compressedSize = entry->GetCompressedSize();
+
+        if( size < 0 || compressedSize < 0
+            || static_cast<uintmax_t>( size ) > MAX_FABRICATION_FILE_BYTES
+            || static_cast<uintmax_t>( compressedSize ) > MAX_FABRICATION_FILE_BYTES
+            || totalBytes > MAX_FABRICATION_TOTAL_BYTES - static_cast<uintmax_t>( size )
+            || ( directory && size != 0 ) )
+        {
+            aError = "ODB++ ZIP exceeds the bounded entry or expanded package size";
+            return false;
+        }
+
+        if( directory )
+            continue;
+
+        const bool inspect = REQUIRED_FILES.contains( path ) || path.ends_with( "/components" );
+
+        if( inspect && static_cast<uintmax_t>( size ) > MAX_ODB_CONTROL_FILE_BYTES )
+        {
+            aError = "ODB++ control or component file exceeds its inspection limit";
+            return false;
+        }
+
+        std::string content;
+
+        if( inspect )
+            content.reserve( static_cast<size_t>( size ) );
+
+        uintmax_t actualBytes = 0;
+
+        while( true )
+        {
+            archive.Read( readBuffer.data(), readBuffer.size() );
+            const size_t read = archive.LastRead();
+
+            if( read == 0 )
+                break;
+
+            if( actualBytes > MAX_FABRICATION_FILE_BYTES - read
+                || totalBytes > MAX_FABRICATION_TOTAL_BYTES - actualBytes - read )
+            {
+                aError = "ODB++ ZIP expanded data exceeds the bounded package size";
+                return false;
+            }
+
+            actualBytes += read;
+
+            if( inspect )
+                content.append( readBuffer.data(), read );
+        }
+
+        if( actualBytes != static_cast<uintmax_t>( size ) || !archive.CloseEntry() )
+        {
+            aError = "ODB++ ZIP entry is truncated or failed its integrity check";
+            return false;
+        }
+
+        totalBytes += actualBytes;
+
+        if( inspect )
+            inspectedFiles.emplace( path, std::move( content ) );
+    }
+
+    if( entryCount != static_cast<size_t>( advertisedEntries ) || !archive.Eof() )
+    {
+        aError = "ODB++ ZIP central directory differs from its readable entries";
+        return false;
+    }
+
+    for( const std::string& required : REQUIRED_DIRECTORIES )
+    {
+        if( !archivePaths.contains( required ) )
+        {
+            aError = "ODB++ ZIP is missing a required directory";
+            return false;
+        }
+    }
+
+    for( const std::string& required : REQUIRED_FILES )
+    {
+        if( !inspectedFiles.contains( required ) )
+        {
+            aError = "ODB++ ZIP is missing a required manufacturing file";
+            return false;
+        }
+    }
+
+    const std::string& matrix = inspectedFiles.at( "matrix/matrix" );
+    const std::string& info = inspectedFiles.at( "misc/info" );
+    const std::string& stepHeader = inspectedFiles.at( "steps/pcb/stephdr" );
+    const std::string& profile = inspectedFiles.at( "steps/pcb/profile" );
+    const std::string& eda = inspectedFiles.at( "steps/pcb/eda/data" );
+    const std::string& netlist = inspectedFiles.at( "steps/pcb/netlists/cadnet/netlist" );
+    const auto validFeatureFile = [&]( const char* aName )
+    {
+        const std::string& source = inspectedFiles.at( aName );
+        return source.starts_with( "UNITS=MM\n" )
+               && source.find( "#Num Features" ) != std::string::npos;
+    };
+
+    if( matrix.find( "STEP {" ) == std::string::npos
+        || matrix.find( "NAME=PCB" ) == std::string::npos
+        || matrix.find( "NAME=F.CU" ) == std::string::npos
+        || matrix.find( "NAME=B.CU" ) == std::string::npos
+        || matrix.find( "NAME=EDGE.CUTS" ) == std::string::npos
+        || !info.starts_with( "JOB_NAME=job\nUNITS=MM\nODB_VERSION_MAJOR=8\n"
+                              "ODB_VERSION_MINOR=1\nODB_SOURCE=KiCad EDA\n" )
+        || info.find( "SAVE_APP=KiCad EDA 10.0.4" ) == std::string::npos
+        || stepHeader.find( "LEFT_ACTIVE=" ) == std::string::npos
+        || stepHeader.find( "X_ORIGIN=" ) == std::string::npos
+        || !stepHeader.ends_with( "UNITS=MM\n" )
+        || !profile.starts_with( "UNITS=MM\n" )
+        || profile.find( "#Num Features" ) == std::string::npos
+        || eda.find( "HDR KiCad EDA 10.0.4" ) == std::string::npos
+        || eda.find( "UNITS=MM\n" ) == std::string::npos
+        || !netlist.starts_with( "H optimize " )
+        || netlist.find( "#Netlist points" ) == std::string::npos
+        || inspectedFiles.at( "fonts/standard" ).find( "XSIZE" ) == std::string::npos
+        || !validFeatureFile( "steps/pcb/layers/f.cu/features" )
+        || !validFeatureFile( "steps/pcb/layers/b.cu/features" )
+        || !validFeatureFile( "steps/pcb/layers/edge.cuts/features" ) )
+    {
+        aError = "ODB++ ZIP failed its native 8.1 millimetre manufacturing structure checks";
+        return false;
+    }
+
+    std::set<std::string> componentReferences;
+
+    for( const auto& [path, source] : inspectedFiles )
+    {
+        if( !path.ends_with( "/components" ) )
+            continue;
+
+        std::istringstream lines( source );
+        std::string line;
+
+        while( std::getline( lines, line ) )
+        {
+            if( !line.starts_with( "CMP " ) )
+                continue;
+
+            std::istringstream fields( line );
+            std::string record;
+            std::string index;
+            std::string x;
+            std::string y;
+            std::string rotation;
+            std::string mirror;
+            std::string reference;
+            std::string package;
+
+            if( !( fields >> record >> index >> x >> y >> rotation >> mirror >> reference
+                   >> package )
+                || record != "CMP" || reference.empty()
+                || !componentReferences.emplace( reference ).second )
+            {
+                aError = "ODB++ ZIP has a malformed or duplicate component reference";
+                return false;
+            }
+        }
+    }
+
+    for( const JSON& expected : aPlan.at( "expectedBomReferences" ) )
+    {
+        if( !componentReferences.contains( expected.get<std::string>() ) )
+        {
+            aError = "ODB++ ZIP is missing a compiled KDS component reference";
             return false;
         }
     }
@@ -2878,6 +3219,20 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             if( !validateIpc2581Artifact( iterator->path(), aPlan, aError ) )
                 return false;
         }
+        else if( path.starts_with( "manufacturing/" ) && path.ends_with( ".odb.zip" ) )
+        {
+            kind = "odbpp";
+
+            if( !prefix.starts_with( "PK\x03\x04" )
+                || suffix.find( "PK\x05\x06" ) == std::string::npos )
+            {
+                aError = "ODB++ artifact failed ZIP signature validation";
+                return false;
+            }
+
+            if( !validateOdbArchive( iterator->path(), aPlan, aError ) )
+                return false;
+        }
         else if( path.starts_with( "assembly/" ) && path.ends_with( "-positions.csv" ) )
         {
             kind = "pick_place";
@@ -2999,6 +3354,8 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "IPC-D-356 export did not produce exactly one electrical-test artifact";
         else if( kind == "ipc2581" && counts["ipc2581"] != 1 )
             aError = "IPC-2581 export did not produce exactly one manufacturing artifact";
+        else if( kind == "odbpp" && counts["odbpp"] != 1 )
+            aError = "ODB++ export did not produce exactly one manufacturing archive";
         else if( kind == "pick_place" && counts["pick_place"] != 1 )
             aError = "position export did not produce exactly one CSV artifact";
         else if( kind == "bom" && counts["bom"] != 1 )

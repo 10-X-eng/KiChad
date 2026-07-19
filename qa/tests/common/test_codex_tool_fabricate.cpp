@@ -26,6 +26,8 @@
 #include <wx/ffile.h>
 #include <wx/filename.h>
 #include <wx/utils.h>
+#include <wx/wfstream.h>
+#include <wx/zipstrm.h>
 
 
 namespace
@@ -197,6 +199,7 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output drill)
   (output ipcd356)
   (output ipc2581)
+  (output odbpp)
   (output pick_place)
   (output bom)
   (output step)
@@ -258,8 +261,8 @@ std::string nativeReport( const std::string& aCheck, const wxFileName& aPath,
 
 bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                            bool aMalformed, bool aForbiddenXmlDeclaration,
-                           bool aWrongIpc2581Reference, bool aWrongPlacementReference,
-                           std::string& aError )
+                           bool aWrongIpc2581Reference, bool aUnsafeOdbPath,
+                           bool aWrongPlacementReference, std::string& aError )
 {
     const std::filesystem::path root( aStaging.GetFullPath().ToStdString() );
     const auto write = [&]( const std::filesystem::path& aPath, const std::string& aText )
@@ -387,6 +390,86 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 return false;
             }
         }
+        else if( kind == "odbpp" )
+        {
+            std::error_code filesystemError;
+            std::filesystem::create_directories( output.parent_path(), filesystemError );
+            const std::string outputPath = output.string();
+            wxFFileOutputStream archiveFile( wxString::FromUTF8( outputPath.c_str() ) );
+            wxZipOutputStream archive( archiveFile );
+            const auto putDirectory = [&]( const char* aPath )
+            {
+                return archive.PutNextDirEntry( wxString::FromUTF8( aPath ) );
+            };
+            const auto putFile = [&]( const char* aPath, const std::string& aSource )
+            {
+                if( !archive.PutNextEntry( wxString::FromUTF8( aPath ) ) )
+                    return false;
+
+                archive.Write( aSource.data(), aSource.size() );
+                return archive.LastWrite() == aSource.size() && archive.CloseEntry();
+            };
+            static constexpr const char* DIRECTORIES[] = {
+                "matrix/",
+                "steps/",
+                "steps/pcb/",
+                "steps/pcb/layers/",
+                "steps/pcb/layers/f.cu/",
+                "steps/pcb/layers/b.cu/",
+                "steps/pcb/layers/edge.cuts/",
+                "steps/pcb/layers/comp_+_top/",
+                "steps/pcb/netlists/",
+                "steps/pcb/netlists/cadnet/",
+                "steps/pcb/eda/",
+                "fonts/",
+                "misc/"
+            };
+            bool ok = !filesystemError && archiveFile.IsOk() && archive.IsOk();
+
+            for( const char* directory : DIRECTORIES )
+                ok = ok && putDirectory( directory );
+
+            const std::string componentReference =
+                    aWrongIpc2581Reference ? "U2" : "U1";
+            ok = ok
+                 && putFile( "matrix/matrix",
+                             "STEP {\n    COL=1\n    NAME=PCB\n}\n"
+                             "LAYER {\n    TYPE=SIGNAL\n    NAME=F.CU\n}\n"
+                             "LAYER {\n    TYPE=SIGNAL\n    NAME=B.CU\n}\n"
+                             "LAYER {\n    TYPE=DOCUMENT\n    NAME=EDGE.CUTS\n}\n" )
+                 && putFile( "steps/pcb/stephdr",
+                             "LEFT_ACTIVE=0\nX_ORIGIN=0\nY_ORIGIN=0\nUNITS=MM\n" )
+                 && putFile( "steps/pcb/profile", "UNITS=MM\n#Num Features\nF 1\n" )
+                 && putFile( "steps/pcb/eda/data",
+                             "HDR KiCad EDA 10.0.4-KiChad\nUNITS=MM\nLYR f.cu b.cu\n" )
+                 && putFile( "steps/pcb/netlists/cadnet/netlist",
+                             "H optimize n staggered n\n#\n#Netlist points\n#\n" )
+                 && putFile( "steps/pcb/layers/f.cu/features",
+                             "UNITS=MM\n#Num Features\nF 0\n" )
+                 && putFile( "steps/pcb/layers/b.cu/features",
+                             "UNITS=MM\n#Num Features\nF 0\n" )
+                 && putFile( "steps/pcb/layers/edge.cuts/features",
+                             "UNITS=MM\n#Num Features\nF 1\n" )
+                 && putFile( "steps/pcb/layers/comp_+_top/components",
+                             "UNITS=MM\nCMP 0 10.0 -10.0 0 N " + componentReference
+                                     + " PACKAGE\n" )
+                 && putFile( "fonts/standard", "XSIZE 0.302000\nYSIZE 0.302000\n" )
+                 && putFile( "misc/info",
+                             "JOB_NAME=job\nUNITS=MM\nODB_VERSION_MAJOR=8\n"
+                             "ODB_VERSION_MINOR=1\nODB_SOURCE=KiCad EDA\n"
+                             "SAVE_APP=KiCad EDA 10.0.4-KiChad\n" );
+
+            if( aUnsafeOdbPath )
+                ok = ok && putFile( "../escape", "must be rejected\n" );
+
+            ok = ok && archive.Close() && archiveFile.Close();
+
+            if( !ok )
+            {
+                aError = "could not write fake ODB++ archive";
+                return false;
+            }
+        }
         else if( kind == "pick_place" )
         {
             if( !write( output,
@@ -479,10 +562,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v3" );
+                       "kichad-production-10.0.4-v4" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 8 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 9 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
@@ -539,6 +622,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     bool malformedArtifacts = false;
     bool forbiddenXmlDeclaration = false;
     bool wrongIpc2581Reference = false;
+    bool unsafeOdbPath = false;
     bool wrongPlacementReference = false;
     bool fabricationFailure = false;
     bool mutateLiveInputDuringExport = false;
@@ -596,7 +680,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
 
                 return writeNativeArtifacts( aPlan, aStaging, malformedArtifacts,
                                              forbiddenXmlDeclaration, wrongIpc2581Reference,
-                                             wrongPlacementReference, aError );
+                                             unsafeOdbPath, wrongPlacementReference, aError );
             } );
     wxFileName liveBoardPath( fixture.Root(), wxS( "design.kicad_pcb" ) );
     const std::string liveBoardBefore = readText( liveBoardPath );
@@ -704,6 +788,20 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_CHECK_EQUAL( fabricationCalls, 5 );
 
     wrongIpc2581Reference = false;
+    unsafeOdbPath = true;
+    JSON unsafeOdb = registry.HandleWithContext( "fabricate", arguments, fixture.Root(),
+                                                 true, wxString(), true );
+    BOOST_REQUIRE( !unsafeOdb.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( unsafeOdb )["error"]["code"].get<std::string>(),
+                       "artifact_validation_failed" );
+    BOOST_CHECK_NE( envelope( unsafeOdb )["error"]["message"].get<std::string>().find(
+                            "unsafe entry path" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
+    BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
+    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
+
+    unsafeOdbPath = false;
     wrongPlacementReference = true;
     JSON mismatchedAssembly = registry.HandleWithContext( "fabricate", arguments,
                                                            fixture.Root(), true,
@@ -713,7 +811,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "artifact_validation_failed" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 7 );
 
     wrongPlacementReference = false;
     fabricationFailure = true;
@@ -724,7 +822,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "export_failed" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 7 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 8 );
 
     fabricationFailure = false;
     mutateLiveInputDuringExport = true;
@@ -735,7 +833,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "stale_inputs" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 8 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 9 );
     fixture.Write( wxS( "design.kicad_pcb" ), liveBoardBefore );
     mutateLiveInputDuringExport = false;
 
@@ -745,7 +843,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_REQUIRE( !dirty.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( dirty )["error"]["code"].get<std::string>(),
                        "drc_gate_failed" );
-    BOOST_CHECK_EQUAL( fabricationCalls, 8 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 9 );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
 
     dirtyCheck.clear();
@@ -826,6 +924,9 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/manufacturing/"
                                       "fabrication_clean.ipc2581.xml" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/manufacturing/"
+                                      "fabrication_clean.odb.zip" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/assembly/"
                                       "fabrication_clean-bom.csv" ) ) );
@@ -958,11 +1059,15 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName ipc2581Path(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/manufacturing/fabrication_component.ipc2581.xml" ) );
+    wxFileName odbPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/manufacturing/fabrication_component.odb.zip" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
     BOOST_REQUIRE( electricalTestPath.FileExists() );
     BOOST_REQUIRE( ipc2581Path.FileExists() );
+    BOOST_REQUIRE( odbPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );

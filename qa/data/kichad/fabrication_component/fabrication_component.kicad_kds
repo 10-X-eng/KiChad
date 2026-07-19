@@ -87,6 +87,7 @@
   (output drill)
   (output ipcd356)
   (output ipc2581)
+  (output odbpp)
   (output pick_place)
   (output bom)
   (output step)

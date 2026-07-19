@@ -89,17 +89,20 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v3` profile requires explicit stackup intent, ERC, DRC,
+sidecar. The fixed `kichad-production-10.0.4-v4` profile requires explicit stackup intent, ERC, DRC,
 sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
-outputs; STEP, PDF, and IPC-2581C XML are optional declarations. IPC-2581 export uses one fixed
+outputs; STEP, PDF, IPC-2581C XML, and ODB++ are optional declarations. IPC-2581 export uses one fixed
 millimetre/precision-6 representation and is parsed to verify its schema identity, native producer,
-board step, stackup, layers, and KDS component references. Final export requires the pre-turn
-snapshot and a separate visible host confirmation that the model cannot forge in tool arguments.
-Planning structurally compares the
+board step, stackup, layers, and KDS component references. ODB++ uses one fixed ODB 8.1
+millimetre/precision-4 ZIP representation; validation streams every
+entry without extraction, rejects unsafe or ambiguous archive metadata, bounds expanded data, and
+checks the matrix, board step, layer features, netlist, EDA/component data, native producer, and KDS
+references. Final export requires the pre-turn snapshot and a separate visible host confirmation
+that the model cannot forge in tool arguments. Planning structurally compares the
 native board's enabled production layers and complete ordered stackup—including thicknesses,
 materials, dielectric values/locks, finish, impedance, connector, and plating policy—to compiled
-KDS intent. KiChad copies the bounded verification
-and plotting inputs into a private directory, reruns native ERC/DRC and KDS sourcing there, and
+KDS intent. KiChad copies the bounded verification and plotting inputs into a private directory,
+reruns native ERC/DRC and KDS sourcing there, and
 rejects errors, warnings, stale input, or unapproved ignored-check/exclusion state. It then invokes
 only the exact sibling `kicad-cli`, creates the KDS-sourced BOM, validates expected artifact counts,
 paths, sizes, signatures, Gerber-job structure, and SHA-256 values, and writes a structured manifest.
