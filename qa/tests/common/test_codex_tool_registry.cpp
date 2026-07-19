@@ -77,6 +77,33 @@ kiapi::board::BoardStackup mockTwoLayerStackup( const std::string& aFinish )
 }
 
 
+kiapi::board::BoardDesignRules mockBoardRules( int64_t aMinimumClearance )
+{
+    kiapi::board::BoardDesignRules rules;
+    rules.mutable_minimum_clearance()->set_value_nm( aMinimumClearance );
+    rules.mutable_minimum_connection_width()->set_value_nm( 200000 );
+    rules.mutable_minimum_track_width()->set_value_nm( 200000 );
+    rules.mutable_minimum_via_annular_width()->set_value_nm( 100000 );
+    rules.mutable_minimum_via_diameter()->set_value_nm( 600000 );
+    rules.mutable_minimum_through_hole_diameter()->set_value_nm( 300000 );
+    rules.mutable_minimum_microvia_diameter()->set_value_nm( 300000 );
+    rules.mutable_minimum_microvia_drill()->set_value_nm( 100000 );
+    rules.mutable_minimum_hole_to_hole()->set_value_nm( 250000 );
+    rules.mutable_minimum_copper_to_hole_clearance()->set_value_nm( 250000 );
+    rules.mutable_minimum_silkscreen_clearance()->set_value_nm( 0 );
+    rules.mutable_minimum_groove_width()->set_value_nm( 250000 );
+    rules.set_minimum_resolved_spokes( 2 );
+    rules.mutable_minimum_silkscreen_text_height()->set_value_nm( 800000 );
+    rules.mutable_minimum_silkscreen_text_thickness()->set_value_nm( 80000 );
+    rules.set_copper_edge_clearance_mode( kiapi::board::BCECM_EXPLICIT );
+    rules.mutable_minimum_copper_to_edge_clearance()->set_value_nm( 500000 );
+    rules.set_use_height_for_length_calculations( true );
+    rules.mutable_maximum_error()->set_value_nm( 5000 );
+    rules.set_allow_fillets_outside_zone_outline( false );
+    return rules;
+}
+
+
 class TOOL_PROJECT_FIXTURE
 {
 public:
@@ -659,11 +686,14 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     std::map<std::string, google::protobuf::Any> transactionBefore;
     int commitCount = 0;
     int stackupUpdateCount = 0;
+    int rulesUpdateCount = 0;
     bool rejectNextCreate = false;
     bool rejectNextCommitResponse = false;
+    bool rejectNextRulesResponse = false;
     bool rejectNextStackupResponse = false;
     bool transactionActive = false;
     kiapi::board::BoardStackup currentStackup = mockTwoLayerStackup( "None" );
+    kiapi::board::BoardDesignRules currentRules = mockBoardRules( 100000 );
 
     server.SetCallback(
             [&]( std::string* aSerializedRequest )
@@ -736,6 +766,38 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                             stackup.mutable_stackup()->CopyFrom( currentStackup );
                             response.mutable_status()->set_status( kiapi::common::AS_OK );
                             response.mutable_message()->PackFrom( stackup );
+                        }
+                    }
+                }
+                else if( request.message().Is<kiapi::board::commands::GetBoardDesignRules>() )
+                {
+                    kiapi::board::commands::BoardDesignRulesResponse rules;
+                    rules.mutable_rules()->CopyFrom( currentRules );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( rules );
+                }
+                else if( request.message().Is<kiapi::board::commands::UpdateBoardDesignRules>() )
+                {
+                    kiapi::board::commands::UpdateBoardDesignRules update;
+
+                    if( request.message().UnpackTo( &update ) && update.has_rules() )
+                    {
+                        currentRules.CopyFrom( update.rules() );
+                        ++rulesUpdateCount;
+
+                        if( rejectNextRulesResponse )
+                        {
+                            rejectNextRulesResponse = false;
+                            response.mutable_status()->set_status( kiapi::common::AS_TIMEOUT );
+                            response.mutable_status()->set_error_message(
+                                    "injected lost board-rules acknowledgement" );
+                        }
+                        else
+                        {
+                            kiapi::board::commands::BoardDesignRulesResponse rules;
+                            rules.mutable_rules()->CopyFrom( currentRules );
+                            response.mutable_status()->set_status( kiapi::common::AS_OK );
+                            response.mutable_message()->PackFrom( rules );
                         }
                     }
                 }
@@ -941,7 +1003,20 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
         (copper B.Cu (thickness 35um))))
     (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
     (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
-      (width 0.25mm) (layer F.Cu))))
+      (width 0.25mm) (layer F.Cu)))
+  (rules
+    (minimum_clearance 0.2mm) (minimum_connection_width 0.2mm)
+    (minimum_track_width 0.2mm) (minimum_via_annular_width 0.1mm)
+    (minimum_via_diameter 0.6mm) (minimum_through_hole_diameter 0.3mm)
+    (minimum_microvia_diameter 0.3mm) (minimum_microvia_drill 0.1mm)
+    (minimum_hole_to_hole 0.25mm) (minimum_copper_to_hole_clearance 0.25mm)
+    (minimum_silkscreen_clearance 0mm) (minimum_groove_width 0.25mm)
+    (minimum_resolved_spokes 2) (minimum_silkscreen_text_height 0.8mm)
+    (minimum_silkscreen_text_thickness 0.08mm)
+    (minimum_copper_to_edge_clearance 0.5mm)
+    (use_height_for_length_calculations true)
+    (maximum_error 0.005mm)
+    (allow_fillets_outside_zone_outline false)))
 )KDS";
     JSON saved = registry.Handle( "design", { { "operation", "save" },
                                                { "path", "managed.kicad_kds" },
@@ -954,10 +1029,13 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                                                  { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     BOOST_CHECK_EQUAL( envelope( applied )["data"]["counts"]["create"].get<int>(), 2 );
+    BOOST_CHECK( envelope( applied )["data"]["rulesApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
     BOOST_CHECK_EQUAL( commitCount, 1 );
     BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
     BOOST_CHECK_EQUAL( stackupUpdateCount, 1 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 1 );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", "managed.kicad_kds" },
@@ -965,9 +1043,12 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                                                   { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     BOOST_CHECK_EQUAL( envelope( repeated )["data"]["counts"]["update"].get<int>(), 2 );
+    BOOST_CHECK( envelope( repeated )["data"]["rulesApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
     BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
     BOOST_CHECK_EQUAL( stackupUpdateCount, 2 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 2 );
 
     const std::string reduced = R"KDS((kichad_design
   (version 1)
@@ -1009,7 +1090,20 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
         (copper B.Cu (thickness 35um))))
     (outline (rect (id edge) (at 0mm 0mm) (size 30mm 10mm)))
     (route SIGNAL (id recovered-trace) (from 1mm 2mm) (to 4mm 4mm)
-      (width 0.3mm) (layer F.Cu))))
+      (width 0.3mm) (layer F.Cu)))
+  (rules
+    (minimum_clearance 0.3mm) (minimum_connection_width 0.2mm)
+    (minimum_track_width 0.2mm) (minimum_via_annular_width 0.1mm)
+    (minimum_via_diameter 0.6mm) (minimum_through_hole_diameter 0.3mm)
+    (minimum_microvia_diameter 0.3mm) (minimum_microvia_drill 0.1mm)
+    (minimum_hole_to_hole 0.25mm) (minimum_copper_to_hole_clearance 0.25mm)
+    (minimum_silkscreen_clearance 0mm) (minimum_groove_width 0.25mm)
+    (minimum_resolved_spokes 2) (minimum_silkscreen_text_height 0.8mm)
+    (minimum_silkscreen_text_thickness 0.08mm)
+    (minimum_copper_to_edge_clearance legacy)
+    (use_height_for_length_calculations false)
+    (maximum_error 0.01mm)
+    (allow_fillets_outside_zone_outline true)))
 )KDS";
     replaced = registry.Handle( "design", { { "operation", "save" },
                                              { "path", "managed.kicad_kds" },
@@ -1028,6 +1122,21 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                        "stackup_apply_failed" );
     BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
     BOOST_CHECK_EQUAL( stackupUpdateCount, 4 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 2 );
+
+    rejectNextRulesResponse = true;
+    JSON lostRules = registry.Handle( "design", { { "operation", "apply" },
+                                                   { "path", "managed.kicad_kds" },
+                                                   { "boardPath", "design.kicad_pcb" },
+                                                   { "expectedSha256", hash } } );
+    BOOST_CHECK( !lostRules.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( lostRules )["error"]["code"].get<std::string>(),
+                       "rules_apply_failed" );
+    BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 6 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 4 );
 
     rejectNextCreate = true;
     JSON failed = registry.Handle( "design", { { "operation", "apply" },
@@ -1038,7 +1147,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_CHECK_EQUAL( envelope( failed )["error"]["code"].get<std::string>(), "apply_failed" );
     BOOST_CHECK_EQUAL( liveItems.size(), 1 );
     BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
-    BOOST_CHECK_EQUAL( stackupUpdateCount, 6 );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 8 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 6 );
     BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
                                            wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
 
@@ -1052,7 +1163,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
                        "transaction_failed" );
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
     BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "ENIG" );
-    BOOST_CHECK_EQUAL( stackupUpdateCount, 8 );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 10 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 8 );
     BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
                                            wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
 
@@ -1064,7 +1177,14 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     BOOST_CHECK_EQUAL( liveItems.size(), 2 );
     BOOST_CHECK_EQUAL( envelope( recovered )["data"]["counts"]["update"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( currentStackup.finish().type_name(), "HASL" );
-    BOOST_CHECK_EQUAL( stackupUpdateCount, 9 );
+    BOOST_CHECK_EQUAL( stackupUpdateCount, 11 );
+    BOOST_CHECK_EQUAL( currentRules.minimum_clearance().value_nm(), 300000 );
+    BOOST_CHECK_EQUAL( currentRules.copper_edge_clearance_mode(),
+                       kiapi::board::BCECM_LEGACY );
+    BOOST_CHECK( !currentRules.use_height_for_length_calculations() );
+    BOOST_CHECK_EQUAL( currentRules.maximum_error().value_nm(), 10000 );
+    BOOST_CHECK( currentRules.allow_fillets_outside_zone_outline() );
+    BOOST_CHECK_EQUAL( rulesUpdateCount, 9 );
     BOOST_CHECK( !wxFileExists( wxFileName( fixture.Root(),
                                             wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
     server.Stop();
@@ -1501,6 +1621,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
     BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
+    BOOST_CHECK( firstData["rulesApplied"].get<bool>() );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", sourceName },
@@ -1513,6 +1634,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK( repeatedData["stackupApplied"].get<bool>() );
+    BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
 
     KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.stackup", socketDirectory );
     KICHAD_IPC_TARGET ipcTarget;
@@ -1541,6 +1663,42 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
             stackup.layers( 4 ).dielectric().layer( 0 ).thickness().value_nm(), 1510000 );
     BOOST_CHECK( stackup.layers( 4 ).dielectric().layer( 0 ).thickness_locked() );
     BOOST_CHECK_EQUAL( stackup.layers( 6 ).material_name(), "LPI" );
+
+    kiapi::board::commands::GetBoardDesignRules rulesRequest;
+    rulesRequest.mutable_board()->CopyFrom( ipcTarget.document );
+    kiapi::common::ApiResponse rulesEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, rulesRequest, rulesEnvelope, ipcError ), ipcError );
+    kiapi::board::commands::BoardDesignRulesResponse rulesResponse;
+    BOOST_REQUIRE( rulesEnvelope.message().UnpackTo( &rulesResponse ) );
+    const kiapi::board::BoardDesignRules& rules = rulesResponse.rules();
+    BOOST_CHECK_EQUAL( rules.minimum_clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( rules.minimum_connection_width().value_nm(), 150000 );
+    BOOST_CHECK_EQUAL( rules.minimum_track_width().value_nm(), 180000 );
+    BOOST_CHECK_EQUAL( rules.minimum_via_annular_width().value_nm(), 100000 );
+    BOOST_CHECK_EQUAL( rules.minimum_via_diameter().value_nm(), 600000 );
+    BOOST_CHECK_EQUAL( rules.minimum_silkscreen_clearance().value_nm(), -10000 );
+    BOOST_CHECK_EQUAL( rules.minimum_resolved_spokes(), 3 );
+    BOOST_CHECK_EQUAL( rules.copper_edge_clearance_mode(), kiapi::board::BCECM_LEGACY );
+    BOOST_CHECK_EQUAL( rules.minimum_copper_to_edge_clearance().value_nm(), 0 );
+    BOOST_CHECK( rules.use_height_for_length_calculations() );
+    BOOST_CHECK_EQUAL( rules.maximum_error().value_nm(), 5000 );
+    BOOST_CHECK( !rules.allow_fillets_outside_zone_outline() );
+
+    kiapi::board::commands::UpdateBoardDesignRules invalidRulesRequest;
+    invalidRulesRequest.mutable_board()->CopyFrom( ipcTarget.document );
+    invalidRulesRequest.mutable_rules()->CopyFrom( rules );
+    invalidRulesRequest.mutable_rules()->mutable_minimum_via_diameter()->set_value_nm( 400000 );
+    kiapi::common::ApiResponse invalidRulesEnvelope;
+    BOOST_CHECK( !ipcClient.Call( ipcTarget, invalidRulesRequest, invalidRulesEnvelope, ipcError ) );
+    BOOST_CHECK_NE( ipcError.find( "cannot satisfy" ), std::string::npos );
+    ipcError.clear();
+    kiapi::common::ApiResponse unchangedRulesEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, rulesRequest, unchangedRulesEnvelope, ipcError ), ipcError );
+    kiapi::board::commands::BoardDesignRulesResponse unchangedRulesResponse;
+    BOOST_REQUIRE( unchangedRulesEnvelope.message().UnpackTo( &unchangedRulesResponse ) );
+    BOOST_CHECK_EQUAL( unchangedRulesResponse.rules().minimum_via_diameter().value_nm(), 600000 );
 
     auto getItems = [&]( const std::string& aItemType, size_t aExpectedCount )
     {

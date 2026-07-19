@@ -195,6 +195,212 @@ bool isFootprintTransformMask( const google::protobuf::FieldMask& aMask )
     return true;
 }
 
+
+struct NATIVE_BOARD_RULES
+{
+    int  minimumClearance;
+    int  minimumConnectionWidth;
+    int  minimumTrackWidth;
+    int  minimumViaAnnularWidth;
+    int  minimumViaDiameter;
+    int  minimumThroughHoleDiameter;
+    int  minimumMicroviaDiameter;
+    int  minimumMicroviaDrill;
+    int  minimumHoleToHole;
+    int  minimumCopperToHoleClearance;
+    int  minimumSilkscreenClearance;
+    int  minimumGrooveWidth;
+    int  minimumResolvedSpokes;
+    int  minimumSilkscreenTextHeight;
+    int  minimumSilkscreenTextThickness;
+    int  minimumCopperToEdgeClearance;
+    bool useHeightForLengthCalculations;
+    int  maximumError;
+    bool allowFilletsOutsideZoneOutline;
+};
+
+
+kiapi::board::BoardDesignRules encodeBoardDesignRules( const BOARD_DESIGN_SETTINGS& aSettings )
+{
+    kiapi::board::BoardDesignRules rules;
+    rules.mutable_minimum_clearance()->set_value_nm( aSettings.m_MinClearance );
+    rules.mutable_minimum_connection_width()->set_value_nm( aSettings.m_MinConn );
+    rules.mutable_minimum_track_width()->set_value_nm( aSettings.m_TrackMinWidth );
+    rules.mutable_minimum_via_annular_width()->set_value_nm( aSettings.m_ViasMinAnnularWidth );
+    rules.mutable_minimum_via_diameter()->set_value_nm( aSettings.m_ViasMinSize );
+    rules.mutable_minimum_through_hole_diameter()->set_value_nm( aSettings.m_MinThroughDrill );
+    rules.mutable_minimum_microvia_diameter()->set_value_nm( aSettings.m_MicroViasMinSize );
+    rules.mutable_minimum_microvia_drill()->set_value_nm( aSettings.m_MicroViasMinDrill );
+    rules.mutable_minimum_hole_to_hole()->set_value_nm( aSettings.m_HoleToHoleMin );
+    rules.mutable_minimum_copper_to_hole_clearance()->set_value_nm( aSettings.m_HoleClearance );
+    rules.mutable_minimum_silkscreen_clearance()->set_value_nm( aSettings.m_SilkClearance );
+    rules.mutable_minimum_groove_width()->set_value_nm( aSettings.m_MinGrooveWidth );
+    rules.set_minimum_resolved_spokes( aSettings.m_MinResolvedSpokes );
+    rules.mutable_minimum_silkscreen_text_height()->set_value_nm(
+            aSettings.m_MinSilkTextHeight );
+    rules.mutable_minimum_silkscreen_text_thickness()->set_value_nm(
+            aSettings.m_MinSilkTextThickness );
+
+    if( aSettings.m_CopperEdgeClearance < 0 )
+    {
+        rules.set_copper_edge_clearance_mode( kiapi::board::BCECM_LEGACY );
+        rules.mutable_minimum_copper_to_edge_clearance()->set_value_nm( 0 );
+    }
+    else
+    {
+        rules.set_copper_edge_clearance_mode( kiapi::board::BCECM_EXPLICIT );
+        rules.mutable_minimum_copper_to_edge_clearance()->set_value_nm(
+                aSettings.m_CopperEdgeClearance );
+    }
+
+    rules.set_use_height_for_length_calculations( aSettings.m_UseHeightForLengthCalcs );
+    rules.mutable_maximum_error()->set_value_nm( aSettings.m_MaxError );
+    rules.set_allow_fillets_outside_zone_outline( aSettings.m_ZoneKeepExternalFillets );
+    return rules;
+}
+
+
+bool decodeBoardDesignRules( const kiapi::board::BoardDesignRules& aRules,
+                             NATIVE_BOARD_RULES& aDecoded, std::string& aError )
+{
+    auto distance = [&]( bool aPresent, const kiapi::common::types::Distance& aDistance,
+                         int64_t aMinimum, int64_t aMaximum, const char* aName, int& aValue )
+    {
+        const int64_t value = aDistance.value_nm();
+
+        if( !aPresent || value < aMinimum || value > aMaximum )
+        {
+            aError = fmt::format( "{} must be explicitly set from {}nm through {}nm", aName,
+                                  aMinimum, aMaximum );
+            return false;
+        }
+
+        aValue = static_cast<int>( value );
+        return true;
+    };
+
+    if( !distance( aRules.has_minimum_clearance(), aRules.minimum_clearance(), 0, 25000000,
+                   "minimum_clearance", aDecoded.minimumClearance )
+        || !distance( aRules.has_minimum_connection_width(),
+                      aRules.minimum_connection_width(), 0, 100000000,
+                      "minimum_connection_width", aDecoded.minimumConnectionWidth )
+        || !distance( aRules.has_minimum_track_width(), aRules.minimum_track_width(), 0,
+                      25000000, "minimum_track_width", aDecoded.minimumTrackWidth )
+        || !distance( aRules.has_minimum_via_annular_width(),
+                      aRules.minimum_via_annular_width(), 0, 25000000,
+                      "minimum_via_annular_width", aDecoded.minimumViaAnnularWidth )
+        || !distance( aRules.has_minimum_via_diameter(), aRules.minimum_via_diameter(), 0,
+                      25000000, "minimum_via_diameter", aDecoded.minimumViaDiameter )
+        || !distance( aRules.has_minimum_through_hole_diameter(),
+                      aRules.minimum_through_hole_diameter(), 0, 25000000,
+                      "minimum_through_hole_diameter", aDecoded.minimumThroughHoleDiameter )
+        || !distance( aRules.has_minimum_microvia_diameter(),
+                      aRules.minimum_microvia_diameter(), 0, 10000000,
+                      "minimum_microvia_diameter", aDecoded.minimumMicroviaDiameter )
+        || !distance( aRules.has_minimum_microvia_drill(), aRules.minimum_microvia_drill(), 0,
+                      10000000, "minimum_microvia_drill", aDecoded.minimumMicroviaDrill )
+        || !distance( aRules.has_minimum_hole_to_hole(), aRules.minimum_hole_to_hole(), 0,
+                      10000000, "minimum_hole_to_hole", aDecoded.minimumHoleToHole )
+        || !distance( aRules.has_minimum_copper_to_hole_clearance(),
+                      aRules.minimum_copper_to_hole_clearance(), 0, 100000000,
+                      "minimum_copper_to_hole_clearance",
+                      aDecoded.minimumCopperToHoleClearance )
+        || !distance( aRules.has_minimum_silkscreen_clearance(),
+                      aRules.minimum_silkscreen_clearance(), -10000000, 100000000,
+                      "minimum_silkscreen_clearance", aDecoded.minimumSilkscreenClearance )
+        || !distance( aRules.has_minimum_groove_width(), aRules.minimum_groove_width(), 0,
+                      25000000, "minimum_groove_width", aDecoded.minimumGrooveWidth )
+        || !distance( aRules.has_minimum_silkscreen_text_height(),
+                      aRules.minimum_silkscreen_text_height(), 0, 100000000,
+                      "minimum_silkscreen_text_height", aDecoded.minimumSilkscreenTextHeight )
+        || !distance( aRules.has_minimum_silkscreen_text_thickness(),
+                      aRules.minimum_silkscreen_text_thickness(), 0, 25000000,
+                      "minimum_silkscreen_text_thickness",
+                      aDecoded.minimumSilkscreenTextThickness )
+        || !distance( aRules.has_maximum_error(), aRules.maximum_error(), 1000, 100000,
+                      "maximum_error", aDecoded.maximumError ) )
+    {
+        return false;
+    }
+
+    if( !aRules.has_minimum_resolved_spokes() || aRules.minimum_resolved_spokes() > 99 )
+    {
+        aError = "minimum_resolved_spokes must be explicitly set from 0 through 99";
+        return false;
+    }
+
+    aDecoded.minimumResolvedSpokes = static_cast<int>( aRules.minimum_resolved_spokes() );
+
+    if( !aRules.has_use_height_for_length_calculations() )
+    {
+        aError = "use_height_for_length_calculations must be explicitly set";
+        return false;
+    }
+
+    aDecoded.useHeightForLengthCalculations =
+            aRules.use_height_for_length_calculations();
+
+    if( !aRules.has_allow_fillets_outside_zone_outline() )
+    {
+        aError = "allow_fillets_outside_zone_outline must be explicitly set";
+        return false;
+    }
+
+    aDecoded.allowFilletsOutsideZoneOutline =
+            aRules.allow_fillets_outside_zone_outline();
+
+    if( !aRules.has_minimum_copper_to_edge_clearance() )
+    {
+        aError = "minimum_copper_to_edge_clearance must be explicitly set";
+        return false;
+    }
+
+    if( aRules.copper_edge_clearance_mode() == kiapi::board::BCECM_LEGACY )
+    {
+        if( aRules.minimum_copper_to_edge_clearance().value_nm() != 0 )
+        {
+            aError = "legacy copper-edge clearance requires a normalized zero distance";
+            return false;
+        }
+
+        aDecoded.minimumCopperToEdgeClearance = -10000;
+    }
+    else if( aRules.copper_edge_clearance_mode() == kiapi::board::BCECM_EXPLICIT )
+    {
+        if( !distance( true, aRules.minimum_copper_to_edge_clearance(), 0, 25000000,
+                       "minimum_copper_to_edge_clearance",
+                       aDecoded.minimumCopperToEdgeClearance ) )
+        {
+            return false;
+        }
+    }
+    else
+    {
+        aError = "copper_edge_clearance_mode must be explicit or legacy";
+        return false;
+    }
+
+    const int64_t minimumViaDiameter =
+            static_cast<int64_t>( aDecoded.minimumThroughHoleDiameter )
+            + 2LL * aDecoded.minimumViaAnnularWidth;
+    const int64_t minimumMicroviaDiameter = static_cast<int64_t>( aDecoded.minimumMicroviaDrill )
+                                            + 2LL * aDecoded.minimumViaAnnularWidth;
+
+    if( aDecoded.minimumViaDiameter < minimumViaDiameter )
+    {
+        aError = "minimum_via_diameter cannot satisfy the drill and annular-width constraints";
+        return false;
+    }
+
+    if( aDecoded.minimumMicroviaDiameter < minimumMicroviaDiameter )
+    {
+        aError = "minimum_microvia_diameter cannot satisfy the drill and annular-width constraints";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 
@@ -220,6 +426,10 @@ API_HANDLER_PCB::API_HANDLER_PCB( PCB_EDIT_FRAME* aFrame ) :
     registerHandler<GetBoardStackup, BoardStackupResponse>( &API_HANDLER_PCB::handleGetStackup );
     registerHandler<UpdateBoardStackup, BoardStackupResponse>(
             &API_HANDLER_PCB::handleUpdateStackup );
+    registerHandler<GetBoardDesignRules, BoardDesignRulesResponse>(
+            &API_HANDLER_PCB::handleGetBoardDesignRules );
+    registerHandler<UpdateBoardDesignRules, BoardDesignRulesResponse>(
+            &API_HANDLER_PCB::handleUpdateBoardDesignRules );
     registerHandler<GetBoardEnabledLayers, BoardEnabledLayersResponse>(
         &API_HANDLER_PCB::handleGetBoardEnabledLayers );
     registerHandler<SetBoardEnabledLayers, BoardEnabledLayersResponse>(
@@ -1342,6 +1552,96 @@ HANDLER_RESULT<BoardStackupResponse> API_HANDLER_PCB::handleUpdateStackup(
         layer.set_user_name( pcbBoard->GetLayerName( id ).ToUTF8() );
     }
 
+    return response;
+}
+
+
+HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleGetBoardDesignRules(
+        const HANDLER_CONTEXT<GetBoardDesignRules>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    BoardDesignRulesResponse response;
+    response.mutable_rules()->CopyFrom(
+            encodeBoardDesignRules( frame()->GetBoard()->GetDesignSettings() ) );
+    return response;
+}
+
+
+HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleUpdateBoardDesignRules(
+        const HANDLER_CONTEXT<UpdateBoardDesignRules>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    NATIVE_BOARD_RULES decoded = {};
+    std::string        decodeError;
+
+    if( !aCtx.Request.has_rules()
+        || !decodeBoardDesignRules( aCtx.Request.rules(), decoded, decodeError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( decodeError.empty() ? "board design rules are required"
+                                                     : decodeError );
+        return tl::unexpected( error );
+    }
+
+    BOARD_DESIGN_SETTINGS& settings = frame()->GetBoard()->GetDesignSettings();
+    const bool modified =
+            settings.m_MinClearance != decoded.minimumClearance
+            || settings.m_MinConn != decoded.minimumConnectionWidth
+            || settings.m_TrackMinWidth != decoded.minimumTrackWidth
+            || settings.m_ViasMinAnnularWidth != decoded.minimumViaAnnularWidth
+            || settings.m_ViasMinSize != decoded.minimumViaDiameter
+            || settings.m_MinThroughDrill != decoded.minimumThroughHoleDiameter
+            || settings.m_MicroViasMinSize != decoded.minimumMicroviaDiameter
+            || settings.m_MicroViasMinDrill != decoded.minimumMicroviaDrill
+            || settings.m_HoleToHoleMin != decoded.minimumHoleToHole
+            || settings.m_HoleClearance != decoded.minimumCopperToHoleClearance
+            || settings.m_SilkClearance != decoded.minimumSilkscreenClearance
+            || settings.m_MinGrooveWidth != decoded.minimumGrooveWidth
+            || settings.m_MinResolvedSpokes != decoded.minimumResolvedSpokes
+            || settings.m_MinSilkTextHeight != decoded.minimumSilkscreenTextHeight
+            || settings.m_MinSilkTextThickness != decoded.minimumSilkscreenTextThickness
+            || settings.m_CopperEdgeClearance != decoded.minimumCopperToEdgeClearance
+            || settings.m_UseHeightForLengthCalcs != decoded.useHeightForLengthCalculations
+            || settings.m_MaxError != decoded.maximumError
+            || settings.m_ZoneKeepExternalFillets != decoded.allowFilletsOutsideZoneOutline;
+
+    if( modified )
+    {
+        settings.m_MinClearance = decoded.minimumClearance;
+        settings.m_MinConn = decoded.minimumConnectionWidth;
+        settings.m_TrackMinWidth = decoded.minimumTrackWidth;
+        settings.m_ViasMinAnnularWidth = decoded.minimumViaAnnularWidth;
+        settings.m_ViasMinSize = decoded.minimumViaDiameter;
+        settings.m_MinThroughDrill = decoded.minimumThroughHoleDiameter;
+        settings.m_MicroViasMinSize = decoded.minimumMicroviaDiameter;
+        settings.m_MicroViasMinDrill = decoded.minimumMicroviaDrill;
+        settings.m_HoleToHoleMin = decoded.minimumHoleToHole;
+        settings.m_HoleClearance = decoded.minimumCopperToHoleClearance;
+        settings.m_SilkClearance = decoded.minimumSilkscreenClearance;
+        settings.m_MinGrooveWidth = decoded.minimumGrooveWidth;
+        settings.m_MinResolvedSpokes = decoded.minimumResolvedSpokes;
+        settings.m_MinSilkTextHeight = decoded.minimumSilkscreenTextHeight;
+        settings.m_MinSilkTextThickness = decoded.minimumSilkscreenTextThickness;
+        settings.m_CopperEdgeClearance = decoded.minimumCopperToEdgeClearance;
+        settings.m_UseHeightForLengthCalcs = decoded.useHeightForLengthCalculations;
+        settings.m_MaxError = decoded.maximumError;
+        settings.m_ZoneKeepExternalFillets = decoded.allowFilletsOutsideZoneOutline;
+        frame()->UpdateUserInterface();
+        frame()->OnModify();
+        frame()->Refresh();
+    }
+
+    BoardDesignRulesResponse response;
+    response.mutable_rules()->CopyFrom( encodeBoardDesignRules( settings ) );
     return response;
 }
 

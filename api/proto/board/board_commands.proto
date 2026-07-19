@@ -52,6 +52,25 @@ message UpdateBoardStackup
   kiapi.board.BoardStackup stackup = 2;
 }
 
+message GetBoardDesignRules
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+}
+
+message BoardDesignRulesResponse
+{
+  kiapi.board.BoardDesignRules rules = 1;
+}
+
+// Replaces the complete global constraint set shown in Board Setup > Design Rules > Constraints.
+// Net classes and custom .kicad_dru rules are separate and are not changed by this command.
+// Returns BoardDesignRulesResponse with the normalized active constraints.
+message UpdateBoardDesignRules
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  kiapi.board.BoardDesignRules rules = 2;
+}
+
 message GetBoardEnabledLayers
 {
   kiapi.common.types.DocumentSpecifier board = 1;

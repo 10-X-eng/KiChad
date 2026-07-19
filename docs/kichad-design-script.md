@@ -93,7 +93,26 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
       (fill solid)
       (border diagonal_edge (pitch 0.5mm))))
 
-  (rule default_clearance (minimum 0.2mm))
+  (rules
+    (minimum_clearance 0.2mm)
+    (minimum_connection_width 0.15mm)
+    (minimum_track_width 0.18mm)
+    (minimum_via_annular_width 0.1mm)
+    (minimum_via_diameter 0.6mm)
+    (minimum_through_hole_diameter 0.3mm)
+    (minimum_microvia_diameter 0.3mm)
+    (minimum_microvia_drill 0.1mm)
+    (minimum_hole_to_hole 0.25mm)
+    (minimum_copper_to_hole_clearance 0.25mm)
+    (minimum_silkscreen_clearance 0mm)
+    (minimum_groove_width 0.3mm)
+    (minimum_resolved_spokes 3)
+    (minimum_silkscreen_text_height 0.8mm)
+    (minimum_silkscreen_text_thickness 0.08mm)
+    (minimum_copper_to_edge_clearance 0.5mm)
+    (use_height_for_length_calculations true)
+    (maximum_error 0.005mm)
+    (allow_fillets_outside_zone_outline false))
   (source R1
     (manufacturer "Yageo")
     (mpn "RC0603FR-0710KL")
@@ -164,6 +183,44 @@ loss tangent, and thickness lock are explicit. Solder-mask physical properties a
 material/color are explicit when those optional layers are present. Total thickness is the sum of
 copper, dielectric, and solder-mask thicknesses and must not exceed 20 mm. The former
 `copper_layers`/`thickness` shorthand is invalid KDS: there is one stackup representation.
+
+### Global board rules form
+
+KDS authors KiCad's complete global Board Setup constraint set once, as a single top-level
+declaration:
+
+```scheme
+(rules
+  (minimum_clearance 0.2mm)
+  (minimum_connection_width 0.15mm)
+  (minimum_track_width 0.18mm)
+  (minimum_via_annular_width 0.1mm)
+  (minimum_via_diameter 0.6mm)
+  (minimum_through_hole_diameter 0.3mm)
+  (minimum_microvia_diameter 0.3mm)
+  (minimum_microvia_drill 0.1mm)
+  (minimum_hole_to_hole 0.25mm)
+  (minimum_copper_to_hole_clearance 0.25mm)
+  (minimum_silkscreen_clearance -0.01mm)
+  (minimum_groove_width 0.3mm)
+  (minimum_resolved_spokes 3)
+  (minimum_silkscreen_text_height 0.8mm)
+  (minimum_silkscreen_text_thickness 0.08mm)
+  (minimum_copper_to_edge_clearance legacy)
+  (use_height_for_length_calculations true)
+  (maximum_error 0.005mm)
+  (allow_fillets_outside_zone_outline false))
+```
+
+Every field is required when `rules` is present, so a design never inherits an accidental local
+constraint. `minimum_copper_to_edge_clearance` accepts a non-negative physical distance or the
+semantic value `legacy`; scripts never encode KiCad's internal negative sentinel. Via and microvia
+diameters must be large enough for the declared drill plus twice the minimum annular width. Native
+KiCad ranges are enforced before planning. `maximum_error` is the curve-to-segment approximation
+tolerance, while `allow_fillets_outside_zone_outline` controls KiCad's external zone smoothing.
+The former generic `(rule NAME ...)` form is invalid;
+global constraints have this one representation. Net classes and custom `.kicad_dru` conditional
+rules are different KiCad concepts and will receive their own non-overlapping KDS forms.
 
 ### Copper zone form
 
@@ -350,13 +407,17 @@ missing ones are recreated, and only previously managed obsolete items are delet
 KiCad transaction. A project-confined apply journal makes an interrupted operation safely
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
-The apply backend currently executes physical board stackups, rectangular outlines, component
-placement, straight traces, arcs, vias, copper zones, keepout rule areas, native board text, and all
-five native dimension styles. Stackup apply uses KiCad's native protobuf stackup message and editor
+The apply backend currently executes physical board stackups, the complete global Board Setup
+constraint set, rectangular outlines, component placement, straight traces, arcs, vias, copper
+zones, keepout rule areas, native board text, and all five native dimension styles. Stackup apply
+uses KiCad's native protobuf stackup message and editor
 endpoint; it validates the entire ordered structure before mutation, derives enabled physical
 layers and board thickness, and preserves rather than deletes objects when technical layers are
 disabled. Removing a non-empty copper layer is rejected. The pre-apply stack is retained in the
-apply journal and restored if a later transactional item mutation fails. A zone explicitly declares
+apply journal and restored if a later settings or transactional item mutation fails. Global rules
+use a typed native protobuf endpoint, validate every field and physical cross-constraint before
+mutation, and are journaled and restored together with the stackup on any pre-commit failure. A
+zone explicitly declares
 its net, stable ID, one or more copper layers, bounded
 polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
 solid or hatched fill, priority, border display, and lock state. No manufacturing setting is
@@ -378,7 +439,9 @@ an isolated temporary project, starts its own build-tree PCB Editor, applies one
 stackup plus twelve managed items, and reapplies the unchanged source to verify updates reuse the
 same deterministic identities. It reads the stackup back from the live editor and verifies finish,
 impedance, bevel, plating, all nine ordered physical layers, thicknesses, material, color, loss,
-permittivity, and dielectric lock. It also
+permittivity, and dielectric lock. It also reads back all global constraint fields, including the
+semantic legacy edge-clearance mode, and verifies the second apply updates the same settings. It
+then
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
 and flipped child layers survive both applies. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
@@ -400,7 +463,8 @@ A form is documented as executable only after it has all of the following covera
 - relevant ERC, DRC, sourcing, and fabrication-output assertions.
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
-components, nets, sourcing, board statement kinds, checks, and outputs. It structurally normalizes
-nested sheet, board, and rule payloads into IR and a pass plan; those nested payloads become
-executable only as their backend-specific type checkers and rollback tests land. Native backend
+components, nets, sourcing, board statement kinds, global rules, checks, and outputs. Global rules
+and executable board forms have backend-specific type checking and rollback coverage. Nested sheet
+and library payloads remain non-executable until their own typed backends and rollback tests land.
+Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

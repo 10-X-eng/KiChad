@@ -95,6 +95,12 @@ private:
     HANDLER_RESULT<BoardStackupResponse> handleUpdateStackup(
             const HANDLER_CONTEXT<UpdateBoardStackup>& aCtx );
 
+    HANDLER_RESULT<BoardDesignRulesResponse> handleGetBoardDesignRules(
+            const HANDLER_CONTEXT<GetBoardDesignRules>& aCtx );
+
+    HANDLER_RESULT<BoardDesignRulesResponse> handleUpdateBoardDesignRules(
+            const HANDLER_CONTEXT<UpdateBoardDesignRules>& aCtx );
+
     HANDLER_RESULT<BoardEnabledLayersResponse> handleGetBoardEnabledLayers(
             const HANDLER_CONTEXT<GetBoardEnabledLayers>& aCtx );
 

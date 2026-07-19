@@ -138,6 +138,56 @@ BOOST_AUTO_TEST_CASE( LowersExplicitStackupIntoOneLosslessNativeMessage )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersCanonicalGlobalRulesIntoOneNativeMessage )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project controlled_rules)
+  (rules
+    (minimum_clearance 0.2mm)
+    (minimum_connection_width 0.15mm)
+    (minimum_track_width 0.18mm)
+    (minimum_via_annular_width 0.1mm)
+    (minimum_via_diameter 0.6mm)
+    (minimum_through_hole_diameter 0.3mm)
+    (minimum_microvia_diameter 0.3mm)
+    (minimum_microvia_drill 0.1mm)
+    (minimum_hole_to_hole 0.25mm)
+    (minimum_copper_to_hole_clearance 0.25mm)
+    (minimum_silkscreen_clearance -0.01mm)
+    (minimum_groove_width 0.3mm)
+    (minimum_resolved_spokes 3)
+    (minimum_silkscreen_text_height 0.8mm)
+    (minimum_silkscreen_text_thickness 0.08mm)
+    (minimum_copper_to_edge_clearance legacy)
+    (use_height_for_length_calculations true)
+    (maximum_error 0.005mm)
+    (allow_fillets_outside_zone_outline false)))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( plan.counts["rules"].get<int>(), 1 );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"].get<std::string>(), "update_rules" );
+    checkProtobufJson<kiapi::board::BoardDesignRules>( plan.operations[0]["rules"] );
+    const nlohmann::json& rules = plan.operations[0]["rules"];
+    BOOST_CHECK_EQUAL( rules["minimumClearance"]["valueNm"].get<std::string>(), "200000" );
+    BOOST_CHECK_EQUAL( rules["minimumSilkscreenClearance"]["valueNm"].get<std::string>(),
+                       "-10000" );
+    BOOST_CHECK_EQUAL( rules["minimumResolvedSpokes"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( rules["copperEdgeClearanceMode"].get<std::string>(), "BCECM_LEGACY" );
+    BOOST_CHECK_EQUAL( rules["minimumCopperToEdgeClearance"]["valueNm"].get<std::string>(),
+                       "0" );
+    BOOST_CHECK( rules["useHeightForLengthCalculations"].get<bool>() );
+    BOOST_CHECK_EQUAL( rules["maximumError"]["valueNm"].get<std::string>(), "5000" );
+    BOOST_CHECK( !rules["allowFilletsOutsideZoneOutline"].get<bool>() );
+}
+
+
 BOOST_AUTO_TEST_CASE( LowersExplicitCopperZoneIntoDeterministicProtobufJson )
 {
     const std::string source = R"KDS((kichad_design

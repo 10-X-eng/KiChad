@@ -156,6 +156,38 @@ message BoardSettings
   // Dimension default settings
 }
 
+enum BoardCopperEdgeClearanceMode
+{
+  BCECM_UNKNOWN = 0;
+  // Use minimum_copper_to_edge_clearance exactly.
+  BCECM_EXPLICIT = 1;
+  // Use KiCad's legacy edge-cut-line-width behavior.
+  BCECM_LEGACY = 2;
+}
+
+// The complete global constraint set from Board Setup > Design Rules > Constraints.
+// This does not include net classes or custom .kicad_dru rules.
 message BoardDesignRules
 {
+  kiapi.common.types.Distance minimum_clearance = 1;
+  kiapi.common.types.Distance minimum_connection_width = 2;
+  kiapi.common.types.Distance minimum_track_width = 3;
+  kiapi.common.types.Distance minimum_via_annular_width = 4;
+  kiapi.common.types.Distance minimum_via_diameter = 5;
+  kiapi.common.types.Distance minimum_through_hole_diameter = 6;
+  kiapi.common.types.Distance minimum_microvia_diameter = 7;
+  kiapi.common.types.Distance minimum_microvia_drill = 8;
+  kiapi.common.types.Distance minimum_hole_to_hole = 9;
+  kiapi.common.types.Distance minimum_copper_to_hole_clearance = 10;
+  kiapi.common.types.Distance minimum_silkscreen_clearance = 11;
+  kiapi.common.types.Distance minimum_groove_width = 12;
+  optional uint32 minimum_resolved_spokes = 13;
+  kiapi.common.types.Distance minimum_silkscreen_text_height = 14;
+  kiapi.common.types.Distance minimum_silkscreen_text_thickness = 15;
+  BoardCopperEdgeClearanceMode copper_edge_clearance_mode = 16;
+  // Required when copper_edge_clearance_mode is BCECM_EXPLICIT; zero in legacy mode.
+  kiapi.common.types.Distance minimum_copper_to_edge_clearance = 17;
+  optional bool use_height_for_length_calculations = 18;
+  kiapi.common.types.Distance maximum_error = 19;
+  optional bool allow_fillets_outside_zone_outline = 20;
 }

@@ -168,6 +168,44 @@ JSON planStackup( const JSON& aStatement )
 }
 
 
+JSON planRules( const JSON& aRules )
+{
+    const auto distance = [&]( const char* aName )
+    {
+        return JSON( { { "valueNm", std::to_string( aRules.at( aName ).get<int64_t>() ) } } );
+    };
+    JSON rules = {
+        { "minimumClearance", distance( "minimumClearanceNm" ) },
+        { "minimumConnectionWidth", distance( "minimumConnectionWidthNm" ) },
+        { "minimumTrackWidth", distance( "minimumTrackWidthNm" ) },
+        { "minimumViaAnnularWidth", distance( "minimumViaAnnularWidthNm" ) },
+        { "minimumViaDiameter", distance( "minimumViaDiameterNm" ) },
+        { "minimumThroughHoleDiameter", distance( "minimumThroughHoleDiameterNm" ) },
+        { "minimumMicroviaDiameter", distance( "minimumMicroviaDiameterNm" ) },
+        { "minimumMicroviaDrill", distance( "minimumMicroviaDrillNm" ) },
+        { "minimumHoleToHole", distance( "minimumHoleToHoleNm" ) },
+        { "minimumCopperToHoleClearance", distance( "minimumCopperToHoleClearanceNm" ) },
+        { "minimumSilkscreenClearance", distance( "minimumSilkscreenClearanceNm" ) },
+        { "minimumGrooveWidth", distance( "minimumGrooveWidthNm" ) },
+        { "minimumResolvedSpokes", aRules.at( "minimumResolvedSpokes" ) },
+        { "minimumSilkscreenTextHeight", distance( "minimumSilkscreenTextHeightNm" ) },
+        { "minimumSilkscreenTextThickness",
+          distance( "minimumSilkscreenTextThicknessNm" ) },
+        { "copperEdgeClearanceMode",
+          aRules.at( "copperEdgeClearanceMode" ) == "legacy" ? "BCECM_LEGACY"
+                                                               : "BCECM_EXPLICIT" },
+        { "minimumCopperToEdgeClearance",
+          distance( "minimumCopperToEdgeClearanceNm" ) },
+        { "useHeightForLengthCalculations",
+          aRules.at( "useHeightForLengthCalculations" ) },
+        { "maximumError", distance( "maximumErrorNm" ) },
+        { "allowFilletsOutsideZoneOutline",
+          aRules.at( "allowFilletsOutsideZoneOutline" ) }
+    };
+    return { { "action", "update_rules" }, { "rules", std::move( rules ) } };
+}
+
+
 std::string lockedEnum( const JSON& aStatement )
 {
     return aStatement.value( "locked", false ) ? "LS_LOCKED" : "LS_UNLOCKED";
@@ -683,7 +721,7 @@ std::string DESIGN_SCRIPT_PCB_PLANNER::StableUuid( const std::string& aProject,
 DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& aCompilerIr )
 {
     RESULT result;
-    result.counts = { { "upserts", 0 }, { "placements", 0 },
+    result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
                       { "stackups", 0 }, { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -701,6 +739,12 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 
     try
     {
+        if( aCompilerIr.contains( "rules" ) && aCompilerIr["rules"].is_object() )
+        {
+            result.operations.emplace_back( planRules( aCompilerIr["rules"] ) );
+            ++result.counts["rules"].get_ref<int64_t&>();
+        }
+
         for( const JSON& statement : aCompilerIr["pcb"] )
         {
             if( !statement.is_object() || !statement.contains( "kind" )
@@ -778,7 +822,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
     {
         diagnostic( result, "error", "invalid_board_ir", error.what() );
         result.operations = JSON::array();
-        result.counts = { { "upserts", 0 }, { "placements", 0 },
+        result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
                           { "stackups", 0 }, { "unsupported", 0 } };
         return result;
     }

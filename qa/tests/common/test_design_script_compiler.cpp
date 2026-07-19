@@ -72,7 +72,26 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
       (priority 3)
       (border diagonal_edge (pitch 0.5mm))
       (locked true)))
-  (rule default_clearance (minimum 0.2mm))
+  (rules
+    (minimum_clearance 0.2mm)
+    (minimum_connection_width 0.2mm)
+    (minimum_track_width 0.2mm)
+    (minimum_via_annular_width 0.1mm)
+    (minimum_via_diameter 0.6mm)
+    (minimum_through_hole_diameter 0.3mm)
+    (minimum_microvia_diameter 0.3mm)
+    (minimum_microvia_drill 0.1mm)
+    (minimum_hole_to_hole 0.25mm)
+    (minimum_copper_to_hole_clearance 0.25mm)
+    (minimum_silkscreen_clearance 0mm)
+    (minimum_groove_width 0.25mm)
+    (minimum_resolved_spokes 2)
+    (minimum_silkscreen_text_height 0.8mm)
+    (minimum_silkscreen_text_thickness 0.08mm)
+    (minimum_copper_to_edge_clearance 0.5mm)
+    (use_height_for_length_calculations true)
+    (maximum_error 0.005mm)
+    (allow_fillets_outside_zone_outline false))
   (source R1
     (manufacturer "Yageo")
     (mpn "RC0603FR-0710KL")
@@ -108,6 +127,14 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
     BOOST_CHECK_EQUAL( first.ir["schematic"]["nets"].size(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["pinConnections"].get<size_t>(), 2 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["boardStatements"].get<size_t>(), 7 );
+    BOOST_CHECK_EQUAL( first.plan["counts"]["rules"].get<size_t>(), 1 );
+    BOOST_CHECK_EQUAL( first.ir["rules"]["minimumClearanceNm"].get<int64_t>(), 200000 );
+    BOOST_CHECK_EQUAL( first.ir["rules"]["minimumResolvedSpokes"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( first.ir["rules"]["copperEdgeClearanceMode"].get<std::string>(),
+                       "explicit" );
+    BOOST_CHECK( first.ir["rules"]["useHeightForLengthCalculations"].get<bool>() );
+    BOOST_CHECK_EQUAL( first.ir["rules"]["maximumErrorNm"].get<int64_t>(), 5000 );
+    BOOST_CHECK( !first.ir["rules"]["allowFilletsOutsideZoneOutline"].get<bool>() );
     BOOST_CHECK( first.plan["boardFullyTyped"].get<bool>() );
     BOOST_CHECK_EQUAL( first.ir["pcb"][1]["logicalId"].get<std::string>(), "board-edge" );
     BOOST_CHECK_EQUAL( first.ir["pcb"][3]["kind"].get<std::string>(), "trace" );
@@ -185,6 +212,50 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitLosslessStackupRepresentation )
     BOOST_CHECK_EQUAL( stackup["layers"][8]["dielectricIndex"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( stackup["layers"][9]["layer"].get<std::string>(), "B.Cu" );
     BOOST_CHECK_EQUAL( stackup["layers"][12]["color"].get<std::string>(), "White" );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsLegacyDuplicateAndPhysicallyInconsistentGlobalRules )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project invalid_rules)
+  (rule legacy_clearance (minimum 0.2mm))
+  (rules
+    (minimum_clearance 0.2mm)
+    (minimum_clearance 0.3mm)
+    (minimum_connection_width 0.2mm)
+    (minimum_track_width 0.2mm)
+    (minimum_via_annular_width 0.1mm)
+    (minimum_via_diameter 0.4mm)
+    (minimum_through_hole_diameter 0.3mm)
+    (minimum_microvia_diameter 0.2mm)
+    (minimum_microvia_drill 0.1mm)
+    (minimum_hole_to_hole 0.25mm)
+    (minimum_copper_to_hole_clearance 0.25mm)
+    (minimum_silkscreen_clearance 0mm)
+    (minimum_groove_width 0.25mm)
+    (minimum_resolved_spokes 100)
+    (minimum_silkscreen_text_height 0.8mm)
+    (minimum_silkscreen_text_thickness 0.08mm)
+    (minimum_copper_to_edge_clearance -0.01mm)
+    (use_height_for_length_calculations true)
+    (maximum_error 0.0005mm)
+    (allow_fillets_outside_zone_outline maybe)
+    (mystery_constraint 1mm))))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_CHECK( !compiled.ok );
+    const std::string diagnostics = compiled.diagnostics.dump();
+
+    for( const char* code : { "unknown_top_level_form", "duplicate_rules_field",
+                              "unknown_rules_field", "invalid_rules_resolved_spokes",
+                              "invalid_rules_edge_clearance", "inconsistent_rules_via_geometry",
+                              "inconsistent_rules_microvia_geometry", "invalid_rules_distance",
+                              "invalid_rules_zone_fillet_policy" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
 }
 
 
@@ -753,8 +824,8 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
     (teleport R1))
   (source R1 (manufacturer "Maker") (mpn "Part"))
   (source R1 (manufacturer "Maker") (mpn "Part"))
-  (rule repeated (minimum 0.2mm))
-  (rule repeated (minimum 0.3mm))
+  (rules)
+  (rules)
   (check erc verbose)
   (output assembly))
 )KDS";
@@ -769,7 +840,7 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
                               "duplicate_library", "duplicate_sheet",
                               "duplicate_component_property",
                               "duplicate_component_field", "duplicate_pin_connection",
-                              "unknown_board_statement", "duplicate_rule", "duplicate_source",
+                              "unknown_board_statement", "duplicate_rules", "duplicate_source",
                               "invalid_check",
                               "invalid_output", "unresolved_component", "unresolved_net" } )
     {

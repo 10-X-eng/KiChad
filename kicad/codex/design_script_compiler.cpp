@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <set>
 #include <string_view>
@@ -127,6 +129,49 @@ bool parseSingleValueForm( const DOCUMENT& aDocument, size_t aNode, std::string&
     const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
     return node.kind == DOCUMENT::NODE_KIND::LIST && node.children.size() == 2
            && scalarText( aDocument, node.children[1], aValue );
+}
+
+
+bool parseDistance( const std::string& aText, int64_t& aNanometers )
+{
+    long double value = 0.0L;
+    std::from_chars_result converted =
+            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+
+    if( converted.ec != std::errc() || converted.ptr == aText.data()
+        || !std::isfinite( value ) )
+    {
+        return false;
+    }
+
+    const std::string_view unit( converted.ptr,
+                                 static_cast<size_t>( aText.data() + aText.size()
+                                                      - converted.ptr ) );
+    long double scale = 0.0L;
+
+    if( unit == "mm" )
+        scale = 1000000.0L;
+    else if( unit == "mil" )
+        scale = 25400.0L;
+    else if( unit == "um" )
+        scale = 1000.0L;
+    else if( unit == "nm" )
+        scale = 1.0L;
+    else if( unit == "in" )
+        scale = 25400000.0L;
+    else
+        return false;
+
+    const long double rounded = std::round( value * scale );
+
+    if( !std::isfinite( rounded ) || rounded < -9223372036854775808.0L
+        || rounded >= 9223372036854775808.0L )
+    {
+        return false;
+    }
+
+    aNanometers = static_cast<int64_t>( rounded );
+    return true;
 }
 
 
@@ -449,6 +494,212 @@ JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileRules( const DOCUMENT& aDocument, size_t aNode,
+                   KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    struct DISTANCE_FIELD
+    {
+        const char* sourceName;
+        const char* irName;
+        int64_t     minimum;
+        int64_t     maximum;
+    };
+
+    static constexpr DISTANCE_FIELD DISTANCES[] = {
+        { "minimum_clearance", "minimumClearanceNm", 0, 25000000 },
+        { "minimum_connection_width", "minimumConnectionWidthNm", 0, 100000000 },
+        { "minimum_track_width", "minimumTrackWidthNm", 0, 25000000 },
+        { "minimum_via_annular_width", "minimumViaAnnularWidthNm", 0, 25000000 },
+        { "minimum_via_diameter", "minimumViaDiameterNm", 0, 25000000 },
+        { "minimum_through_hole_diameter", "minimumThroughHoleDiameterNm", 0, 25000000 },
+        { "minimum_microvia_diameter", "minimumMicroviaDiameterNm", 0, 10000000 },
+        { "minimum_microvia_drill", "minimumMicroviaDrillNm", 0, 10000000 },
+        { "minimum_hole_to_hole", "minimumHoleToHoleNm", 0, 10000000 },
+        { "minimum_copper_to_hole_clearance", "minimumCopperToHoleClearanceNm", 0,
+          100000000 },
+        { "minimum_silkscreen_clearance", "minimumSilkscreenClearanceNm", -10000000,
+          100000000 },
+        { "minimum_groove_width", "minimumGrooveWidthNm", 0, 25000000 },
+        { "minimum_silkscreen_text_height", "minimumSilkscreenTextHeightNm", 0,
+          100000000 },
+        { "minimum_silkscreen_text_thickness", "minimumSilkscreenTextThicknessNm", 0,
+          25000000 },
+        { "maximum_error", "maximumErrorNm", 1000, 100000 }
+    };
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    const std::set<std::string> allowed = {
+        "minimum_clearance",
+        "minimum_connection_width",
+        "minimum_track_width",
+        "minimum_via_annular_width",
+        "minimum_via_diameter",
+        "minimum_through_hole_diameter",
+        "minimum_microvia_diameter",
+        "minimum_microvia_drill",
+        "minimum_hole_to_hole",
+        "minimum_copper_to_hole_clearance",
+        "minimum_silkscreen_clearance",
+        "minimum_groove_width",
+        "minimum_resolved_spokes",
+        "minimum_silkscreen_text_height",
+        "minimum_silkscreen_text_thickness",
+        "minimum_copper_to_edge_clearance",
+        "use_height_for_length_calculations",
+        "maximum_error",
+        "allow_fillets_outside_zone_outline"
+    };
+    std::map<std::string, size_t> fields;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        const size_t      fieldNode = node.children[index];
+        const std::string name = aDocument.ListHead( fieldNode );
+
+        if( !allowed.contains( name ) )
+        {
+            diagnostic( aResult, "error", "unknown_rules_field",
+                        "rules contains an unknown global board constraint" );
+            continue;
+        }
+
+        if( !fields.emplace( name, fieldNode ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_rules_field",
+                        "rules field '" + name + "' occurs more than once" );
+        }
+    }
+
+    JSON rules = { { "kind", "rules" } };
+
+    for( const DISTANCE_FIELD& specification : DISTANCES )
+    {
+        int64_t     value = 0;
+        std::string text;
+        const auto  found = fields.find( specification.sourceName );
+
+        if( found == fields.end()
+            || !parseSingleValueForm( aDocument, found->second, text )
+            || !parseDistance( text, value ) || value < specification.minimum
+            || value > specification.maximum )
+        {
+            diagnostic( aResult, "error", "invalid_rules_distance",
+                        std::string( "rules " ) + specification.sourceName
+                                + " is required and outside its native range" );
+        }
+
+        rules[specification.irName] = value;
+    }
+
+    int         resolvedSpokes = 0;
+    std::string resolvedSpokesText;
+    auto        spokesField = fields.find( "minimum_resolved_spokes" );
+
+    if( spokesField == fields.end()
+        || !parseSingleValueForm( aDocument, spokesField->second, resolvedSpokesText ) )
+    {
+        diagnostic( aResult, "error", "invalid_rules_resolved_spokes",
+                    "rules minimum_resolved_spokes is required from 0 through 99" );
+    }
+    else
+    {
+        std::from_chars_result converted =
+                std::from_chars( resolvedSpokesText.data(),
+                                 resolvedSpokesText.data() + resolvedSpokesText.size(),
+                                 resolvedSpokes );
+
+        if( converted.ec != std::errc()
+            || converted.ptr != resolvedSpokesText.data() + resolvedSpokesText.size()
+            || resolvedSpokes < 0 || resolvedSpokes > 99 )
+        {
+            diagnostic( aResult, "error", "invalid_rules_resolved_spokes",
+                        "rules minimum_resolved_spokes is required from 0 through 99" );
+        }
+    }
+
+    rules["minimumResolvedSpokes"] = resolvedSpokes;
+    bool        useHeight = false;
+    std::string useHeightText;
+    auto        useHeightField = fields.find( "use_height_for_length_calculations" );
+
+    if( useHeightField == fields.end()
+        || !parseSingleValueForm( aDocument, useHeightField->second, useHeightText )
+        || ( useHeightText != "true" && useHeightText != "false" ) )
+    {
+        diagnostic( aResult, "error", "invalid_rules_length_policy",
+                    "rules use_height_for_length_calculations must be explicitly true or false" );
+    }
+    else
+    {
+        useHeight = useHeightText == "true";
+    }
+
+    rules["useHeightForLengthCalculations"] = useHeight;
+    bool        allowExternalFillets = false;
+    std::string allowExternalFilletsText;
+    auto        allowExternalFilletsField = fields.find( "allow_fillets_outside_zone_outline" );
+
+    if( allowExternalFilletsField == fields.end()
+        || !parseSingleValueForm( aDocument, allowExternalFilletsField->second,
+                                  allowExternalFilletsText )
+        || ( allowExternalFilletsText != "true" && allowExternalFilletsText != "false" ) )
+    {
+        diagnostic( aResult, "error", "invalid_rules_zone_fillet_policy",
+                    "rules allow_fillets_outside_zone_outline must be explicitly true or false" );
+    }
+    else
+    {
+        allowExternalFillets = allowExternalFilletsText == "true";
+    }
+
+    rules["allowFilletsOutsideZoneOutline"] = allowExternalFillets;
+    int64_t     edgeClearance = 0;
+    std::string edgeText;
+    std::string edgeMode;
+    auto        edgeField = fields.find( "minimum_copper_to_edge_clearance" );
+
+    if( edgeField == fields.end()
+        || !parseSingleValueForm( aDocument, edgeField->second, edgeText ) )
+    {
+        diagnostic( aResult, "error", "invalid_rules_edge_clearance",
+                    "rules minimum_copper_to_edge_clearance requires legacy or a distance" );
+    }
+    else if( edgeText == "legacy" )
+    {
+        edgeMode = "legacy";
+    }
+    else if( !parseDistance( edgeText, edgeClearance ) || edgeClearance < 0
+             || edgeClearance > 25000000 )
+    {
+        diagnostic( aResult, "error", "invalid_rules_edge_clearance",
+                    "rules minimum_copper_to_edge_clearance requires legacy or 0mm through 25mm" );
+    }
+    else
+    {
+        edgeMode = "explicit";
+    }
+
+    rules["copperEdgeClearanceMode"] = edgeMode;
+    rules["minimumCopperToEdgeClearanceNm"] = edgeClearance;
+    const int64_t annular = rules["minimumViaAnnularWidthNm"].get<int64_t>();
+
+    if( rules["minimumViaDiameterNm"].get<int64_t>()
+        < rules["minimumThroughHoleDiameterNm"].get<int64_t>() + 2 * annular )
+    {
+        diagnostic( aResult, "error", "inconsistent_rules_via_geometry",
+                    "minimum_via_diameter cannot satisfy the drill and annular-width constraints" );
+    }
+
+    if( rules["minimumMicroviaDiameterNm"].get<int64_t>()
+        < rules["minimumMicroviaDrillNm"].get<int64_t>() + 2 * annular )
+    {
+        diagnostic( aResult, "error", "inconsistent_rules_microvia_geometry",
+                    "minimum_microvia_diameter cannot satisfy the drill and annular-width constraints" );
+    }
+
+    return rules;
+}
+
+
 JSON compileNamedFacet( const DOCUMENT& aDocument, size_t aNode, const std::string& aFacet,
                         KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -567,7 +818,18 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form",
                       "(dimension aligned|orthogonal|radial|leader|center (id ID) "
                       "(layer LAYER) STYLE_GEOMETRY (line_width D) (arrow_length D) ...)" } },
-                  { { "form", "(rule NAME ...)" } },
+                  { { "form",
+                      "(rules (minimum_clearance D) (minimum_connection_width D) "
+                      "(minimum_track_width D) (minimum_via_annular_width D) "
+                      "(minimum_via_diameter D) (minimum_through_hole_diameter D) "
+                      "(minimum_microvia_diameter D) (minimum_microvia_drill D) "
+                      "(minimum_hole_to_hole D) (minimum_copper_to_hole_clearance D) "
+                      "(minimum_silkscreen_clearance D) (minimum_groove_width D) "
+                      "(minimum_resolved_spokes N) (minimum_silkscreen_text_height D) "
+                      "(minimum_silkscreen_text_thickness D) "
+                      "(minimum_copper_to_edge_clearance D|legacy) "
+                      "(use_height_for_length_calculations BOOL) (maximum_error D) "
+                      "(allow_fillets_outside_zone_outline BOOL))" } },
                   { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "
                       "(quantity N))" } },
@@ -662,7 +924,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
           { { "sheets", JSON::array() }, { "components", JSON::array() },
             { "nets", JSON::array() } } },
         { "pcb", JSON::array() },
-        { "rules", JSON::array() },
+        { "rules", nullptr },
         { "sourcing", JSON::array() },
         { "checks", JSON::array() },
         { "outputs", JSON::array() }
@@ -677,7 +939,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    netNames;
     std::set<std::string>    libraryIds;
     std::set<std::string>    sheetIds;
-    std::set<std::string>    ruleIds;
+    bool                     sawRules = false;
     std::set<std::string>    sourceIds;
     std::set<std::string>    checkKinds;
     std::set<std::string>    outputKinds;
@@ -813,18 +1075,14 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
             sawBoard = true;
         }
-        else if( form == "rule" )
+        else if( form == "rules" )
         {
-            JSON rule = compileNamedFacet( *document, formNode, "rule", result );
-            const std::string name = rule.value( "name", "" );
+            if( sawRules )
+                diagnostic( result, "error", "duplicate_rules", "rules occurs more than once" );
+            else
+                result.ir["rules"] = compileRules( *document, formNode, result );
 
-            if( !name.empty() && !ruleIds.emplace( name ).second )
-            {
-                diagnostic( result, "error", "duplicate_rule",
-                            "rule " + name + " occurs more than once" );
-            }
-
-            result.ir["rules"].emplace_back( std::move( rule ) );
+            sawRules = true;
         }
         else if( form == "source" )
         {
@@ -934,7 +1192,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "nets", result.ir["schematic"]["nets"].size() },
             { "pinConnections", pinConnections },
             { "boardStatements", result.ir["pcb"].size() },
-            { "rules", result.ir["rules"].size() },
+            { "rules", result.ir["rules"].is_object() ? 1 : 0 },
             { "sourcingRecords", result.ir["sourcing"].size() },
             { "checks", result.ir["checks"].size() },
             { "outputs", result.ir["outputs"].size() } } }

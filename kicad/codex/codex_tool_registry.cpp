@@ -917,6 +917,52 @@ bool updatePcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET
 }
 
 
+bool queryPcbRules( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                    kiapi::board::BoardDesignRules& aRules, std::string& aError )
+{
+    kiapi::board::commands::GetBoardDesignRules request;
+    request.mutable_board()->CopyFrom( aTarget.document );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::board::commands::BoardDesignRulesResponse rulesResponse;
+
+    if( !response.message().UnpackTo( &rulesResponse ) || !rulesResponse.has_rules() )
+    {
+        aError = "KiCad returned invalid board design rules";
+        return false;
+    }
+
+    aRules.CopyFrom( rulesResponse.rules() );
+    return true;
+}
+
+
+bool updatePcbRules( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                     const kiapi::board::BoardDesignRules& aRules, std::string& aError )
+{
+    kiapi::board::commands::UpdateBoardDesignRules request;
+    request.mutable_board()->CopyFrom( aTarget.document );
+    request.mutable_rules()->CopyFrom( aRules );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::board::commands::BoardDesignRulesResponse rulesResponse;
+
+    if( !response.message().UnpackTo( &rulesResponse ) || !rulesResponse.has_rules() )
+    {
+        aError = "KiCad returned invalid updated board design rules";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool queryPcbFootprintInventory( const KICHAD_IPC_CLIENT& aClient,
                                  const KICHAD_IPC_TARGET& aTarget,
                                  const std::set<std::string>& aReferences,
@@ -1614,6 +1660,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                    { "physicalLayers",
                                      plannedOperation["stackup"]["layers"].size() } } );
             }
+            else if( action == "update_rules" )
+            {
+                items.push_back( { { "action", "configure_global_board_rules" } } );
+            }
             else
             {
                 items.push_back( { { "action", "unsupported" },
@@ -1701,24 +1751,40 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         }
 
         std::unique_ptr<kiapi::board::BoardStackup> desiredStackup;
+        std::unique_ptr<kiapi::board::BoardDesignRules> desiredRules;
 
         for( const JSON& action : planned.operations )
         {
-            if( action.value( "action", "" ) != "update_stackup" )
+            const std::string plannedAction = action.value( "action", "" );
+
+            if( plannedAction != "update_stackup" && plannedAction != "update_rules" )
                 continue;
 
-            if( desiredStackup )
-                return failure( "invalid_plan", "KDS planned more than one board stackup" );
-
-            desiredStackup = std::make_unique<kiapi::board::BoardStackup>();
             google::protobuf::util::JsonParseOptions options;
             options.ignore_unknown_fields = false;
-            google::protobuf::util::Status status =
-                    google::protobuf::util::JsonStringToMessage(
-                            action.at( "stackup" ).dump(), desiredStackup.get(), options );
+            google::protobuf::util::Status status;
+
+            if( plannedAction == "update_stackup" )
+            {
+                if( desiredStackup )
+                    return failure( "invalid_plan", "KDS planned more than one board stackup" );
+
+                desiredStackup = std::make_unique<kiapi::board::BoardStackup>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "stackup" ).dump(), desiredStackup.get(), options );
+            }
+            else
+            {
+                if( desiredRules )
+                    return failure( "invalid_plan", "KDS planned more than one global rule set" );
+
+                desiredRules = std::make_unique<kiapi::board::BoardDesignRules>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "rules" ).dump(), desiredRules.get(), options );
+            }
 
             if( !status.ok() )
-                return failure( "invalid_plan", "KDS produced an invalid native stackup" );
+                return failure( "invalid_plan", "KDS produced invalid native board settings" );
         }
 
         const std::string sourceRelativePath = aArguments["path"].get<std::string>();
@@ -1791,9 +1857,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "pcb_not_open", pathError );
 
         kiapi::board::BoardStackup previousStackup;
+        kiapi::board::BoardDesignRules previousRules;
 
         if( desiredStackup && !queryPcbStackup( client, target, previousStackup, pathError ) )
             return failure( "stackup_inventory_failed", pathError );
+
+        if( desiredRules && !queryPcbRules( client, target, previousRules, pathError ) )
+            return failure( "rules_inventory_failed", pathError );
 
         JSON liveInventory;
 
@@ -1859,6 +1929,22 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             applyJournal["previousStackup"] = JSON::parse( serializedPrevious );
         }
 
+        if( desiredRules )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousRules, &serializedPrevious, options );
+
+            if( !status.ok() )
+                return failure( "journal_failed", "could not serialize the prior board rules" );
+
+            applyJournal["previousRules"] = JSON::parse( serializedPrevious );
+        }
+
         if( !writeJsonAtomically( journalPath, applyJournal, pathError ) )
             return failure( "journal_failed", pathError );
 
@@ -1891,13 +1977,46 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 aMessage += "; stackup rollback also failed: " + rollbackError;
         };
 
+        bool rulesApplied = false;
+
+        if( desiredRules )
+        {
+            if( !updatePcbRules( client, target, *desiredRules, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !updatePcbRules( client, target, previousRules, rollbackError ) )
+                    message += "; board-rules rollback also failed: " + rollbackError;
+
+                rollbackStackup( message );
+                return failure( "rules_apply_failed", message );
+            }
+
+            rulesApplied = true;
+        }
+
+        auto rollbackSettings = [&]( std::string& aMessage )
+        {
+            if( rulesApplied )
+            {
+                std::string rollbackError;
+
+                if( !updatePcbRules( client, target, previousRules, rollbackError ) )
+                    aMessage += "; board-rules rollback also failed: " + rollbackError;
+            }
+
+            rollbackStackup( aMessage );
+        };
+
         if( reconciled.actions.empty() )
         {
             if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
             {
                 std::string message = pathError
                                       + "; the apply journal was retained for safe recovery";
-                rollbackStackup( message );
+                rollbackSettings( message );
                 return failure( "state_write_failed", message );
             }
 
@@ -1908,8 +2027,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "sourceSha256", compiled.sourceSha256 },
                              { "counts", reconciled.counts },
                              { "transaction",
-                               stackupApplied ? "stackup applied" : "no board changes" },
+                               stackupApplied || rulesApplied ? "board settings applied"
+                                                             : "no board changes" },
                              { "stackupApplied", stackupApplied },
+                             { "rulesApplied", rulesApplied },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -1920,7 +2041,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             std::string message = pathError
                                   + "; the apply journal was retained for safe recovery";
-            rollbackStackup( message );
+            rollbackSettings( message );
             return failure( "transaction_failed", message );
         }
 
@@ -1933,7 +2054,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
 
-            rollbackStackup( message );
+            rollbackSettings( message );
 
             return failure( "apply_failed", message );
         }
@@ -1947,7 +2068,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
 
-            rollbackStackup( message );
+            rollbackSettings( message );
 
             return failure( "transaction_failed", message );
         }
@@ -1976,6 +2097,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                            reconciled.nextState["managedPcbItems"].size() },
                          { "transaction", "committed" },
                          { "stackupApplied", stackupApplied },
+                         { "rulesApplied", rulesApplied },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };
