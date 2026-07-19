@@ -278,7 +278,7 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     (symbol "Device:LED")
     (value "GREEN")
     (footprint "LED_SMD:LED_0603_1608Metric"))
-  (net LED_A (pin R1 1) (pin LED1 1))
+  (net LED_A (pin R1 1 1) (pin LED1 1 1))
   (board
     (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
@@ -1052,7 +1052,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
   (project managed_design)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net SIGNAL (pin R1 1) (pin R2 1))
+  (net SIGNAL (pin R1 1 1) (pin R2 1 1))
   (board
     (stackup
       (finish "ENIG") (impedance_controlled false)
@@ -1139,7 +1139,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
   (project managed_design)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net SIGNAL (pin R1 1) (pin R2 1))
+  (net SIGNAL (pin R1 1 1) (pin R2 1 1))
   (board
     (stackup
       (finish "HASL") (impedance_controlled true)
@@ -1952,7 +1952,7 @@ BOOST_AUTO_TEST_CASE( RefillsManagedKdsZonesAndRecoversARejectedRefill )
   (project managed_zone)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net GND (pin R1 1) (pin R2 1))
+  (net GND (pin R1 1 1) (pin R2 1 1))
   (board
     (zone GND
       (id ground-plane)
@@ -2059,15 +2059,25 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( firstData["schematicFilesApplied"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesCreated"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesUpdated"].get<int>(), 1 );
-    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["itemsUpserted"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["itemsUpserted"].get<int>(), 9 );
     BOOST_CHECK( wxFileExists( wxFileName( project.GetFullPath(),
                                            wxS( "power.kicad_sch" ) ).GetFullPath() ) );
     BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),
                                                       wxS( "sym-lib-table" ) ) ),
-                       "(sym_lib_table\n  (version 7)\n)\n" );
+                       "(sym_lib_table\n"
+                       "  (version 7)\n"
+                       "  (lib (name \"Device\")(type \"KiCad\")"
+                       "(uri \"${KIPRJMOD}/Device.kicad_sym\")(options \"\")"
+                       "(descr \"\"))\n"
+                       ")\n" );
     BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),
                                                       wxS( "fp-lib-table" ) ) ),
-                       "(fp_lib_table\n  (version 7)\n)\n" );
+                       "(fp_lib_table\n"
+                       "  (version 7)\n"
+                       "  (lib (name \"Resistor_SMD\")(type \"KiCad\")"
+                       "(uri \"${KIPRJMOD}/Resistor_SMD.pretty\")(options \"\")"
+                       "(descr \"\"))\n"
+                       ")\n" );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", sourceName },

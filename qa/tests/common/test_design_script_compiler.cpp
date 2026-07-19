@@ -33,12 +33,14 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
     (symbol "Device:R")
     (value "10k")
     (footprint "Resistor_SMD:R_0603_1608Metric")
-    (property "Tolerance" "1%"))
+    (property "Tolerance" "1%")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
   (component LED1
     (symbol "Device:LED")
     (value "GREEN")
-    (footprint "LED_SMD:LED_0603_1608Metric"))
-  (net LED_A (pin R1 1) (pin LED1 1))
+    (footprint "LED_SMD:LED_0603_1608Metric")
+    (unit 1 (sheet root) (at 50mm 40mm) (rotation 90deg) (mirror y)))
+  (net LED_A (pin R1 1 1) (pin LED1 1 1))
   (sheet root (parent none) (file "sensor_node.kicad_sch") (title "Main"))
   (board
     (stackup
@@ -569,7 +571,7 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalBoardIntent )
   (project physical_errors)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net POWER (pin R1 1) (pin R2 1))
+  (net POWER (pin R1 1 1) (pin R2 1 1))
   (board
     (stackup
       (finish "ENIG") (impedance_controlled maybe)
@@ -613,7 +615,7 @@ BOOST_AUTO_TEST_CASE( EnforcesStackupAndSinglePlacementSemantics )
   (project stackup_errors)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net POWER (pin R1 1) (pin R2 1))
+  (net POWER (pin R1 1 1) (pin R2 1 1))
   (board
     (stackup
       (finish "ENIG") (impedance_controlled true)
@@ -665,7 +667,7 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeCopperZoneIntent )
   (project bad_zone)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net GND (pin R1 1) (pin R2 1))
+  (net GND (pin R1 1 1) (pin R2 1 1))
   (board
     (stackup
       (finish "ENIG") (impedance_controlled true)
@@ -1025,7 +1027,7 @@ BOOST_AUTO_TEST_CASE( BoundsCopperZoneGeometryBeforePlanning )
   (project bounded_zone)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net GND (pin R1 1) (pin R2 1))
+  (net GND (pin R1 1 1) (pin R2 1 1))
   (board
     (zone GND
       (id too-many-points)
@@ -1068,8 +1070,8 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
     (property "Tolerance" "1%") (property "Tolerance" "5%")
     (dnp false) (dnp true))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net N1 (pin R1 1) (pin R2 1))
-  (net N2 (pin R1 1) (pin R2 2))
+  (net N1 (pin R1 1 1) (pin R2 1 1))
+  (net N2 (pin R1 1 1) (pin R2 1 2))
   (board
     (place MISSING (at 1mm 1mm))
     (route NO_NET (width 0.2mm))
@@ -1199,6 +1201,60 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitResolvableSchematicHierarchy )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresentation )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project multi_unit)
+  (library symbol Local (table project) (uri "${KIPRJMOD}/Local.kicad_sym"))
+  (library footprint LocalFp (table project) (uri "${KIPRJMOD}/Local.pretty"))
+  (sheet root (parent none) (file "multi_unit.kicad_sch") (title "Main"))
+  (sheet analog (parent root) (file "analog.kicad_sch") (title "Analog")
+    (at 20mm 20mm) (size 30mm 20mm))
+  (component U1
+    (symbol "Local:DUAL") (value "DUAL") (footprint "LocalFp:DUAL")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none))
+    (unit 2 (sheet analog) (at 50mm 40mm) (rotation 270deg) (mirror xy)))
+  (net SIGNAL (pin U1 1 1) (pin U1 2 7))
+  (no_connect U1 2 8)
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& component = result.ir["schematic"]["components"][0];
+    BOOST_REQUIRE_EQUAL( component["units"].size(), 2 );
+    BOOST_CHECK_EQUAL( component["units"][1]["number"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( component["units"][1]["sheet"].get<std::string>(), "analog" );
+    BOOST_CHECK_EQUAL( component["units"][1]["rotationDegrees"].get<int>(), 270 );
+    BOOST_CHECK_EQUAL( component["units"][1]["mirror"].get<std::string>(), "xy" );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["nets"][0]["pins"][1]["unit"].get<int>(), 2 );
+    BOOST_REQUIRE_EQUAL( result.ir["schematic"]["noConnects"].size(), 1 );
+    BOOST_CHECK_EQUAL( result.plan["counts"]["noConnects"].get<int>(), 1 );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1) (project invalid_units)
+  (sheet root (parent none) (file "invalid_units.kicad_sch") (title "Main"))
+  (component U1 (symbol "Local:DUAL") (value "DUAL") (footprint "LocalFp:DUAL")
+    (unit 1 (sheet missing) (at 1mm 1mm) (rotation 45deg) (mirror none)))
+  (net OLD (pin U1 1) (pin U1 2))
+))KDS";
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    const std::string diagnostics = result.diagnostics.dump();
+    BOOST_CHECK_NE( diagnostics.find( "invalid_component_unit_rotation" ), std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "unresolved_component_sheet" ), std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_pin" ), std::string::npos );
+
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
+            "(kichad_design (version 1) (project board_only) "
+            "(component R1 (symbol \"Local:R\") (value \"R\") (footprint \"Local:R\")) "
+            "(no_connect R1 1 2))" );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "no_connect_without_hierarchy" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design
@@ -1229,7 +1285,7 @@ BOOST_AUTO_TEST_CASE( ReportsAllSemanticErrorsWithoutProducingAnExecutableProgra
   (project broken)
   (component R1 (symbol "Device:R") (value "1k"))
   (component R1 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net N1 (pin R1 1) (pin MISSING 2))
+  (net N1 (pin R1 1 1) (pin MISSING 1 2))
   (mystery unsafe))
 )KDS";
 
@@ -1329,6 +1385,10 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK_NE( description.dump().find(
                             "dimension aligned|orthogonal|radial|leader|center" ),
                     std::string::npos );
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT example =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
+                    description["example"].get<std::string>() );
+    BOOST_CHECK_MESSAGE( example.ok, example.diagnostics.dump() );
 }
 
 

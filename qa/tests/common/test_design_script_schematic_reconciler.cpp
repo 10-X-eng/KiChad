@@ -40,6 +40,46 @@ nlohmann::json operationFor( const nlohmann::json& aExisting = nlohmann::json::o
     return plan.operations.at( 0 );
 }
 
+
+nlohmann::json componentOperation()
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1) (project component_cache)
+  (library symbol Local (table project) (uri "${KIPRJMOD}/Local.kicad_sym"))
+  (library footprint LocalFp (table project) (uri "${KIPRJMOD}/Local.pretty"))
+  (sheet root (parent none) (file "component_cache.kicad_sch") (title "Cache"))
+  (component R1 (symbol "Local:R") (value "10k") (footprint "LocalFp:R")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const nlohmann::json resolved = {
+        { "Local:R",
+          { { "libraryId", "Local:R" },
+            { "cacheSource",
+              "(symbol \"Local:R\"\n"
+              "  (property \"Reference\" \"R\" (at 0 0 0) "
+              "(effects (font (size 1.27 1.27))))\n"
+              "  (property \"Value\" \"R\" (at 0 0 0) "
+              "(effects (font (size 1.27 1.27))))\n"
+              "  (symbol \"R_1_1\"\n"
+              "    (pin passive line (at 0 3.81 270) (length 1.27) "
+              "(name \"\" (effects (font (size 1.27 1.27)))) "
+              "(number \"1\" (effects (font (size 1.27 1.27)))))))" },
+            { "properties", nlohmann::json::object() },
+            { "units",
+              { { "1", nlohmann::json::array(
+                               { { { "number", "1" }, { "xNm", 0 },
+                                   { "yNm", 3810000 } } } ) } } } } }
+    };
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                    compiled.ir, nlohmann::json::object(), resolved );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    return plan.operations.at( 0 );
+}
+
 } // namespace
 
 
@@ -195,6 +235,50 @@ BOOST_AUTO_TEST_CASE( RejectsIdentityCollisionsAndStaleScreenInventories )
     BOOST_CHECK( !result.ok );
     BOOST_CHECK_NE( result.diagnostics.dump().find( "stale_schematic_inventory" ),
                     std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( ReconcilesOnlyOwnedCachedSymbolsAndPlacedUnits )
+{
+    const nlohmann::json operation = componentOperation();
+    const nlohmann::json absent = {
+        { { "path", "component_cache.kicad_sch" }, { "present", false } }
+    };
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT created =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    operation, nlohmann::json::array(), absent );
+    BOOST_REQUIRE_MESSAGE( created.ok, created.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( created.fileActions.size(), 1 );
+    BOOST_CHECK_EQUAL( created.counts["itemsUpserted"].get<int>(), 2 );
+    const nlohmann::json installed = {
+        { { "path", "component_cache.kicad_sch" },
+          { "present", true },
+          { "source", created.fileActions[0]["source"] } }
+    };
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT repeated =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    operation, operation["managedItems"], installed );
+    BOOST_REQUIRE_MESSAGE( repeated.ok, repeated.diagnostics.dump() );
+    BOOST_CHECK( repeated.fileActions.empty() );
+
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT unmanaged =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    operation, nlohmann::json::array(), installed );
+    BOOST_CHECK( !unmanaged.ok );
+    BOOST_CHECK_NE( unmanaged.diagnostics.dump().find( "is unmanaged" ), std::string::npos );
+
+    nlohmann::json empty = operation;
+    empty["files"] = nlohmann::json::array();
+    empty["managedItems"] = nlohmann::json::array();
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT removed =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    empty, operation["managedItems"], installed );
+    BOOST_REQUIRE_MESSAGE( removed.ok, removed.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( removed.counts["itemsRemoved"].get<int>(), 2 );
+    BOOST_REQUIRE_EQUAL( removed.fileActions.size(), 1 );
+    BOOST_CHECK_EQUAL( removed.fileActions[0]["source"].get<std::string>().find(
+                               "(symbol \"Local:R\"" ),
+                       std::string::npos );
 }
 
 

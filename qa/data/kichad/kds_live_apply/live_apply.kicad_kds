@@ -13,17 +13,20 @@
     (size 40mm 20mm)
     (pin VIN input (at 20mm 35mm) (side left))
     (pin VOUT output (at 60mm 35mm) (side right)))
-  (library symbol Device (table global))
-  (library footprint Resistor_SMD (table global))
+  (library symbol Device (table project) (uri "${KIPRJMOD}/Device.kicad_sym"))
+  (library footprint Resistor_SMD (table project)
+    (uri "${KIPRJMOD}/Resistor_SMD.pretty"))
   (component R1
     (symbol "Device:R")
     (value "1k")
-    (footprint "Resistor_SMD:R_0603_1608Metric"))
+    (footprint "Resistor_SMD:R_0603_1608Metric")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
   (component R2
     (symbol "Device:R")
     (value "2k")
-    (footprint "Resistor_SMD:R_0603_1608Metric"))
-  (net Net1 (pin R1 1) (pin R2 1))
+    (footprint "Resistor_SMD:R_0603_1608Metric")
+    (unit 1 (sheet power) (at 40mm 40mm) (rotation 90deg) (mirror x)))
+  (net Net1 (pin R1 1 1) (pin R2 1 1))
   (board
     (stackup
       (finish "ENIG")

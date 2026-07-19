@@ -127,6 +127,17 @@ presence and bytes are stored in the apply journal, files install atomically, an
 `kicad-cli` process loads the complete hierarchy before any PCB item commit. Timeout or native parse
 failure restores schematics, library tables, and board settings in reverse order.
 
+Component declarations use one explicit multi-unit form. Before planning, KiChad inventories only
+the referenced project-local symbol libraries, confines canonical paths to the project, rejects
+symlinks, and passes their exact bytes to the lossless symbol resolver. The resolver extracts the
+named native symbol and unit pin geometry; the planner then emits stable placed-symbol/pin UUIDs and
+transforms each KDS net or no-connect endpoint onto a real pin coordinate. Project-global KDS nets
+lower to native global labels, so connectivity spans hierarchy screens without a second net
+representation. Cached symbols are reconciled by library ID inside each screen's `lib_symbols`
+container while unrelated cache entries retain their bytes. Any unresolved, derived, missing, or
+unmanaged-colliding symbol aborts before installation. The same atomic file journal and native
+hierarchy netlist validation cover sheets, cached symbols, placed units, connectivity, and rollback.
+
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and
 rows before project-confined atomic replacement. The apply journal retains the exact prior presence

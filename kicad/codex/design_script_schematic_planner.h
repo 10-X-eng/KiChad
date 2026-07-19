@@ -34,7 +34,8 @@ public:
 
     /** Existing screen UUIDs are keyed by project-relative schematic path for lossless apply. */
     static RESULT Plan( const JSON& aCompilerIr,
-                        const JSON& aExistingScreenUuids = JSON::object() );
+                        const JSON& aExistingScreenUuids = JSON::object(),
+                        const JSON& aResolvedSymbols = JSON::object() );
 };
 
 } // namespace KICHAD

@@ -13,6 +13,7 @@
 
 #include "lossless_sexpr_document.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -120,18 +121,29 @@ bool parseSchematic( const std::string& aSource, std::unique_ptr<DOCUMENT>& aDoc
 
 bool validManagedItem( const JSON& aItem )
 {
-    return aItem.is_object() && aItem.contains( "file" ) && aItem["file"].is_string()
+    const bool base = aItem.is_object() && aItem.contains( "file" ) && aItem["file"].is_string()
            && aItem.contains( "kind" ) && aItem["kind"].is_string()
-           && ( aItem["kind"] == "sheet" || aItem["kind"] == "hierarchical_label" )
+           && ( aItem["kind"] == "sheet" || aItem["kind"] == "hierarchical_label"
+                || aItem["kind"] == "symbol" || aItem["kind"] == "global_label"
+                || aItem["kind"] == "no_connect" || aItem["kind"] == "lib_symbol" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()
            && aItem.contains( "uuid" ) && aItem["uuid"].is_string();
+    return base && ( aItem.value( "kind", "" ) != "lib_symbol"
+                     || ( aItem.contains( "libraryId" )
+                          && aItem["libraryId"].is_string() ) );
+}
+
+
+bool isDirectItem( const JSON& aItem )
+{
+    return aItem.value( "kind", "" ) != "lib_symbol";
 }
 
 
 bool validateDesiredExpression( const JSON& aItem, std::string& aError )
 {
     if( !validManagedItem( aItem ) || !aItem.contains( "source" )
-        || !aItem["source"].is_string() )
+        || !aItem["source"].is_string() || !isDirectItem( aItem ) )
     {
         aError = "planned schematic item is malformed";
         return false;
@@ -154,6 +166,133 @@ bool validateDesiredExpression( const JSON& aItem, std::string& aError )
         || directUuid( *document, root ) != aItem["uuid"].get<std::string>() )
     {
         aError = "planned schematic item kind or UUID is inconsistent";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool validateDesiredLibrarySymbol( const JSON& aItem, std::string& aError )
+{
+    if( !validManagedItem( aItem ) || aItem.value( "kind", "" ) != "lib_symbol"
+        || !aItem.contains( "source" ) || !aItem["source"].is_string() )
+    {
+        aError = "planned schematic library symbol is malformed";
+        return false;
+    }
+
+    std::unique_ptr<DOCUMENT> document =
+            DOCUMENT::Parse( aItem["source"].get<std::string>(), &aError );
+
+    if( !document || document->Roots().size() != 1 )
+    {
+        if( aError.empty() )
+            aError = "planned schematic library symbol must contain one expression";
+
+        return false;
+    }
+
+    const size_t root = document->Roots().front();
+    const DOCUMENT::NODE& node = document->Nodes().at( root );
+    return document->ListHead( root ) == "symbol" && node.children.size() >= 2
+           && document->Nodes().at( node.children[1] ).kind != DOCUMENT::NODE_KIND::LIST
+           && document->AtomText( node.children[1] )
+                      == aItem["libraryId"].get<std::string>();
+}
+
+
+bool reconcileLibrarySymbols( DOCUMENT& aDocument, size_t aRoot, const JSON& aDesired,
+                              const std::map<std::string, JSON>& aPrevious,
+                              RESULT& aResult, std::string& aError )
+{
+    const std::vector<size_t> libraries = directLists( aDocument, aRoot, "lib_symbols" );
+
+    if( libraries.size() != 1 )
+    {
+        aError = "schematic must contain exactly one direct lib_symbols expression";
+        return false;
+    }
+
+    const size_t libraryNode = libraries.front();
+    std::map<std::string, size_t> nativeSymbols;
+
+    for( size_t child : aDocument.Nodes().at( libraryNode ).children )
+    {
+        if( aDocument.Nodes().at( child ).kind != DOCUMENT::NODE_KIND::LIST
+            || aDocument.ListHead( child ) != "symbol" )
+        {
+            continue;
+        }
+
+        const DOCUMENT::NODE& symbol = aDocument.Nodes().at( child );
+
+        if( symbol.children.size() < 2
+            || aDocument.Nodes().at( symbol.children[1] ).kind == DOCUMENT::NODE_KIND::LIST )
+        {
+            aError = "lib_symbols contains a symbol without a scalar library ID";
+            return false;
+        }
+
+        const std::string libraryId = aDocument.AtomText( symbol.children[1] );
+
+        if( !nativeSymbols.emplace( libraryId, child ).second )
+        {
+            aError = "lib_symbols contains duplicate symbol " + libraryId;
+            return false;
+        }
+    }
+
+    std::map<std::string, JSON> desired;
+
+    for( const JSON& symbol : aDesired )
+        desired.emplace( symbol["libraryId"].get<std::string>(), symbol );
+
+    std::string insertions;
+
+    for( const auto& [ libraryId, symbol ] : desired )
+    {
+        auto native = nativeSymbols.find( libraryId );
+
+        if( native == nativeSymbols.end() )
+        {
+            insertions += "\n    " + symbol["source"].get<std::string>();
+        }
+        else if( !aPrevious.contains( libraryId ) )
+        {
+            aError = "cached symbol " + libraryId
+                     + " is unmanaged and cannot be claimed by KDS";
+            return false;
+        }
+        else if( !aDocument.ReplaceNode( native->second,
+                                         symbol["source"].get<std::string>(), &aError ) )
+        {
+            return false;
+        }
+
+        ++aResult.counts["itemsUpserted"].get_ref<int64_t&>();
+    }
+
+    for( const auto& [ libraryId, previous ] : aPrevious )
+    {
+        if( desired.contains( libraryId ) )
+            continue;
+
+        auto native = nativeSymbols.find( libraryId );
+
+        if( native != nativeSymbols.end()
+            && !aDocument.RemoveNode( native->second, &aError ) )
+        {
+            return false;
+        }
+
+        if( native != nativeSymbols.end() )
+            ++aResult.counts["itemsRemoved"].get_ref<int64_t&>();
+    }
+
+    if( !insertions.empty()
+        && !aDocument.InsertBeforeClosingList( libraryNode, insertions + "\n  ", &aError ) )
+    {
         return false;
     }
 
@@ -279,6 +418,7 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
     }
 
     std::map<std::string, std::map<std::string, JSON>> previousByFile;
+    std::map<std::string, std::map<std::string, JSON>> previousLibrariesByFile;
     std::set<std::string> previousLogicalIds;
 
     for( const JSON& item : aPreviousManagedItems )
@@ -286,8 +426,11 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
         if( !validManagedItem( item )
             || !previousLogicalIds.emplace( item["kind"].get<std::string>() + "\n"
                                             + item["logicalId"].get<std::string>() ).second
-            || !previousByFile[item["file"].get<std::string>()]
-                        .emplace( item["uuid"].get<std::string>(), item ).second )
+            || !( isDirectItem( item )
+                          ? previousByFile[item["file"].get<std::string>()]
+                                    .emplace( item["uuid"].get<std::string>(), item ).second
+                          : previousLibrariesByFile[item["file"].get<std::string>()]
+                                    .emplace( item["libraryId"].get<std::string>(), item ).second ) )
         {
             diagnostic( result, "invalid_schematic_state",
                         "managed schematic state contains malformed or duplicate ownership" );
@@ -304,6 +447,7 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             || !file.contains( "screenUuid" ) || !file["screenUuid"].is_string()
             || !file.contains( "root" ) || !file["root"].is_boolean()
             || !file.contains( "items" ) || !file["items"].is_array()
+            || !file.contains( "libSymbols" ) || !file["libSymbols"].is_array()
             || !file.contains( "newDocumentSource" )
             || !file["newDocumentSource"].is_string()
             || !desiredFiles.emplace( file["path"].get<std::string>(), file ).second )
@@ -327,6 +471,21 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
                 return result;
             }
         }
+
+        for( const JSON& item : file["libSymbols"] )
+        {
+            std::string validationError;
+
+            if( !validateDesiredLibrarySymbol( item, validationError )
+                || !desiredLogicalIds.emplace( item["kind"].get<std::string>() + "\n"
+                                               + item["logicalId"].get<std::string>() ).second )
+            {
+                diagnostic( result, "invalid_schematic_plan",
+                            validationError.empty() ? "schematic plan contains duplicate ownership"
+                                                    : validationError );
+                return result;
+            }
+        }
     }
 
     if( aOperation["managedItems"].size() != desiredLogicalIds.size() )
@@ -334,6 +493,59 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
         diagnostic( result, "invalid_schematic_plan",
                     "schematic file items and ownership inventory are inconsistent" );
         return result;
+    }
+
+    std::set<std::string> operationLogicalIds;
+
+    for( const JSON& ownership : aOperation["managedItems"] )
+    {
+        if( !validManagedItem( ownership ) )
+        {
+            diagnostic( result, "invalid_schematic_plan",
+                        "schematic ownership inventory contains a malformed item" );
+            return result;
+        }
+
+        const std::string key = ownership["kind"].get<std::string>() + "\n"
+                                + ownership["logicalId"].get<std::string>();
+
+        if( !operationLogicalIds.emplace( key ).second || !desiredLogicalIds.contains( key ) )
+        {
+            diagnostic( result, "invalid_schematic_plan",
+                        "schematic file items and ownership inventory are inconsistent" );
+            return result;
+        }
+
+        auto desiredFile = desiredFiles.find( ownership["file"].get<std::string>() );
+
+        if( desiredFile == desiredFiles.end() )
+        {
+            diagnostic( result, "invalid_schematic_plan",
+                        "schematic ownership references an undesired file" );
+            return result;
+        }
+
+        const JSON& candidates = ownership["kind"] == "lib_symbol"
+                                         ? desiredFile->second["libSymbols"]
+                                         : desiredFile->second["items"];
+        const auto match = std::find_if(
+                candidates.begin(), candidates.end(), [&]( const JSON& aItem )
+                {
+                    return aItem.value( "kind", "" ) == ownership.value( "kind", "" )
+                           && aItem.value( "logicalId", "" )
+                                      == ownership.value( "logicalId", "" )
+                           && aItem.value( "uuid", "" ) == ownership.value( "uuid", "" )
+                           && aItem.value( "file", "" ) == ownership.value( "file", "" )
+                           && aItem.value( "libraryId", "" )
+                                      == ownership.value( "libraryId", "" );
+                } );
+
+        if( match == candidates.end() )
+        {
+            diagnostic( result, "invalid_schematic_plan",
+                        "schematic file items and ownership inventory are inconsistent" );
+            return result;
+        }
     }
 
     std::map<std::string, JSON> liveFiles;
@@ -358,6 +570,9 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
         relevantPaths.emplace( path );
 
     for( const auto& [ path, items ] : previousByFile )
+        relevantPaths.emplace( path );
+
+    for( const auto& [ path, symbols ] : previousLibrariesByFile )
         relevantPaths.emplace( path );
 
     for( const std::string& path : relevantPaths )
@@ -406,7 +621,8 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             ++result.counts["filesCreated"].get_ref<int64_t&>();
             result.counts["itemsUpserted"] =
                     result.counts["itemsUpserted"].get<int64_t>()
-                    + desiredEntry->second["items"].size();
+                    + desiredEntry->second["items"].size()
+                    + desiredEntry->second["libSymbols"].size();
             continue;
         }
 
@@ -511,6 +727,17 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             }
 
             ++result.counts["itemsRemoved"].get_ref<int64_t&>();
+        }
+
+        const JSON desiredLibrarySymbols = desiredEntry == desiredFiles.end()
+                                                   ? JSON::array()
+                                                   : desiredEntry->second["libSymbols"];
+
+        if( !reconcileLibrarySymbols( *document, root, desiredLibrarySymbols,
+                                      previousLibrariesByFile[path], result, editError ) )
+        {
+            diagnostic( result, "schematic_edit_failed", path + ": " + editError );
+            return result;
         }
 
         if( desiredEntry != desiredFiles.end()

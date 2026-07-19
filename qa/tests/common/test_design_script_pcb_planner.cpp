@@ -32,7 +32,7 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
   (project deterministic_board)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net SIGNAL (pin R1 1) (pin R2 1))
+  (net SIGNAL (pin R1 1 1) (pin R2 1 1))
   (board
     (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
     (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
@@ -375,7 +375,7 @@ BOOST_AUTO_TEST_CASE( LowersExplicitCopperZoneIntoDeterministicProtobufJson )
   (project zone_board)
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
-  (net GND (pin R1 1) (pin R2 1))
+  (net GND (pin R1 1 1) (pin R2 1 1))
   (board
     (zone GND
       (id ground-plane)

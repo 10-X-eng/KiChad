@@ -28,6 +28,8 @@ cp -- "${fixture_dir}/live_apply.kicad_pro" "$project_dir/"
 cp -- "${fixture_dir}/live_apply.kicad_pcb" "$project_dir/"
 cp -- "${fixture_dir}/live_apply.kicad_kds" "$project_dir/"
 cp -- "${fixture_dir}/live_apply.kicad_sch" "$project_dir/"
+cp -- "${fixture_dir}/Device.kicad_sym" "$project_dir/"
+cp -R -- "${fixture_dir}/Resistor_SMD.pretty" "$project_dir/"
 cp -R -- "${fixture_dir}/config/." "$config_dir/"
 
 editor_pid=""
@@ -78,6 +80,22 @@ for attempt in $(seq 1 30); do
             exit 1
         fi
         test -s "${project_dir}/live_apply.net"
+        if ! perl -0e '
+            my $text = <>;
+            exit 1 unless $text =~ /\(comp\s+\(ref "R1"\)/s;
+            exit 1 unless $text =~ /\(comp\s+\(ref "R2"\)/s;
+            my ($net) = $text =~
+                    /(\(net\s+\(code "[^"]+"\)\s+\(name "Net1"\).*?)(?=\n[ \t]*\(net|\n[ \t]*\)\s*\z)/s;
+            exit 1 unless defined $net;
+            exit 1 unless $net =~ /\(node\s+\(ref "R1"\)\s+\(pin "1"\)/s;
+            exit 1 unless $net =~ /\(node\s+\(ref "R2"\)\s+\(pin "1"\)/s;
+            my @nodes = $net =~ /\(node\b/g;
+            exit 1 unless @nodes == 2;
+        ' "${project_dir}/live_apply.net"; then
+            echo "Native netlist is missing the exact KDS R1.1-to-R2.1 Net1 connectivity." >&2
+            sed -n '1,260p' "${project_dir}/live_apply.net" >&2
+            exit 1
+        fi
         grep -Fq '(company "KiChad lossless fixture")' \
             "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(uuid "11111111-2222-4333-8444-555555555555")' \

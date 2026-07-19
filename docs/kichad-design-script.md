@@ -61,20 +61,32 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
     (pin VIN input (at 20mm 35mm) (side left))
     (pin LED_A output (at 60mm 35mm) (side right)))
 
-  (library symbol Device (table global))
-  (library footprint Resistor_SMD (table global))
-  (library footprint LED_SMD (table global))
+  (library symbol ProductSymbols (table project)
+    (uri "${KIPRJMOD}/libraries/ProductSymbols.kicad_sym"))
+  (library footprint ProductFootprints (table project)
+    (uri "${KIPRJMOD}/libraries/ProductFootprints.pretty"))
 
   (component R1
-    (symbol "Device:R")
+    (symbol "ProductSymbols:R")
     (value "10k")
-    (footprint "Resistor_SMD:R_0603_1608Metric")
-    (property "Tolerance" "1%"))
+    (footprint "ProductFootprints:R_0603_1608Metric")
+    (property "Tolerance" "1%")
+    (unit 1
+      (sheet root)
+      (at 40mm 40mm)
+      (rotation 0deg)
+      (mirror none)))
   (component LED1
-    (symbol "Device:LED")
+    (symbol "ProductSymbols:LED")
     (value "GREEN")
-    (footprint "LED_SMD:LED_0603_1608Metric"))
-  (net LED_A (pin R1 1) (pin LED1 1))
+    (footprint "ProductFootprints:LED_0603_1608Metric")
+    (unit 1
+      (sheet power)
+      (at 40mm 40mm)
+      (rotation 90deg)
+      (mirror x)))
+  (net LED_A (pin R1 1 1) (pin LED1 1 1))
+  (no_connect LED1 1 2)
 
   (board
     (stackup
@@ -223,6 +235,51 @@ apply journal. The complete desired hierarchy is then loaded through the sibling
 hierarchy error restores changed schematics, project library tables, and board settings in reverse
 order. Existing files and every parent directory must already be project-confined; a missing nested
 sheet directory is rejected before mutation.
+
+### Schematic components and connectivity
+
+KDS has one component representation for single- and multi-unit symbols. Component-level fields
+declare the reference, exact library symbol, value, footprint, optional custom properties, and DNP
+state. Each physical schematic unit is an explicit nested placement:
+
+```scheme
+(component U1
+  (symbol "ProductSymbols:DUAL_OPAMP")
+  (value "OPA2192")
+  (footprint "ProductFootprints:VSSOP-10")
+  (property "Manufacturer" "Texas Instruments")
+  (unit 1 (sheet analog) (at 50mm 40mm) (rotation 0deg) (mirror none))
+  (unit 2 (sheet analog) (at 70mm 40mm) (rotation 180deg) (mirror y)))
+
+(net SENSOR_OUT (pin U1 1 1) (pin U1 2 7))
+(no_connect U1 2 5)
+```
+
+The endpoint tuple is always `(pin REFERENCE UNIT PIN_NUMBER)`; there is no implicit-unit spelling.
+Every component in a declared hierarchy has at least one unit placement. Unit numbers are unique
+within the component, range from 1 through 256, resolve to the exact library symbol, and declare a
+sheet, position, orthogonal rotation (`0deg`, `90deg`, `180deg`, or `270deg`), and mirror policy
+(`none`, `x`, `y`, or `xy`). Native required fields are controlled by `symbol`, `value`, and
+`footprint`, so custom properties cannot redefine `Reference`, `Value`, `Footprint`, `Datasheet`, or
+`Description`.
+
+Executable symbols currently resolve only from project-local `.kicad_sym` files. KiChad inventories
+each file within the project, rejects symlinks and paths that escape the project, bounds individual
+files to 16 MiB and the total inventory to 32 MiB, and extracts the exact named symbol through the
+lossless parser. The cached native symbol is not synthesized from a placeholder: its original
+graphics, fields, pin numbers, and pin coordinates become compiler input. Derived `extends`
+symbols are rejected until inheritance can be flattened without losing semantics. Global symbol
+libraries remain valid dependencies for board-only programs but are not accepted for executable
+schematic placement because their contents depend on the host installation.
+
+Each placed unit, pin instance, global-net endpoint, and explicit no-connect marker receives a
+stable UUIDv8 identity. A KDS net is project-global and lowers to native global labels attached at
+the resolved, rotation- and mirror-transformed pin coordinates, so connectivity works across the
+declared hierarchy. Repeated physical pins with the same number receive labels at every resolved
+location. A missing unit or pin aborts before mutation. Native `kicad-cli sch export netlist`
+validation proves the final files load and that the expected component references and net nodes are
+present. Cached library symbols are reconciled by library ID inside `lib_symbols`; unmanaged cache
+entries are preserved, and a same-ID unmanaged collision is rejected rather than overwritten.
 
 ### Library dependencies and project tables
 
@@ -624,8 +681,8 @@ KiCad `Dimension` protobuf type and uses the authored style as its single geomet
 3. Resolve libraries, symbols, footprints, models, components, pins, and nets.
 4. Produce a deterministic IR, source digest, diagnostics, and mutation plan.
 5. Establish the whole-project pre-apply snapshot.
-6. Compile native project library tables and schematic hierarchy through lossless edits validated
-   by KiCad 10.
+6. Compile native project library tables, exact cached symbols, placed units, connectivity, and
+   hierarchy through lossless edits validated by KiCad 10.
 7. Compile live board state through the official KiCad 10 protobuf IPC transaction API.
 8. Resolve and cache sourcing evidence with explicit remote-action permissions.
 9. Run ERC, DRC, connectivity, sourcing, and manufacturability checks.
@@ -639,8 +696,9 @@ missing ones are recreated, and only previously managed obsolete items are delet
 KiCad transaction. A project-confined apply journal makes an interrupted operation safely
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
-The apply backend currently executes nested native schematic hierarchy, complete native project
-symbol/footprint tables, physical
+The apply backend currently executes nested native schematic hierarchy, confined project-local
+symbol resolution, multi-unit component placement, global-net connectivity, explicit no-connect
+state, complete native project symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,
@@ -711,12 +769,14 @@ A form is documented as executable only after it has all of the following covera
 - relevant ERC, DRC, sourcing, and fabrication-output assertions.
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
-components, nets, sourcing, board statement kinds, global rules, net classes, custom rules, checks,
-and outputs. Global rules, net classes, custom rules, and executable board forms have
+components, nets, no-connect state, sourcing, board statement kinds, global rules, net classes,
+custom rules, checks, and outputs. Global rules, net classes, custom rules, and executable board forms have
 backend-specific type checking and rollback coverage. Project symbol/footprint tables are
 executable with native parser validation, atomic installation, journaling, and rollback coverage.
-Schematic components and connectivity, and symbol/footprint/model library content remain
-non-executable until their own lossless backends and rollback tests land. Nested sheet hierarchy is
-executable with lossless reconciliation, native hierarchy validation, journaling, rollback, and a
-disposable live integration proof. Native backend
+Project-local non-derived symbol content, component unit placement, connectivity, and no-connect
+state are executable with lossless reconciliation, stable identity, native netlist validation,
+journaling, rollback, and a disposable live integration proof. Derived symbols, global installed
+symbol content, library authoring, footprint/model content, wires/buses, and other schematic drawing
+forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
+hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

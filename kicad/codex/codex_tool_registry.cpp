@@ -15,6 +15,7 @@
 #include "design_script_pcb_reconciler.h"
 #include "design_script_schematic_planner.h"
 #include "design_script_schematic_reconciler.h"
+#include "design_script_symbol_resolver.h"
 #include "kicad_ipc_client.h"
 #include "lossless_sexpr_document.h"
 
@@ -29,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -355,6 +357,156 @@ bool resolveProjectSchematic( const wxString& aProjectPath, const std::string& a
             aError = "managed schematic path cannot be a symbolic link";
             return false;
         }
+    }
+
+    return true;
+}
+
+
+bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
+                                      const nlohmann::json& aCompilerIr,
+                                      nlohmann::json& aSources, std::string& aError )
+{
+    constexpr size_t MAX_SYMBOL_LIBRARY_BYTES = 16 * 1024 * 1024;
+    constexpr size_t MAX_SYMBOL_INVENTORY_BYTES = 32 * 1024 * 1024;
+    aSources = nlohmann::json::object();
+    size_t totalBytes = 0;
+
+    if( !aCompilerIr.is_object() || !aCompilerIr.contains( "libraries" )
+        || !aCompilerIr["libraries"].is_array() || !aCompilerIr.contains( "schematic" )
+        || !aCompilerIr["schematic"].is_object()
+        || !aCompilerIr["schematic"].contains( "components" )
+        || !aCompilerIr["schematic"]["components"].is_array() )
+    {
+        aError = "compiled KDS library inventory is malformed";
+        return false;
+    }
+
+    wxFileName root = wxFileName::DirName( aProjectPath );
+    root.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    if( !canonicalizeExisting( root, true ) )
+    {
+        aError = "active project path could not be resolved";
+        return false;
+    }
+
+    std::set<std::string> usedNicknames;
+
+    for( const nlohmann::json& component : aCompilerIr["schematic"]["components"] )
+    {
+        if( !component.is_object() || !component.contains( "symbol" )
+            || !component["symbol"].is_string() || !component.contains( "units" )
+            || !component["units"].is_array() || component["units"].empty() )
+        {
+            continue;
+        }
+
+        const std::string libraryId = component["symbol"].get<std::string>();
+        const size_t separator = libraryId.find( ':' );
+
+        if( separator != std::string::npos )
+            usedNicknames.emplace( libraryId.substr( 0, separator ) );
+    }
+
+    for( const nlohmann::json& library : aCompilerIr["libraries"] )
+    {
+        if( !library.is_object() || library.value( "kind", "" ) != "symbol"
+            || library.value( "table", "" ) != "project"
+            || !usedNicknames.contains( library.value( "id", "" ) ) )
+        {
+            continue;
+        }
+
+        const std::string nickname = library.value( "id", "" );
+        const std::string uri = library.value( "uri", "" );
+        constexpr std::string_view prefix = "${KIPRJMOD}/";
+
+        if( nickname.empty() || !uri.starts_with( prefix )
+            || uri.size() <= prefix.size() || !uri.ends_with( ".kicad_sym" ) )
+        {
+            aError = "project symbol library declaration is malformed";
+            return false;
+        }
+
+        const std::string relativePath = uri.substr( prefix.size() );
+        wxFileName candidate( wxString::FromUTF8( relativePath ) );
+
+        if( candidate.IsAbsolute() )
+        {
+            aError = "project symbol library path must be relative";
+            return false;
+        }
+
+        candidate.MakeAbsolute( root.GetFullPath() );
+        candidate.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+        if( !candidate.FileExists() )
+        {
+            aError = "project symbol library does not exist: " + relativePath;
+            return false;
+        }
+
+        wxFileName canonical = candidate;
+
+        if( !canonicalizeExisting( canonical ) )
+        {
+            aError = "project symbol library could not be resolved: " + relativePath;
+            return false;
+        }
+
+        wxString candidatePath = candidate.GetFullPath();
+        wxString canonicalPath = canonical.GetFullPath();
+        wxString rootPath = root.GetPathWithSep();
+
+#ifdef __WXMSW__
+        candidatePath.MakeLower();
+        canonicalPath.MakeLower();
+        rootPath.MakeLower();
+#endif
+
+        if( candidatePath != canonicalPath || !canonicalPath.StartsWith( rootPath ) )
+        {
+            aError = "project symbol library must be a confined regular file, not a symlink";
+            return false;
+        }
+
+        wxFile input;
+
+        if( !input.Open( candidate.GetFullPath() ) )
+        {
+            aError = "could not open project symbol library: " + relativePath;
+            return false;
+        }
+
+        const wxFileOffset length = input.Length();
+
+        if( length <= 0 || length > static_cast<wxFileOffset>( MAX_SYMBOL_LIBRARY_BYTES )
+            || static_cast<size_t>( length ) > MAX_SYMBOL_INVENTORY_BYTES - totalBytes )
+        {
+            aError = "project symbol library inventory exceeds bounded size limits";
+            return false;
+        }
+
+        std::string source( static_cast<size_t>( length ), '\0' );
+
+        const auto bytesRead = input.Read( source.data(), source.size() );
+
+        if( bytesRead < 0 || static_cast<size_t>( bytesRead ) != source.size() )
+        {
+            aError = "could not read complete project symbol library: " + relativePath;
+            return false;
+        }
+
+        totalBytes += source.size();
+
+        if( aSources.contains( nickname ) )
+        {
+            aError = "project symbol library nickname occurs more than once: " + nickname;
+            return false;
+        }
+
+        aSources[nickname] = std::move( source );
     }
 
     return true;
@@ -2372,8 +2524,29 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
-        KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPlanned =
-                KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+        JSON symbolLibrarySources;
+
+        if( !inventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
+                                              symbolLibrarySources, pathError ) )
+        {
+            return failure( "symbol_inventory_failed", pathError );
+        }
+
+        KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
+                KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
+                        compiled.ir, symbolLibrarySources );
+        KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPlanned;
+
+        if( resolvedSymbols.ok )
+        {
+            schematicPlanned = KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                    compiled.ir, JSON::object(), resolvedSymbols.symbols );
+        }
+        else
+        {
+            schematicPlanned.counts = resolvedSymbols.counts;
+            schematicPlanned.diagnostics = resolvedSymbols.diagnostics;
+        }
         JSON items = JSON::array();
 
         for( const JSON& plannedOperation : planned.operations )
@@ -2451,7 +2624,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                             { "sheetId", file["sheetId"] },
                                             { "page", file["page"] },
                                             { "root", file["root"] },
-                                            { "managedItems", file["items"].size() } } );
+                                            { "managedItems",
+                                              file["items"].size()
+                                                      + file["libSymbols"].size() } } );
             }
         }
 
@@ -2516,8 +2691,31 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        JSON symbolLibrarySources;
+
+        if( !inventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
+                                              symbolLibrarySources, pathError ) )
+        {
+            return failure( "symbol_inventory_failed", pathError );
+        }
+
+        KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
+                KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
+                        compiled.ir, symbolLibrarySources );
+
+        if( !resolvedSymbols.ok )
+        {
+            return failure(
+                    "backend_incomplete",
+                    resolvedSymbols.diagnostics.empty()
+                            ? "one or more schematic symbols could not be exactly resolved"
+                            : resolvedSymbols.diagnostics.front().value(
+                                      "message", "schematic symbol resolution failed" ) );
+        }
+
         KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPreplanned =
-                KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+                KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                        compiled.ir, JSON::object(), resolvedSymbols.symbols );
 
         if( !planned.fullyLowered || !schematicPreplanned.fullyLowered )
         {
@@ -2783,7 +2981,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPlanned =
                 KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
-                        compiled.ir, existingScreenUuids );
+                        compiled.ir, existingScreenUuids, resolvedSymbols.symbols );
 
         if( !schematicPlanned.fullyLowered )
         {

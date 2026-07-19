@@ -470,15 +470,143 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
         return JSON::object();
     }
 
-    JSON component = { { "reference", reference }, { "properties", JSON::object() } };
+    JSON component = { { "reference", reference },
+                       { "properties", JSON::object() },
+                       { "units", JSON::array() } };
     std::set<std::string> singletonFields;
     std::set<std::string> propertyNames;
+    std::set<int64_t>     unitNumbers;
 
     for( size_t i = 2; i < node.children.size(); ++i )
     {
         const size_t      child = node.children[i];
         const std::string head = aDocument.ListHead( child );
         const DOCUMENT::NODE& field = aDocument.Nodes()[child];
+
+        if( head == "unit" )
+        {
+            std::string numberText;
+            int64_t     number = 0;
+
+            if( field.children.size() < 2
+                || !scalarText( aDocument, field.children[1], numberText )
+                || !parseBoundedInteger( numberText, 1, 256, number ) )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit",
+                            "component unit requires a number from 1 through 256" );
+                continue;
+            }
+
+            if( !unitNumbers.emplace( number ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_component_unit",
+                            "component " + reference + " unit " + numberText
+                                    + " occurs more than once" );
+                continue;
+            }
+
+            JSON unit = { { "number", number } };
+            std::set<std::string> unitFields;
+
+            for( size_t unitIndex = 2; unitIndex < field.children.size(); ++unitIndex )
+            {
+                const size_t unitChild = field.children[unitIndex];
+                const std::string unitHead = aDocument.ListHead( unitChild );
+
+                if( !unitFields.emplace( unitHead ).second )
+                {
+                    diagnostic( aResult, "error", "duplicate_component_unit_field",
+                                "component unit field '" + unitHead
+                                        + "' occurs more than once" );
+                    continue;
+                }
+
+                if( unitHead == "sheet" || unitHead == "mirror" )
+                {
+                    std::string value;
+
+                    if( !parseSingleValueForm( aDocument, unitChild, value )
+                        || ( unitHead == "sheet" && !validIdentifier( value ) )
+                        || ( unitHead == "mirror" && value != "none" && value != "x"
+                             && value != "y" && value != "xy" ) )
+                    {
+                        diagnostic( aResult, "error", "invalid_component_unit_" + unitHead,
+                                    unitHead == "sheet"
+                                            ? "component unit sheet must be a bounded sheet ID"
+                                            : "component unit mirror must be none, x, y, or xy" );
+                    }
+                    else
+                    {
+                        unit[unitHead] = value;
+                    }
+
+                    continue;
+                }
+
+                if( unitHead == "at" )
+                {
+                    const DOCUMENT::NODE& position = aDocument.Nodes()[unitChild];
+                    std::string xText;
+                    std::string yText;
+                    int64_t x = 0;
+                    int64_t y = 0;
+
+                    if( position.children.size() != 3
+                        || !scalarText( aDocument, position.children[1], xText )
+                        || !scalarText( aDocument, position.children[2], yText )
+                        || !parseDistance( xText, x ) || !parseDistance( yText, y )
+                        || x < 0 || y < 0 || x > 2'000'000'000 || y > 2'000'000'000 )
+                    {
+                        diagnostic( aResult, "error", "invalid_component_unit_position",
+                                    "component unit at requires two distances from 0 to 2 m" );
+                    }
+                    else
+                    {
+                        unit["position"] = { { "xNm", x }, { "yNm", y } };
+                    }
+
+                    continue;
+                }
+
+                if( unitHead == "rotation" )
+                {
+                    std::string value;
+                    double degrees = 0.0;
+
+                    if( !parseSingleValueForm( aDocument, unitChild, value )
+                        || !parseFiniteDecimal( value, degrees, "deg" )
+                        || ( degrees != 0.0 && degrees != 90.0 && degrees != 180.0
+                             && degrees != 270.0 ) )
+                    {
+                        diagnostic( aResult, "error", "invalid_component_unit_rotation",
+                                    "component unit rotation must be 0deg, 90deg, 180deg, or "
+                                    "270deg" );
+                    }
+                    else
+                    {
+                        unit["rotationDegrees"] = static_cast<int>( degrees );
+                    }
+
+                    continue;
+                }
+
+                diagnostic( aResult, "error", "unknown_component_unit_field",
+                            "component unit supports sheet, at, rotation, and mirror" );
+            }
+
+            for( const char* required : { "sheet", "position", "rotationDegrees", "mirror" } )
+            {
+                if( !unit.contains( required ) )
+                {
+                    diagnostic( aResult, "error", "missing_component_unit_field",
+                                "component " + reference + " unit " + numberText
+                                        + " is missing " + required );
+                }
+            }
+
+            component["units"].emplace_back( std::move( unit ) );
+            continue;
+        }
 
         if( head == "property" )
         {
@@ -498,6 +626,15 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
             {
                 diagnostic( aResult, "error", "duplicate_component_property",
                             "component property '" + key + "' occurs more than once" );
+                continue;
+            }
+
+            if( key == "Reference" || key == "Value" || key == "Footprint"
+                || key == "Datasheet" || key == "Description" )
+            {
+                diagnostic( aResult, "error", "reserved_component_property",
+                            "component property '" + key
+                                    + "' is a native field controlled by KDS" );
                 continue;
             }
 
@@ -531,7 +668,7 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
         if( head != "symbol" && head != "value" && head != "footprint" )
         {
             diagnostic( aResult, "error", "unknown_component_field",
-                        "component supports symbol, value, footprint, property, and dnp" );
+                        "component supports symbol, value, footprint, property, dnp, and unit" );
             continue;
         }
 
@@ -600,22 +737,28 @@ JSON compileNet( const DOCUMENT& aDocument, size_t aNode,
         const size_t child = node.children[i];
         const DOCUMENT::NODE& pin = aDocument.Nodes()[child];
         std::string reference;
+        std::string unitText;
         std::string number;
+        int64_t     unit = 0;
 
-        if( aDocument.ListHead( child ) != "pin" || pin.children.size() != 3
+        if( aDocument.ListHead( child ) != "pin" || pin.children.size() != 4
             || !scalarText( aDocument, pin.children[1], reference )
-            || !scalarText( aDocument, pin.children[2], number )
+            || !scalarText( aDocument, pin.children[2], unitText )
+            || !scalarText( aDocument, pin.children[3], number )
+            || !parseBoundedInteger( unitText, 1, 256, unit )
             || !validIdentifier( reference ) || number.empty() || number.size() > 64 )
         {
             diagnostic( aResult, "error", "invalid_pin",
-                        "net endpoints must use (pin COMPONENT PIN_NUMBER)" );
+                        "net endpoints must use (pin COMPONENT UNIT PIN_NUMBER)" );
             continue;
         }
 
-        net["pins"].push_back( { { "component", reference }, { "number", number } } );
+        net["pins"].push_back( { { "component", reference },
+                                 { "unit", unit },
+                                 { "number", number } } );
         aReferencedComponents.emplace_back( reference );
 
-        const std::string endpoint = reference + ":" + number;
+        const std::string endpoint = reference + ":" + unitText + ":" + number;
 
         if( !aConnectedPins.emplace( endpoint ).second )
         {
@@ -633,6 +776,44 @@ JSON compileNet( const DOCUMENT& aDocument, size_t aNode,
     }
 
     return net;
+}
+
+
+JSON compileNoConnect( const DOCUMENT& aDocument, size_t aNode,
+                       KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
+                       std::vector<std::string>& aReferencedComponents,
+                       std::set<std::string>& aConnectedPins, size_t& aPinConnections )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string           reference;
+    std::string           unitText;
+    std::string           number;
+    int64_t               unit = 0;
+
+    if( node.children.size() != 4
+        || !scalarText( aDocument, node.children[1], reference )
+        || !scalarText( aDocument, node.children[2], unitText )
+        || !scalarText( aDocument, node.children[3], number )
+        || !validIdentifier( reference )
+        || !parseBoundedInteger( unitText, 1, 256, unit )
+        || number.empty() || number.size() > 64 )
+    {
+        diagnostic( aResult, "error", "invalid_no_connect",
+                    "no_connect must use (no_connect COMPONENT UNIT PIN_NUMBER)" );
+        return JSON::object();
+    }
+
+    const std::string endpoint = reference + ":" + unitText + ":" + number;
+
+    if( !aConnectedPins.emplace( endpoint ).second )
+    {
+        diagnostic( aResult, "error", "duplicate_pin_connection",
+                    "pin " + endpoint + " is assigned more than once" );
+    }
+
+    aReferencedComponents.emplace_back( reference );
+    ++aPinConnections;
+    return { { "component", reference }, { "unit", unit }, { "number", number } };
 }
 
 
@@ -2112,8 +2293,11 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(uri ${KIPRJMOD}/PATH))" } },
                   { { "form",
                       "(component REF (symbol LIB:ID) (value VALUE) (footprint LIB:ID) "
-                      "(property NAME VALUE) (dnp true|false))" } },
-                  { { "form", "(net NAME (pin REF NUMBER) (pin REF NUMBER) ...)" } },
+                      "(property NAME VALUE) (dnp true|false) "
+                      "(unit NUMBER (sheet ID) (at X Y) "
+                      "(rotation 0deg|90deg|180deg|270deg) (mirror none|x|y|xy)) ...)" } },
+                  { { "form", "(net NAME (pin REF UNIT NUMBER) (pin REF UNIT NUMBER) ...)" } },
+                  { { "form", "(no_connect REF UNIT NUMBER)" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
                       "(title TEXT) [(at X Y) (size W H) "
@@ -2187,11 +2371,20 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
           "  (version 1)\n"
           "  (project sensor (title \"Sensor Board\"))\n"
           "  (units mm)\n"
+          "  (library symbol Device (table project) "
+          "(uri \"${KIPRJMOD}/Device.kicad_sym\"))\n"
+          "  (library footprint Resistor_SMD (table project) "
+          "(uri \"${KIPRJMOD}/Resistor_SMD.pretty\"))\n"
+          "  (library footprint LED_SMD (table project) "
+          "(uri \"${KIPRJMOD}/LED_SMD.pretty\"))\n"
+          "  (sheet root (parent none) (file \"sensor.kicad_sch\") (title \"Main\"))\n"
           "  (component R1 (symbol \"Device:R\") (value \"10k\")\n"
-          "    (footprint \"Resistor_SMD:R_0603_1608Metric\"))\n"
+          "    (footprint \"Resistor_SMD:R_0603_1608Metric\")\n"
+          "    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))\n"
           "  (component LED1 (symbol \"Device:LED\") (value \"GREEN\")\n"
-          "    (footprint \"LED_SMD:LED_0603_1608Metric\"))\n"
-          "  (net LED_A (pin R1 1) (pin LED1 1))\n"
+          "    (footprint \"LED_SMD:LED_0603_1608Metric\")\n"
+          "    (unit 1 (sheet root) (at 50mm 40mm) (rotation 0deg) (mirror none)))\n"
+          "  (net LED_A (pin R1 1 1) (pin LED1 1 1))\n"
           "  (check erc)\n"
           "  (check drc)\n"
           "  (output gerbers))" }
@@ -2265,7 +2458,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "libraries", JSON::array() },
         { "schematic",
           { { "sheets", JSON::array() }, { "components", JSON::array() },
-            { "nets", JSON::array() } } },
+            { "nets", JSON::array() }, { "noConnects", JSON::array() } } },
         { "pcb", JSON::array() },
         { "rules", nullptr },
         { "netClasses", nullptr },
@@ -2385,6 +2578,12 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             }
 
             result.ir["schematic"]["nets"].emplace_back( std::move( net ) );
+        }
+        else if( form == "no_connect" )
+        {
+            result.ir["schematic"]["noConnects"].emplace_back(
+                    compileNoConnect( *document, formNode, result, referencedComponents,
+                                      connectedPins, pinConnections ) );
         }
         else if( form == "sheet" )
         {
@@ -2723,6 +2922,94 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         }
     }
 
+    std::map<std::string, std::set<int64_t>> componentUnits;
+
+    if( sheets.empty() && !result.ir["schematic"]["noConnects"].empty() )
+    {
+        diagnostic( result, "error", "no_connect_without_hierarchy",
+                    "no_connect requires an executable schematic hierarchy" );
+    }
+
+    for( const JSON& component : result.ir["schematic"]["components"] )
+    {
+        if( !component.is_object() || !component.contains( "reference" )
+            || !component["reference"].is_string() || !component.contains( "units" )
+            || !component["units"].is_array() )
+        {
+            continue;
+        }
+
+        const std::string reference = component["reference"].get<std::string>();
+        std::set<int64_t>& units = componentUnits[reference];
+
+        if( !sheets.empty() && component["units"].empty() )
+        {
+            diagnostic( result, "error", "missing_component_units",
+                        "component " + reference
+                                + " requires at least one explicit schematic unit placement" );
+        }
+        else if( sheets.empty() && !component["units"].empty() )
+        {
+            diagnostic( result, "error", "component_unit_without_hierarchy",
+                        "component " + reference
+                                + " cannot place schematic units without a declared root sheet" );
+        }
+
+        for( const JSON& unit : component["units"] )
+        {
+            if( !unit.is_object() || !unit.contains( "number" )
+                || !unit["number"].is_number_integer() || !unit.contains( "sheet" )
+                || !unit["sheet"].is_string() )
+            {
+                continue;
+            }
+
+            const int64_t number = unit["number"].get<int64_t>();
+            const std::string sheet = unit["sheet"].get<std::string>();
+            units.emplace( number );
+
+            if( !sheetsById.contains( sheet ) )
+            {
+                diagnostic( result, "error", "unresolved_component_sheet",
+                            "component " + reference + " unit " + std::to_string( number )
+                                    + " references undeclared sheet " + sheet );
+            }
+        }
+    }
+
+    const auto validateEndpointUnit = [&]( const JSON& aEndpoint )
+    {
+        if( sheets.empty() || !aEndpoint.is_object() || !aEndpoint.contains( "component" )
+            || !aEndpoint["component"].is_string() || !aEndpoint.contains( "unit" )
+            || !aEndpoint["unit"].is_number_integer() )
+        {
+            return;
+        }
+
+        const std::string reference = aEndpoint["component"].get<std::string>();
+        const int64_t unit = aEndpoint["unit"].get<int64_t>();
+        auto component = componentUnits.find( reference );
+
+        if( component != componentUnits.end() && !component->second.contains( unit ) )
+        {
+            diagnostic( result, "error", "unresolved_component_unit",
+                        "schematic endpoint " + reference + ":" + std::to_string( unit )
+                                + " has no matching unit placement" );
+        }
+    };
+
+    for( const JSON& net : result.ir["schematic"]["nets"] )
+    {
+        if( net.is_object() && net.contains( "pins" ) && net["pins"].is_array() )
+        {
+            for( const JSON& pin : net["pins"] )
+                validateEndpointUnit( pin );
+        }
+    }
+
+    for( const JSON& noConnect : result.ir["schematic"]["noConnects"] )
+        validateEndpointUnit( noConnect );
+
     if( result.ir["libraries"].size() > MAX_LIBRARIES )
     {
         diagnostic( result, "error", "too_many_libraries",
@@ -2801,7 +3088,9 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( !result.ir["libraries"].empty() )
         passes.emplace_back( "libraries" );
 
-    if( !result.ir["schematic"]["components"].empty() || !result.ir["schematic"]["nets"].empty() )
+    if( !result.ir["schematic"]["components"].empty()
+        || !result.ir["schematic"]["nets"].empty()
+        || !result.ir["schematic"]["noConnects"].empty() )
         passes.emplace_back( "schematic" );
 
     if( !result.ir["pcb"].empty() )
@@ -2829,6 +3118,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "sheets", result.ir["schematic"]["sheets"].size() },
             { "components", result.ir["schematic"]["components"].size() },
             { "nets", result.ir["schematic"]["nets"].size() },
+            { "noConnects", result.ir["schematic"]["noConnects"].size() },
             { "pinConnections", pinConnections },
             { "boardStatements", result.ir["pcb"].size() },
             { "rules", result.ir["rules"].is_object() ? 1 : 0 },
