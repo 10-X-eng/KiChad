@@ -936,6 +936,85 @@ bool parseSchematicStroke( const DOCUMENT& aDocument, size_t aNode, JSON& aStrok
 }
 
 
+JSON schematicNativeColor( const JSON& aColor )
+{
+    return {
+        { "r", std::lround( aColor["r"].get<double>() * 255.0 ) },
+        { "g", std::lround( aColor["g"].get<double>() * 255.0 ) },
+        { "b", std::lround( aColor["b"].get<double>() * 255.0 ) },
+        { "a", std::lround( aColor["a"].get<double>() * 255.0 ) }
+    };
+}
+
+
+bool parseCompleteSchematicStroke( const DOCUMENT& aDocument, size_t aNode,
+                                   bool aAllowHidden, JSON& aStroke )
+{
+    const DOCUMENT::NODE& stroke = aDocument.Nodes()[aNode];
+    std::string widthText;
+    std::string lineStyle;
+    std::string colorText;
+    int64_t width = 0;
+    JSON color;
+    static const std::set<std::string> STYLES = {
+        "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+    };
+
+    if( stroke.children.size() != 4
+        || !scalarText( aDocument, stroke.children[1], widthText )
+        || !scalarText( aDocument, stroke.children[2], lineStyle )
+        || !scalarText( aDocument, stroke.children[3], colorText )
+        || !STYLES.contains( lineStyle )
+        || ( widthText == "none" && !aAllowHidden )
+        || ( widthText != "none" && widthText != "default"
+             && ( !parseDistance( widthText, width ) || width < 10'000
+                  || width > 10'000'000 ) )
+        || ( colorText != "default" && !parseHexColor( colorText, color ) ) )
+    {
+        return false;
+    }
+
+    JSON nativeColor = colorText == "default" ? JSON( nullptr )
+                                                : schematicNativeColor( color );
+    aStroke = {
+        { "widthNm", widthText == "none" ? -1 : widthText == "default" ? 0 : width },
+        { "lineStyle", lineStyle },
+        { "color", std::move( nativeColor ) }
+    };
+    return true;
+}
+
+
+bool parseCompleteSchematicFill( const DOCUMENT& aDocument, size_t aNode, JSON& aFill )
+{
+    const DOCUMENT::NODE& fill = aDocument.Nodes()[aNode];
+    std::string fillType;
+    std::string colorText;
+    JSON color;
+    static const std::set<std::string> TYPES = {
+        "none", "outline", "background", "color", "hatch", "reverse_hatch",
+        "cross_hatch"
+    };
+
+    if( fill.children.size() != 3
+        || !scalarText( aDocument, fill.children[1], fillType )
+        || !scalarText( aDocument, fill.children[2], colorText )
+        || !TYPES.contains( fillType )
+        || ( ( fillType == "color" || fillType == "hatch"
+               || fillType == "reverse_hatch" || fillType == "cross_hatch" )
+                     ? !parseHexColor( colorText, color )
+                     : colorText != "default" ) )
+    {
+        return false;
+    }
+
+    JSON nativeColor = colorText == "default" ? JSON( nullptr )
+                                                : schematicNativeColor( color );
+    aFill = { { "type", fillType }, { "color", std::move( nativeColor ) } };
+    return true;
+}
+
+
 using SCHEMATIC_POINT = std::pair<int64_t, int64_t>;
 using WIDE_SCHEMATIC_INTEGER = boost::multiprecision::int128_t;
 
@@ -2736,6 +2815,331 @@ JSON compileSchematicTextBox( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileSchematicGraphic( const DOCUMENT& aDocument, size_t aNode,
+                              const std::string& aKind,
+                              KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_" + aKind,
+                    aKind + " requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON graphic = { { "kind", aKind }, { "id", id } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_graphic_field",
+                        aKind + " field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet )
+                || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_graphic_sheet",
+                            aKind + " sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                graphic["sheet"] = sheet;
+            }
+
+            continue;
+        }
+
+        if( head == "stroke" )
+        {
+            JSON stroke;
+
+            if( !parseCompleteSchematicStroke( aDocument, child, true, stroke ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_graphic_stroke",
+                            aKind + " stroke requires none, default, or 0.01 mm through 10 mm; a native line style; and default or #RRGGBB[AA] color" );
+            }
+            else
+            {
+                graphic["stroke"] = std::move( stroke );
+            }
+
+            continue;
+        }
+
+        if( head == "fill" )
+        {
+            JSON fill;
+
+            if( !parseCompleteSchematicFill( aDocument, child, fill ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_graphic_fill",
+                            aKind + " fill requires none|outline|background with default, or color|hatch|reverse_hatch|cross_hatch with #RRGGBB[AA]" );
+            }
+            else
+            {
+                graphic["fill"] = std::move( fill );
+            }
+
+            continue;
+        }
+
+        if( head == "points" && ( aKind == "polyline" || aKind == "bezier" ) )
+        {
+            const DOCUMENT::NODE& pointsNode = aDocument.Nodes()[child];
+            const size_t minimum = aKind == "polyline" ? 2 : 4;
+            const size_t maximum = aKind == "polyline" ? 1024 : 4;
+            JSON points = JSON::array();
+            std::vector<SCHEMATIC_POINT> geometry;
+            bool valid = pointsNode.children.size() >= minimum + 1
+                         && pointsNode.children.size() <= maximum + 1;
+
+            for( size_t pointIndex = 1; pointIndex < pointsNode.children.size(); ++pointIndex )
+            {
+                JSON point;
+                const size_t pointNode = pointsNode.children[pointIndex];
+
+                if( aDocument.ListHead( pointNode ) != "point"
+                    || !parseSchematicPoint( aDocument, pointNode, point ) )
+                {
+                    valid = false;
+                    continue;
+                }
+
+                const SCHEMATIC_POINT coordinate = {
+                    point["xNm"].get<int64_t>(), point["yNm"].get<int64_t>()
+                };
+
+                if( !geometry.empty() && geometry.back() == coordinate )
+                    valid = false;
+
+                geometry.emplace_back( coordinate );
+                points.emplace_back( std::move( point ) );
+            }
+
+            const bool nonDegenerateBezier =
+                    aKind != "bezier"
+                    || ( geometry.size() == 4
+                         && std::any_of(
+                                 geometry.begin() + 1, geometry.end(),
+                                 [&]( const SCHEMATIC_POINT& aPoint )
+                                 {
+                                     return aPoint != geometry.front();
+                                 } ) );
+
+            if( !valid || !nonDegenerateBezier )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_graphic_points",
+                            aKind == "polyline"
+                                    ? "polyline points requires 2 through 1024 bounded points without zero-length consecutive segments"
+                                    : "bezier points requires exactly four bounded cubic control points that are not all identical" );
+            }
+            else
+            {
+                graphic["points"] = std::move( points );
+            }
+
+            continue;
+        }
+
+        if( ( head == "from" || head == "to" ) && aKind == "rectangle" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rectangle_" + head,
+                            "rectangle " + head + " requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                graphic[head == "from" ? "start" : "end"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( ( head == "start" || head == "mid" || head == "end" ) && aKind == "arc" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_arc_" + head,
+                            "arc " + head + " requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                graphic[head] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "center" && aKind == "circle" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_circle_center",
+                            "circle center requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                graphic["center"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "radius" && ( aKind == "circle" || aKind == "rectangle" ) )
+        {
+            std::string radiusText;
+            int64_t radius = 0;
+            const int64_t minimum = aKind == "circle" ? 100'000 : 0;
+
+            if( !parseSingleValueForm( aDocument, child, radiusText )
+                || !parseDistance( radiusText, radius ) || radius < minimum
+                || radius > 1'000'000'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_" + aKind + "_radius",
+                            aKind + " radius is outside its native coordinate range" );
+            }
+            else
+            {
+                graphic[aKind == "circle" ? "radiusNm" : "cornerRadiusNm"] = radius;
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_graphic_field",
+                    aKind + " contains a field that is not valid for its geometry" );
+    }
+
+    for( const char* required : { "sheet", "stroke", "fill" } )
+    {
+        if( !graphic.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_graphic_field",
+                        aKind + " " + id + " is missing " + required );
+        }
+    }
+
+    if( aKind == "polyline" || aKind == "bezier" )
+    {
+        if( !graphic.contains( "points" ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_graphic_field",
+                        aKind + " " + id + " is missing points" );
+        }
+        else if( graphic.contains( "fill" ) && graphic["fill"]["type"] != "none"
+                 && aKind == "polyline" && graphic["points"].size() < 3 )
+        {
+            diagnostic( aResult, "error", "invalid_schematic_polyline_fill",
+                        "a filled polyline requires at least three points" );
+        }
+    }
+    else if( aKind == "rectangle" )
+    {
+        for( const char* required : { "start", "end", "cornerRadiusNm" } )
+        {
+            if( !graphic.contains( required ) )
+            {
+                diagnostic( aResult, "error", "missing_schematic_graphic_field",
+                            "rectangle " + id + " is missing " + required );
+            }
+        }
+
+        if( graphic.contains( "start" ) && graphic.contains( "end" )
+            && graphic.contains( "cornerRadiusNm" ) )
+        {
+            const int64_t width = graphic["end"]["xNm"].get<int64_t>()
+                                  - graphic["start"]["xNm"].get<int64_t>();
+            const int64_t height = graphic["end"]["yNm"].get<int64_t>()
+                                   - graphic["start"]["yNm"].get<int64_t>();
+            const int64_t radius = graphic["cornerRadiusNm"].get<int64_t>();
+
+            if( width <= 0 || height <= 0 || radius > std::min( width, height ) / 2 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rectangle_geometry",
+                            "rectangle requires normalized non-zero from/to corners and radius no greater than half its smaller dimension" );
+            }
+        }
+    }
+    else if( aKind == "circle" )
+    {
+        for( const char* required : { "center", "radiusNm" } )
+        {
+            if( !graphic.contains( required ) )
+            {
+                diagnostic( aResult, "error", "missing_schematic_graphic_field",
+                            "circle " + id + " is missing " + required );
+            }
+        }
+
+        if( graphic.contains( "center" ) && graphic.contains( "radiusNm" ) )
+        {
+            const int64_t x = graphic["center"]["xNm"].get<int64_t>();
+            const int64_t y = graphic["center"]["yNm"].get<int64_t>();
+            const int64_t radius = graphic["radiusNm"].get<int64_t>();
+
+            if( x < radius || y < radius || x + radius > 2'000'000'000
+                || y + radius > 2'000'000'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_circle_extent",
+                            "circle must remain within the 0 through 2 m schematic coordinate range" );
+            }
+        }
+    }
+    else if( aKind == "arc" )
+    {
+        for( const char* required : { "start", "mid", "end" } )
+        {
+            if( !graphic.contains( required ) )
+            {
+                diagnostic( aResult, "error", "missing_schematic_graphic_field",
+                            "arc " + id + " is missing " + required );
+            }
+        }
+
+        if( graphic.contains( "start" ) && graphic.contains( "mid" )
+            && graphic.contains( "end" ) )
+        {
+            const SCHEMATIC_POINT start = { graphic["start"]["xNm"].get<int64_t>(),
+                                            graphic["start"]["yNm"].get<int64_t>() };
+            const SCHEMATIC_POINT mid = { graphic["mid"]["xNm"].get<int64_t>(),
+                                          graphic["mid"]["yNm"].get<int64_t>() };
+            const SCHEMATIC_POINT end = { graphic["end"]["xNm"].get<int64_t>(),
+                                          graphic["end"]["yNm"].get<int64_t>() };
+
+            if( start == mid || mid == end || start == end
+                || schematicOrientation( start, mid, end ) == 0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_arc_geometry",
+                            "arc requires three distinct non-collinear start, mid, and end points" );
+            }
+        }
+    }
+
+    return graphic;
+}
+
+
 JSON compileSchematicBusAlias( const DOCUMENT& aDocument, size_t aNode,
                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -4454,6 +4858,14 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(color default|#RRGGBB[AA]) "
                       "(justify left|center|right top|center|bottom) (mirror BOOL) "
                       "(bold BOOL) (italic BOOL) (hyperlink none|TEXT))" } },
+                  { { "form",
+                      "(polyline ID (sheet ID) (points (point X Y) ...) STROKE FILL) | "
+                      "(rectangle ID (sheet ID) (from X Y) (to X Y) (radius R) STROKE FILL) | "
+                      "(circle ID (sheet ID) (center X Y) (radius R) STROKE FILL) | "
+                      "(arc ID (sheet ID) (start X Y) (mid X Y) (end X Y) STROKE FILL) | "
+                      "(bezier ID (sheet ID) (points (point X Y) x4) STROKE FILL); "
+                      "STROKE=(stroke none|default|WIDTH STYLE default|#RRGGBB[AA]); "
+                      "FILL=(fill TYPE default|#RRGGBB[AA])" } },
                   { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
@@ -4830,6 +5242,20 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "text_box" )
         {
             JSON drawing = compileSchematicTextBox( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "polyline" || form == "rectangle" || form == "circle"
+                 || form == "arc" || form == "bezier" )
+        {
+            JSON drawing = compileSchematicGraphic( *document, formNode, form, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )

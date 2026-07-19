@@ -113,7 +113,8 @@ nets to resolved pin coordinates, and checks their exact nodes in the exported n
 reconciles net-derived local/global labels, a name-owned bus alias, plus stable-ID wires, junctions,
 buses, diagonal bus entries, net-targeted directive flags, and polygonal schematic rule areas with
 border-attached directives, plus stable multiline free text and text boxes with complete geometry,
-border/fill, typography, and hyperlink state. It also applies and
+border/fill, typography, and hyperlink state, and all native schematic polyline, rounded-rectangle,
+circle, arc, and cubic-Bézier geometries. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

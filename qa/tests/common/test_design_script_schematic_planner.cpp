@@ -411,6 +411,61 @@ BOOST_AUTO_TEST_CASE( LowersCanonicalWiresBusesEntriesAndJunctionsToNativeItems 
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersEveryNativeSchematicGraphicGeometryWithStableIdentity )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_graphics)
+  (sheet root (parent none) (file "schematic_graphics.kicad_sch") (title "Graphics"))
+  (polyline signal-flow (sheet root)
+    (points (point 10mm 10mm) (point 20mm 15mm) (point 30mm 10mm))
+    (stroke 0.2mm dash #10203080) (fill none default))
+  (rectangle controller-boundary (sheet root)
+    (from 10mm 25mm) (to 35mm 40mm) (radius 2mm)
+    (stroke default solid default) (fill color #40506099))
+  (circle inspection-window (sheet root) (center 55mm 30mm) (radius 8mm)
+    (stroke none dot #708090cc) (fill hatch #10203080))
+  (arc current-path (sheet root)
+    (start 70mm 30mm) (mid 80mm 20mm) (end 90mm 30mm)
+    (stroke 0.3mm dash_dot default) (fill background default))
+  (bezier response-curve (sheet root)
+    (points (point 100mm 30mm) (point 110mm 20mm)
+      (point 120mm 40mm) (point 130mm 30mm))
+    (stroke 0.25mm dash_dot_dot #a0b0c0dd) (fill reverse_hatch #11223344))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT first =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT second =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( first.fullyLowered, first.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( first.operations.dump(), second.operations.dump() );
+    BOOST_CHECK_EQUAL( first.counts["drawings"].get<int>(), 5 );
+    const std::string native = first.operations[0]["files"][0]["newDocumentSource"];
+    BOOST_CHECK_NE( native.find( "(polyline\n" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(pts\n    (xy 10 10)\n    (xy 20 15)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(rectangle\n    (start 10 25)\n    (end 35 40)\n"
+                                 "    (radius 2)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(circle\n    (center 55 30)\n    (radius 8)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(width -0.000001)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(arc\n    (start 70 30)\n    (mid 80 20)\n"
+                                 "    (end 90 30)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(bezier\n" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(type reverse_hatch)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(color 160 176 192 0.86666667)" ),
+                    std::string::npos );
+
+    std::string parseError;
+    BOOST_CHECK_MESSAGE( KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( native, &parseError ),
+                         parseError );
+}
+
+
 BOOST_AUTO_TEST_CASE( ExportsGeneratedHierarchyForOptInNativeValidation )
 {
     wxString exportDirectory;

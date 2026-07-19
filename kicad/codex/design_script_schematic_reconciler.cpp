@@ -141,6 +141,9 @@ bool validManagedItem( const JSON& aItem )
                 || aItem["kind"] == "junction" || aItem["kind"] == "rule_area"
                 || aItem["kind"] == "netclass_flag" || aItem["kind"] == "text"
                 || aItem["kind"] == "text_box"
+                || aItem["kind"] == "polyline" || aItem["kind"] == "rectangle"
+                || aItem["kind"] == "circle" || aItem["kind"] == "arc"
+                || aItem["kind"] == "bezier"
                 || aItem["kind"] == "lib_symbol"
                 || aItem["kind"] == "bus_alias" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()

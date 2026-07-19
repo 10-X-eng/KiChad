@@ -799,6 +799,77 @@ std::string textBoxExpression( const JSON& aDrawing, const std::string& aUuid )
 }
 
 
+std::string schematicGraphicExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const std::string kind = aDrawing.at( "kind" ).get<std::string>();
+    const JSON& stroke = aDrawing.at( "stroke" );
+    const JSON& fill = aDrawing.at( "fill" );
+    std::ostringstream output;
+    output << '(' << kind << '\n';
+
+    const auto appendPoint = [&]( const std::string& aName, const JSON& aPoint )
+    {
+        output << "    (" << aName << ' '
+               << millimetres( aPoint.at( "xNm" ).get<int64_t>() ) << ' '
+               << millimetres( aPoint.at( "yNm" ).get<int64_t>() ) << ")\n";
+    };
+
+    if( kind == "polyline" || kind == "bezier" )
+    {
+        output << "    (pts\n";
+
+        for( const JSON& point : aDrawing.at( "points" ) )
+            appendPoint( "xy", point );
+
+        output << "    )\n";
+    }
+    else if( kind == "rectangle" )
+    {
+        appendPoint( "start", aDrawing.at( "start" ) );
+        appendPoint( "end", aDrawing.at( "end" ) );
+
+        if( aDrawing.at( "cornerRadiusNm" ).get<int64_t>() != 0 )
+        {
+            output << "    (radius "
+                   << millimetres( aDrawing.at( "cornerRadiusNm" ).get<int64_t>() )
+                   << ")\n";
+        }
+    }
+    else if( kind == "circle" )
+    {
+        appendPoint( "center", aDrawing.at( "center" ) );
+        output << "    (radius " << millimetres( aDrawing.at( "radiusNm" ).get<int64_t>() )
+               << ")\n";
+    }
+    else
+    {
+        appendPoint( "start", aDrawing.at( "start" ) );
+        appendPoint( "mid", aDrawing.at( "mid" ) );
+        appendPoint( "end", aDrawing.at( "end" ) );
+    }
+
+    output << "    (stroke\n"
+           << "      (width " << millimetres( stroke.at( "widthNm" ).get<int64_t>() )
+           << ")\n"
+           << "      (type " << stroke.at( "lineStyle" ).get<std::string>() << ")\n";
+
+    if( !stroke.at( "color" ).is_null() )
+        appendSchematicColor( output, stroke.at( "color" ), "      " );
+
+    output << "    )\n"
+           << "    (fill\n"
+           << "      (type " << fill.at( "type" ).get<std::string>() << ")\n";
+
+    if( !fill.at( "color" ).is_null() )
+        appendSchematicColor( output, fill.at( "color" ), "      " );
+
+    output << "    )\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
 std::string directivePropertyExpression( const JSON& aProperty )
 {
     const JSON& position = aProperty.at( "position" );
@@ -1011,6 +1082,14 @@ bool validSchematicTextEffectsShape( const JSON& aDrawing )
 }
 
 
+bool validSchematicPointShape( const JSON& aPoint )
+{
+    return aPoint.is_object() && aPoint.contains( "xNm" )
+           && aPoint["xNm"].is_number_integer() && aPoint.contains( "yNm" )
+           && aPoint["yNm"].is_number_integer();
+}
+
+
 bool validDrawingShape( const JSON& aDrawing )
 {
     if( !aDrawing.is_object() || !aDrawing.contains( "kind" )
@@ -1162,6 +1241,79 @@ bool validDrawingShape( const JSON& aDrawing )
         }
 
         return true;
+    }
+
+    if( kind == "polyline" || kind == "rectangle" || kind == "circle" || kind == "arc"
+        || kind == "bezier" )
+    {
+        static const std::set<std::string> LINE_STYLES = {
+            "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+        };
+        static const std::set<std::string> FILL_TYPES = {
+            "none", "outline", "background", "color", "hatch", "reverse_hatch",
+            "cross_hatch"
+        };
+
+        if( !aDrawing.contains( "stroke" ) || !aDrawing["stroke"].is_object()
+            || !aDrawing["stroke"].contains( "widthNm" )
+            || !aDrawing["stroke"]["widthNm"].is_number_integer()
+            || !aDrawing["stroke"].contains( "lineStyle" )
+            || !aDrawing["stroke"]["lineStyle"].is_string()
+            || !LINE_STYLES.contains( aDrawing["stroke"]["lineStyle"].get<std::string>() )
+            || !aDrawing["stroke"].contains( "color" )
+            || !validSchematicColorShape( aDrawing["stroke"]["color"] )
+            || !aDrawing.contains( "fill" ) || !aDrawing["fill"].is_object()
+            || !aDrawing["fill"].contains( "type" )
+            || !aDrawing["fill"]["type"].is_string()
+            || !FILL_TYPES.contains( aDrawing["fill"]["type"].get<std::string>() )
+            || !aDrawing["fill"].contains( "color" )
+            || !validSchematicColorShape( aDrawing["fill"]["color"] ) )
+        {
+            return false;
+        }
+
+        if( kind == "polyline" || kind == "bezier" )
+        {
+            if( !aDrawing.contains( "points" ) || !aDrawing["points"].is_array()
+                || ( kind == "polyline"
+                             ? aDrawing["points"].size() < 2
+                                       || aDrawing["points"].size() > 1024
+                             : aDrawing["points"].size() != 4 ) )
+            {
+                return false;
+            }
+
+            return std::all_of( aDrawing["points"].begin(), aDrawing["points"].end(),
+                                []( const JSON& aPoint )
+                                {
+                                    return validSchematicPointShape( aPoint );
+                                } );
+        }
+
+        if( kind == "rectangle" )
+        {
+            return aDrawing.contains( "start" )
+                   && validSchematicPointShape( aDrawing["start"] )
+                   && aDrawing.contains( "end" )
+                   && validSchematicPointShape( aDrawing["end"] )
+                   && aDrawing.contains( "cornerRadiusNm" )
+                   && aDrawing["cornerRadiusNm"].is_number_integer();
+        }
+
+        if( kind == "circle" )
+        {
+            return aDrawing.contains( "center" )
+                   && validSchematicPointShape( aDrawing["center"] )
+                   && aDrawing.contains( "radiusNm" )
+                   && aDrawing["radiusNm"].is_number_integer();
+        }
+
+        return aDrawing.contains( "start" )
+               && validSchematicPointShape( aDrawing["start"] )
+               && aDrawing.contains( "mid" )
+               && validSchematicPointShape( aDrawing["mid"] )
+               && aDrawing.contains( "end" )
+               && validSchematicPointShape( aDrawing["end"] );
     }
 
     if( kind == "rule_area" )
@@ -1782,6 +1934,10 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                            ? textExpression( drawing, uuid )
                                    : kind == "text_box"
                                            ? textBoxExpression( drawing, uuid )
+                                   : kind == "polyline" || kind == "rectangle"
+                                                     || kind == "circle" || kind == "arc"
+                                                     || kind == "bezier"
+                                           ? schematicGraphicExpression( drawing, uuid )
                                    : kind == "rule_area"
                                            ? ruleAreaExpression( drawing, uuid )
                                            : schematicLineExpression( drawing, uuid );

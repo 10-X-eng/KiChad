@@ -220,6 +220,10 @@ sheet reference. Text boxes add independently bounded container size, four margi
 hidden/visible border state, every native line/fill mode, and the same complete text-effects block.
 Both lower to stable-UUID KiCad expressions with simulation inclusion, color, mirroring, and
 hyperlink state intact; no presentation field is silently dropped.
+Native schematic polylines, rounded rectangles, circles, three-point arcs, and cubic Bézier curves
+use separate canonical forms with shared complete stroke/fill IR. Geometry is normalized and
+validated before planning, then lowered to same-named current KiCad 10 objects under stable UUID
+ownership.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

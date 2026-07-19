@@ -611,8 +611,48 @@ policy, or a physical width; line style and border color remain explicit in ever
 all seven native modes: `none`, `outline`, and `background` pair with `default`, while `color`,
 `hatch`, `reverse_hatch`, and `cross_hatch` require RGBA. The compiler bounds the box extent before
 planning, and the stable UUID participates in the same guarded reconciliation and rollback path as
-free text. The broader `schematic.text_graphics` facet remains `partial` until shapes/curves,
-images, tables, and table cells are represented.
+free text.
+
+Schematic drawing geometry uses the native object name as its one canonical KDS representation:
+
+```scheme
+(polyline signal-flow (sheet analog)
+  (points (point 20mm 90mm) (point 30mm 85mm) (point 40mm 90mm))
+  (stroke 0.2mm dash #10203080)
+  (fill none default))
+
+(rectangle controller-boundary (sheet analog)
+  (from 50mm 82mm) (to 75mm 97mm) (radius 2mm)
+  (stroke default solid default)
+  (fill color #40506099))
+
+(circle inspection-window (sheet analog)
+  (center 90mm 90mm) (radius 8mm)
+  (stroke 0.2mm dot #708090cc)
+  (fill hatch #10203080))
+
+(arc current-path (sheet analog)
+  (start 105mm 90mm) (mid 115mm 80mm) (end 125mm 90mm)
+  (stroke 0.3mm dash_dot default)
+  (fill background default))
+
+(bezier response-curve (sheet analog)
+  (points (point 135mm 90mm) (point 145mm 80mm)
+    (point 155mm 100mm) (point 165mm 90mm))
+  (stroke 0.25mm dash_dot_dot #a0b0c0dd)
+  (fill reverse_hatch #11223344))
+```
+
+Polyline paths contain 2 through 1024 bounded points with no zero-length consecutive segment.
+Rectangles use normalized `from` and `to` corners and an explicit zero-or-positive corner radius
+that cannot exceed half the smaller dimension. Circles must remain entirely in the schematic
+coordinate range. Arcs use KiCad's exact start/mid/end geometry and reject repeated or collinear
+points. A cubic Bézier has exactly four ordered points: start, control 1, control 2, and end. Every
+shape carries the same explicit hidden/default/physical stroke, line style, border color, fill mode,
+fill color, sheet reference, and stable identity. They lower to KiCad 10's current native tokens and
+pass the same reconcile, idempotence, removal, rollback, and native-loader gates. The broader
+`schematic.text_graphics` facet remains `partial` until images, tables, and table cells are
+represented.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are
