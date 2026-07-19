@@ -506,8 +506,9 @@ kiapi::common::commands::NetClassSettingsResponse encodeNetClassSettings( NET_SE
 } // namespace
 
 
-API_HANDLER_COMMON::API_HANDLER_COMMON() :
-        API_HANDLER()
+API_HANDLER_COMMON::API_HANDLER_COMMON( std::function<void()> aOnNetClassSettingsChanged ) :
+        API_HANDLER(),
+        m_onNetClassSettingsChanged( std::move( aOnNetClassSettingsChanged ) )
 {
     registerHandler<commands::GetVersion, GetVersionResponse>( &API_HANDLER_COMMON::handleGetVersion );
     registerHandler<GetKiCadBinaryPath, PathResponse>(
@@ -593,6 +594,10 @@ HANDLER_RESULT<Empty> API_HANDLER_COMMON::handleSetNetClasses(
 {
     std::shared_ptr<NET_SETTINGS>& netSettings =
             Pgm().GetSettingsManager().Prj().GetProjectFile().m_NetSettings;
+    // Open editors keep raw NETCLASS pointers on their NETINFO_ITEMs.  Retain the prior shared
+    // objects until the synchronous editor callback has repointed every live net.
+    const std::shared_ptr<NETCLASS> previousDefault = netSettings->GetDefaultNetclass();
+    const auto previousNetClasses = netSettings->GetNetclasses();
 
     if( aCtx.Request.merge_mode() == MapMergeMode::MMM_REPLACE )
         netSettings->ClearNetclasses();
@@ -619,6 +624,9 @@ HANDLER_RESULT<Empty> API_HANDLER_COMMON::handleSetNetClasses(
     }
 
     netSettings->SetNetclasses( netClasses );
+
+    if( m_onNetClassSettingsChanged )
+        m_onNetClassSettingsChanged();
 
     return Empty();
 }
@@ -669,12 +677,19 @@ HANDLER_RESULT<NetClassSettingsResponse> API_HANDLER_COMMON::handleUpdateNetClas
     }
 
     NET_SETTINGS& settings = *project.GetProjectFile().m_NetSettings;
+    // BOARD net records cache raw pointers into these shared objects.  Keep the complete previous
+    // table alive until all editor caches have been synchronously refreshed by the callback.
+    const std::shared_ptr<NETCLASS> previousDefault = settings.GetDefaultNetclass();
+    const auto previousNetClasses = settings.GetNetclasses();
     settings.SetDefaultNetclass( std::move( decoded.defaultClass ) );
     settings.SetNetclasses( decoded.classes );
     settings.ClearNetclassPatternAssignments();
 
     for( const auto& [pattern, netClass] : decoded.assignments )
         settings.SetNetclassPatternAssignment( pattern, netClass );
+
+    if( m_onNetClassSettingsChanged )
+        m_onNetClassSettingsChanged();
 
     Pgm().GetSettingsManager().SaveProject();
     return encodeNetClassSettings( settings );

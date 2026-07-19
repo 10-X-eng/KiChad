@@ -2940,12 +2940,15 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
     footprint->ResolveComponentClassNames( board,
                                            footprint->GetTransientComponentClassNames() );
     footprint->ClearTransientComponentClassNames();
+    std::string requestedId;
 
     if( aCtx.Request.has_item() )
     {
         board::types::FootprintInstance requested;
 
-        if( !aCtx.Request.item().UnpackTo( &requested ) || !requested.id().value().empty()
+        if( !aCtx.Request.item().UnpackTo( &requested )
+            || ( !requested.id().value().empty()
+                 && !KIID::SniffTest( wxString::FromUTF8( requested.id().value() ) ) )
             || !requested.has_definition() || !requested.definition().has_id()
             || requested.definition().id().library_nickname().empty()
             || requested.definition().id().entry_name().empty()
@@ -3029,6 +3032,7 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
         }
 
         footprint->SetFPID( libraryId );
+        requestedId = requested.id().value();
         footprint->SetReference(
                 wxString::FromUTF8( requested.reference_field().text().text().text() ) );
         footprint->SetValue(
@@ -3058,10 +3062,12 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
         }
     }
 
-    // A library footprint UUID identifies the definition, not an instance on this board.  Give
-    // every parsed instance a fresh root UUID; handleCreateUpdateItemsInternal() also refreshes
-    // every child UUID before adding the item to the active API commit.
-    const_cast<KIID&>( footprint->m_Uuid ) = KIID();
+    // A library footprint UUID identifies the definition, not an instance on this board.  Use an
+    // explicitly requested instance UUID when supplied (the create path rejects collisions), or a
+    // fresh UUID otherwise.  handleCreateUpdateItemsInternal() also refreshes every child UUID.
+    const_cast<KIID&>( footprint->m_Uuid ) = requestedId.empty()
+                                                   ? KIID()
+                                                   : KIID( requestedId );
 
     google::protobuf::RepeatedPtrField<google::protobuf::Any> items;
     footprint->Serialize( *items.Add() );

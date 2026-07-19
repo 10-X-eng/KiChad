@@ -370,9 +370,51 @@ BOOST_FIXTURE_TEST_CASE( CreatesMissingFootprintFromExecutableSchematicInstance,
     BOOST_CHECK_EQUAL( created.actions[0]["action"].get<std::string>(),
                        "create_footprint" );
     BOOST_CHECK_EQUAL( created.actions[0]["component"].get<std::string>(), "R1" );
+    const std::string footprintId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                    "reconcile_board", "footprint", "R1" );
+    BOOST_CHECK_EQUAL( created.actions[0]["itemId"].get<std::string>(), footprintId );
     BOOST_CHECK_EQUAL( created.actions[0]["instance"]["padNets"]["2"]
                                .get<std::string>(),
                        "GND" );
+    BOOST_REQUIRE_EQUAL( created.nextState["managedPcbItems"].size(), 1 );
+    BOOST_CHECK_EQUAL( created.nextState["managedPcbItems"][0]["itemType"]
+                               .get<std::string>(),
+                       "footprint" );
+    BOOST_CHECK_EQUAL( created.nextState["managedPcbItems"][0]["itemId"]
+                               .get<std::string>(),
+                       footprintId );
+
+    JSON live = JSON::array( {
+            { { "itemId", footprintId }, { "itemType", "footprint" },
+              { "reference", "R1" }, { "schematicLinked", true } }
+    } );
+    RECONCILER::RESULT repeated =
+            RECONCILER::Reconcile( placement, created.nextState, live, Context() );
+    BOOST_REQUIRE_MESSAGE( repeated.ok, repeated.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( repeated.counts["footprintCreate"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( repeated.counts["placement"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( repeated.actions[0]["action"].get<std::string>(), "update" );
+    BOOST_CHECK_EQUAL( repeated.nextState.dump(), created.nextState.dump() );
+
+    RECONCILER::RESULT removed =
+            RECONCILER::Reconcile( JSON::array(), created.nextState,
+                                   JSON::array( { { { "itemId", footprintId },
+                                                    { "itemType", "footprint" } } } ),
+                                   Context() );
+    BOOST_REQUIRE_MESSAGE( removed.ok, removed.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( removed.actions.size(), 1 );
+    BOOST_CHECK_EQUAL( removed.actions[0]["action"].get<std::string>(), "delete" );
+    BOOST_CHECK_EQUAL( removed.actions[0]["itemId"].get<std::string>(), footprintId );
+    BOOST_CHECK_EQUAL( removed.counts["delete"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( removed.counts["footprintDelete"].get<int>(), 1 );
+    BOOST_CHECK( removed.nextState["managedPcbItems"].empty() );
+
+    RECONCILER::RESULT collision =
+            RECONCILER::Reconcile( placement, nullptr, live, Context() );
+    BOOST_CHECK( !collision.ok );
+    BOOST_CHECK_NE( collision.diagnostics.dump().find( "unmanaged_uuid_collision" ),
+                    std::string::npos );
 
     placement[0]["instance"]["symbolPath"][0] = "not-a-uuid";
     RECONCILER::RESULT malformed =

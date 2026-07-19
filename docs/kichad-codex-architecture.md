@@ -86,8 +86,11 @@ text and all five native dimension styles, then reapplies each distinct oneof fi
 reference-resolved placement through a narrow native footprint transform: the parent and pad UUIDs,
 schematic symbol path, and child geometry survive a front-to-back flip. It also creates an absent
 schematic-linked footprint from a confined project-local library, assigns its native pad net, and
-proves duplicate-free reapply. Its cleanup targets only the process and directory it created. The
-fixture also reconciles an existing root schematic and a new
+records its deterministic root UUID as KDS-owned state. The proof covers duplicate-free reapply,
+exact removal when its placement disappears, and recreation with the same UUID. The fixture's
+board, schematic, symbol library, and footprint library use the exact current KiCad 10.0.4 native
+format versions; the test refuses to launch with an older serialization. Its cleanup targets only
+the process and directory it created. The fixture also reconciles an existing root schematic and a new
 child screen, preserves the root screen UUID and unmanaged title-block data, proves byte-idempotent
 reapply, places a real footprintless power symbol through the same canonical component path while
 preserving native artifact-inclusion flags, injects native validation failure and verifies exact

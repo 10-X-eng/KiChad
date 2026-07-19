@@ -1764,6 +1764,8 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
         return "text";
     if( aItem.Is<Dimension>() )
         return "dimension";
+    if( aItem.Is<FootprintInstance>() )
+        return "footprint";
     if( aItem.Is<Zone>() )
     {
         Zone zone;
@@ -2282,6 +2284,7 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
 
     const size_t separator = libraryId.find( ':' );
     kiapi::board::types::FootprintInstance requested;
+    requested.mutable_id()->set_value( aAction.at( "itemId" ).get<std::string>() );
     requested.mutable_definition()->mutable_id()->set_library_nickname(
             libraryId.substr( 0, separator ) );
     requested.mutable_definition()->mutable_id()->set_entry_name(
@@ -2348,7 +2351,7 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
     kiapi::board::types::FootprintInstance footprint;
 
     if( !created.created_items( 0 ).item().UnpackTo( &footprint )
-        || !KIID::SniffTest( wxString::FromUTF8( footprint.id().value() ) )
+        || footprint.id().value() != requested.id().value()
         || footprint.reference_field().text().text().text()
                    != aAction.at( "component" ).get<std::string>()
         || footprint.definition().id().library_nickname()
@@ -3428,6 +3431,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         for( const JSON& plannedOperation : managedOperations )
             relevantIds.emplace( plannedOperation["itemId"].get<std::string>() );
+
+        for( const std::string& reference : placementReferences )
+        {
+            relevantIds.emplace( KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                    projectName, "footprint", reference ) );
+        }
 
         if( !previousState.is_null() )
         {

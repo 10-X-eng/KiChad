@@ -446,7 +446,8 @@ message ParseAndCreateItemsFromString
   string contents = 2;
 
   // Optional editor-specific instance metadata applied before the parsed item is inserted.  The
-  // PCB editor accepts a FootprintInstance containing instance fields plus minimal Pad entries
-  // (number and net) so parsing, schematic linking, and placement remain one atomic creation.
+  // PCB editor accepts a FootprintInstance containing an optional collision-checked instance UUID,
+  // instance fields, and minimal Pad entries (number and net) so parsing, schematic linking, and
+  // placement remain one atomic creation.
   google.protobuf.Any item = 3;
 }

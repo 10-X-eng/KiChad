@@ -21,6 +21,8 @@
 #ifndef KICAD_API_HANDLER_COMMON_H
 #define KICAD_API_HANDLER_COMMON_H
 
+#include <functional>
+
 #include <google/protobuf/empty.pb.h>
 
 #include <api/api_handler.h>
@@ -33,11 +35,15 @@ using google::protobuf::Empty;
 class API_HANDLER_COMMON : public API_HANDLER
 {
 public:
-    API_HANDLER_COMMON();
+    // Editors that cache project settings must refresh them synchronously in this callback.  The
+    // handler retains replaced NETCLASS objects until the callback returns.
+    explicit API_HANDLER_COMMON( std::function<void()> aOnNetClassSettingsChanged = {} );
 
     ~API_HANDLER_COMMON() override {}
 
 private:
+    std::function<void()> m_onNetClassSettingsChanged;
+
     HANDLER_RESULT<commands::GetVersionResponse> handleGetVersion(
         const HANDLER_CONTEXT<commands::GetVersion>& aCtx );
 

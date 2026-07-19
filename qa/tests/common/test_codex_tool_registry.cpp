@@ -1739,6 +1739,25 @@ BOOST_AUTO_TEST_CASE( AppliesKdsPlacementAsNarrowSchematicFootprintUpdate )
                         response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
                     }
                 }
+                else if( request.message().Is<kiapi::common::commands::GetItemsById>() )
+                {
+                    kiapi::common::commands::GetItemsById get;
+                    kiapi::common::commands::GetItemsResponse items;
+
+                    if( request.message().UnpackTo( &get ) && get.items_size() == 1 )
+                    {
+                        // R1 is an existing user-owned footprint with a non-KDS UUID.  The exact
+                        // deterministic ownership probe must therefore return no item before the
+                        // reference inventory below resolves the user footprint.
+                        items.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( items );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
                 else if( request.message().Is<kiapi::common::commands::BeginCommit>() )
                 {
                     kiapi::common::commands::BeginCommitResponse begin;
@@ -2079,6 +2098,27 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_EQUAL( board.GetPath(), project.GetPath() );
     BOOST_REQUIRE_EQUAL( source.GetPath(), project.GetPath() );
 
+    // This is a GUI-level smoke test, so migration dialogs are failures rather than harmless
+    // parser compatibility.  Keep every native fixture at the exact format emitted by KiCad 10.
+    BOOST_REQUIRE_NE( readExactTextFile( board ).find( "(version 20260206)" ),
+                      std::string::npos );
+    BOOST_REQUIRE_NE(
+            readExactTextFile( wxFileName( project.GetFullPath(),
+                                           wxS( "live_apply.kicad_sch" ) ) )
+                    .find( "(version 20260306)" ),
+            std::string::npos );
+    BOOST_REQUIRE_NE(
+            readExactTextFile( wxFileName( project.GetFullPath(), wxS( "Device.kicad_sym" ) ) )
+                    .find( "(version 20251024)" ),
+            std::string::npos );
+    wxFileName footprintLibrary = wxFileName::DirName( project.GetFullPath() );
+    footprintLibrary.AppendDir( wxS( "Resistor_SMD.pretty" ) );
+    BOOST_REQUIRE_NE(
+            readExactTextFile( wxFileName( footprintLibrary.GetFullPath(),
+                                           wxS( "R_0603_1608Metric.kicad_mod" ) ) )
+                    .find( "(version 20260206)" ),
+            std::string::npos );
+
     wxString socketDirectory;
     wxGetEnv( wxS( "KICHAD_QA_LIVE_SOCKET_DIR" ), &socketDirectory );
     CODEX_TOOL_REGISTRY registry( [project]() { return project.GetFullPath(); },
@@ -2099,7 +2139,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                  { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
-    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 12 );
+    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 13 );
     BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( firstData["counts"]["footprintCreate"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
@@ -2138,6 +2178,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                   { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     JSON repeatedData = envelope( repeated )["data"];
+    BOOST_CHECK_EQUAL( repeatedData["managedItems"].get<int>(), 13 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 12 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
@@ -2191,12 +2232,13 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                          { "source", originalSource },
                          { "expectedSha256", rejectedHash } } );
     BOOST_REQUIRE_MESSAGE( restoredSaved.at( "success" ).get<bool>(), restoredSaved.dump() );
+    const std::string restoredHash =
+            envelope( restoredSaved )["data"]["sourceSha256"].get<std::string>();
     JSON recoveredApply = registry.Handle(
             "design", { { "operation", "apply" },
                          { "path", sourceName },
                          { "boardPath", boardName },
-                         { "expectedSha256",
-                           envelope( restoredSaved )["data"]["sourceSha256"] } } );
+                         { "expectedSha256", restoredHash } } );
     BOOST_REQUIRE_MESSAGE( recoveredApply.at( "success" ).get<bool>(),
                            recoveredApply.dump() );
     BOOST_CHECK_EQUAL( readExactTextFile( rootSchematic ), rootBeforeRejectedApply );
@@ -2611,6 +2653,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( pad["padStack"]["layers"][2].get<std::string>(), "BL_B_Paste" );
 
     JSON createdFootprint = findFootprint( "R2" );
+    const std::string managedFootprintId = stableUuid( "footprint", "R2" );
+    BOOST_CHECK_EQUAL( createdFootprint["id"]["value"].get<std::string>(),
+                       managedFootprintId );
     BOOST_CHECK_EQUAL( createdFootprint["position"]["xNm"].get<std::string>(),
                        "50000000" );
     BOOST_CHECK_EQUAL( createdFootprint["position"]["yNm"].get<std::string>(),
@@ -2648,6 +2693,66 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
 
     BOOST_REQUIRE_MESSAGE( !createdPad.is_null(), createdFootprint.dump() );
     BOOST_CHECK_EQUAL( createdPad["net"]["name"].get<std::string>(), "Net1" );
+
+    const std::string placementLine =
+            "    (place R2 (at 50mm 40mm) (rotation 90deg) (side front) (locked false))\n";
+    std::string withoutManagedFootprint = originalSource;
+    const size_t placementPosition = withoutManagedFootprint.find( placementLine );
+    BOOST_REQUIRE_NE( placementPosition, std::string::npos );
+    withoutManagedFootprint.erase( placementPosition, placementLine.size() );
+    JSON removalSaved = registry.Handle(
+            "design", { { "operation", "save" },
+                         { "path", sourceName },
+                         { "source", withoutManagedFootprint },
+                         { "expectedSha256", restoredHash } } );
+    BOOST_REQUIRE_MESSAGE( removalSaved.at( "success" ).get<bool>(), removalSaved.dump() );
+    const std::string removalHash =
+            envelope( removalSaved )["data"]["sourceSha256"].get<std::string>();
+    JSON removed = registry.Handle(
+            "design", { { "operation", "apply" },
+                         { "path", sourceName },
+                         { "boardPath", boardName },
+                         { "expectedSha256", removalHash } } );
+    BOOST_REQUIRE_MESSAGE( removed.at( "success" ).get<bool>(), removed.dump() );
+    JSON removedData = envelope( removed )["data"];
+    BOOST_CHECK_EQUAL( removedData["counts"]["delete"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( removedData["counts"]["footprintDelete"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( removedData["counts"]["footprintCreate"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( removedData["managedItems"].get<int>(), 12 );
+    JSON remainingFootprints = getItems( "footprint", 1 );
+    BOOST_CHECK_EQUAL( remainingFootprints[0]["referenceField"]["text"]["text"]["text"]
+                               .get<std::string>(),
+                       "R1" );
+
+    JSON recreateSaved = registry.Handle(
+            "design", { { "operation", "save" },
+                         { "path", sourceName },
+                         { "source", originalSource },
+                         { "expectedSha256", removalHash } } );
+    BOOST_REQUIRE_MESSAGE( recreateSaved.at( "success" ).get<bool>(), recreateSaved.dump() );
+    const std::string recreateHash =
+            envelope( recreateSaved )["data"]["sourceSha256"].get<std::string>();
+    JSON recreated = registry.Handle(
+            "design", { { "operation", "apply" },
+                         { "path", sourceName },
+                         { "boardPath", boardName },
+                         { "expectedSha256", recreateHash } } );
+    BOOST_REQUIRE_MESSAGE( recreated.at( "success" ).get<bool>(), recreated.dump() );
+    JSON recreatedData = envelope( recreated )["data"];
+    BOOST_CHECK_EQUAL( recreatedData["counts"]["footprintCreate"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( recreatedData["counts"]["footprintDelete"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( recreatedData["managedItems"].get<int>(), 13 );
+    JSON recreatedFootprints = getItems( "footprint", 2 );
+    auto recreatedManaged = std::find_if(
+            recreatedFootprints.begin(), recreatedFootprints.end(),
+            []( const JSON& candidate )
+            {
+                return candidate["referenceField"]["text"]["text"]["text"]
+                               .get<std::string>() == "R2";
+            } );
+    BOOST_REQUIRE( recreatedManaged != recreatedFootprints.end() );
+    BOOST_CHECK_EQUAL( ( *recreatedManaged )["id"]["value"].get<std::string>(),
+                       managedFootprintId );
 }
 
 

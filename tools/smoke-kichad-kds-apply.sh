@@ -19,6 +19,25 @@ if [[ ! -x "$pcbnew_binary" || ! -x "$kicad_cli_binary" || ! -x "$test_binary" ]
     exit 1
 fi
 
+require_native_version() {
+    local path="$1"
+    local version="$2"
+
+    if ! grep -Fq -- "(version ${version})" "$path"; then
+        echo "Refusing to open stale KiCad fixture format: ${path}" >&2
+        echo "Expected native KiCad 10.0.4 format version ${version}." >&2
+        exit 1
+    fi
+}
+
+# Check before editor launch so a stale fixture can never trigger a migration dialog and then
+# masquerade as an IPC/compiler failure.
+require_native_version "${fixture_dir}/live_apply.kicad_pcb" 20260206
+require_native_version "${fixture_dir}/live_apply.kicad_sch" 20260306
+require_native_version "${fixture_dir}/Device.kicad_sym" 20251024
+require_native_version \
+    "${fixture_dir}/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod" 20260206
+
 work_dir="$(mktemp -d --tmpdir kichad-kds-live-XXXXXX)"
 project_dir="${work_dir}/project"
 config_dir="${work_dir}/config"

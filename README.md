@@ -69,7 +69,8 @@ transaction API; it is never run implicitly by the build.
 For the self-contained KDS transaction proof, run
 `tools/smoke-kichad-kds-apply.sh --allow-mutation`. It launches a disposable build-tree PCB Editor
 with an isolated configuration and project copy, applies the committed KDS fixture, and proves that
-a repeated apply updates the same twelve managed objects without duplicates. It also applies and
+a repeated apply converges the same thirteen managed identities—twelve authored PCB primitives and
+one compiler-created footprint—without duplicates. It also applies and
 reapplies a two-file hierarchical schematic, preserves the existing root screen UUID and unmanaged
 title-block company field, creates stable sheet/pin/interface UUIDs, proves the second apply is
 byte-idempotent, injects a native-validation failure to prove exact rollback, and exports the
@@ -99,9 +100,12 @@ typography, and creates all five native dimension styles with exact geometry and
 It also resolves and places an existing schematic-linked footprint on the back side while proving
 the footprint UUID, symbol path, pad UUID, and flipped pad layers are preserved. A second absent
 footprint is parsed from the declared project-local `.pretty` library, linked to its deterministic
-hierarchical symbol path, assigned its pad net, and created in the same native transaction; repeat
-apply proves it is not duplicated. The harness never connects to or stops an existing KiChad
-process.
+hierarchical symbol path, assigned its pad net, and created with a deterministic KDS-owned instance
+UUID in the same native transaction. Repeat apply proves it is not duplicated; removing and
+restoring its placement proves exact deletion and recreation with the same identity. The committed
+board, schematic, symbol, and footprint fixtures are serialized in the exact formats emitted by
+KiCad 10.0.4, and the smoke test rejects stale fixture versions before opening the editor. The
+harness never connects to or stops an existing KiChad process.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

@@ -831,8 +831,11 @@ Placement resolves exactly one schematic component by reference. If its footprin
 board, KDS updates only position, rotation, front/back side, and lock state in place; footprint UUID,
 symbol path, fields, pads, and child UUIDs remain unchanged. If it is absent, a declared
 project-local `.pretty` library may supply the exact `.kicad_mod`: KiChad parses it with KiCad's
-native parser and atomically creates a fresh footprint instance with the component reference, value,
-DNP flag, deterministic hierarchical symbol path, sheet metadata, placement, and pad nets. Source
+native parser and atomically creates a footprint instance with the component reference, value,
+DNP flag, deterministic root UUID and hierarchical symbol path, sheet metadata, placement, and pad
+nets. The sidecar records ownership of only that compiler-created instance. A later apply deletes it
+by exact UUID when the placement is removed and recreates the same UUID when restored; an existing
+user-owned footprint resolved by reference is never adopted or deleted. Source
 files are size-bounded, project-confined regular files; symlinks and path-shaped entry names are
 rejected. Missing global-library content is not loaded by this backend yet. Duplicate references,
 board-only matches, malformed sources, missing connected pads, or unavailable sources abort the
@@ -842,8 +845,9 @@ and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
 an isolated temporary project, starts its own build-tree PCB Editor, applies one lossless physical
-stackup plus twelve managed items, and reapplies the unchanged source to verify updates reuse the
-same deterministic identities. It reads the stackup back from the live editor and verifies finish,
+stackup plus twelve authored PCB primitives and one compiler-owned footprint, and reapplies the
+unchanged source to verify updates reuse the same deterministic identities. It reads the stackup
+back from the live editor and verifies finish,
 impedance, bevel, plating, all nine ordered physical layers, thicknesses, material, color, loss,
 permittivity, and dielectric lock. It also reads back all global constraint fields, including the
 semantic legacy edge-clearance mode, and verifies the second apply updates the same settings. It
@@ -855,8 +859,10 @@ reapplies it without duplication, and proves malformed native input leaves the a
 unchanged. It then
 places an existing schematic-linked footprint on the back side and proves its footprint/symbol/pad
 identities and flipped child layers survive both applies. It also creates a second footprint from a
-confined project-local library, verifies its exact hierarchical symbol link and pad net, and proves
-the repeat apply converges without a duplicate. It proves the fifth managed object is a filled
+confined project-local library, verifies its deterministic root identity, exact hierarchical symbol
+link and pad net, then removes and recreates it with the same UUID. The committed native fixtures
+use the exact KiCad 10.0.4 board, schematic, symbol, and footprint format versions, which the smoke
+test checks before editor launch. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
 keepout with exact prohibited-item policy. The seventh is multiline native board text with exact
 position, layer, typography, hyperlink, and lock state. The remaining five are aligned, orthogonal,

@@ -87,7 +87,7 @@ bool managedType( const std::string& aType )
 {
     return aType == "shape" || aType == "trace" || aType == "arc" || aType == "via"
            || aType == "zone" || aType == "rule_area" || aType == "text"
-           || aType == "dimension";
+           || aType == "dimension" || aType == "footprint";
 }
 
 
@@ -340,6 +340,7 @@ bool readManagedItem( const JSON& aJson, const std::string& aProjectName,
     aItem.itemId = aJson["itemId"].get<std::string>();
 
     if( !boundedText( aItem.logicalId, 128 ) || !managedType( aItem.itemType )
+        || ( aItem.itemType == "footprint" && !componentReference( aItem.logicalId ) )
         || !uuid( aItem.itemId )
         || KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
                    aProjectName, aItem.itemType, aItem.logicalId ) != aItem.itemId )
@@ -404,7 +405,7 @@ bool readPreviousState( const JSON& aState, const CONTEXT& aContext,
         return false;
     }
 
-    std::set<std::string> logicalIds;
+    std::set<std::pair<std::string, std::string>> logicalIds;
 
     for( const JSON& entry : aState["managedPcbItems"] )
     {
@@ -415,7 +416,7 @@ bool readPreviousState( const JSON& aState, const CONTEXT& aContext,
             continue;
 
         if( !aItems.emplace( item.itemId, item ).second
-            || !logicalIds.emplace( item.logicalId ).second )
+            || !logicalIds.emplace( item.itemType, item.logicalId ).second )
         {
             diagnostic( aResult, "invalid_managed_state",
                         "managed-state item identities are not unique" );
@@ -437,14 +438,15 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 {
     RESULT result;
     result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
-                      { "placement", 0 }, { "footprintCreate", 0 } };
+                      { "placement", 0 }, { "footprintCreate", 0 },
+                      { "footprintDelete", 0 } };
     validateContext( aContext, result );
 
     std::map<std::string, MANAGED_ITEM> previous;
     readPreviousState( aPreviousState, aContext, previous, result );
 
     std::map<std::string, MANAGED_ITEM> desired;
-    std::set<std::string>               desiredLogicalIds;
+    std::set<std::pair<std::string, std::string>> desiredLogicalIds;
     std::map<std::string, PLACEMENT>    placements;
 
     if( !aDesiredOperations.is_array() || aDesiredOperations.size() > MAX_MANAGED_ITEMS )
@@ -490,8 +492,15 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
                 continue;
             }
 
+            if( item.itemType == "footprint" )
+            {
+                diagnostic( result, "invalid_desired_operations",
+                            "footprint ownership must be derived from component placement" );
+                continue;
+            }
+
             if( !desired.emplace( item.itemId, item ).second
-                || !desiredLogicalIds.emplace( item.logicalId ).second )
+                || !desiredLogicalIds.emplace( item.itemType, item.logicalId ).second )
             {
                 diagnostic( result, "invalid_desired_operations",
                             "desired PCB item identities are not unique" );
@@ -535,19 +544,33 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 
             if( itemType == "footprint" )
             {
-                if( !entry.contains( "reference" ) || !entry["reference"].is_string()
-                    || !componentReference( entry["reference"].get<std::string>() )
-                    || !entry.contains( "schematicLinked" )
-                    || !entry["schematicLinked"].is_boolean()
-                    || !liveFootprintIds.emplace( itemId ).second )
+                const bool hasReference = entry.contains( "reference" );
+                const bool hasLink = entry.contains( "schematicLinked" );
+
+                // UUID-targeted inventory needs only type and identity. Reference-targeted
+                // inventory supplies both fields and is used for placement resolution.
+                if( hasReference != hasLink )
                 {
                     diagnostic( result, "invalid_live_inventory",
                                 "live footprint inventory contains an invalid identity" );
                     continue;
                 }
 
-                liveFootprints[entry["reference"].get<std::string>()].push_back(
-                        { itemId, entry["schematicLinked"].get<bool>() } );
+                if( hasReference )
+                {
+                    if( !entry["reference"].is_string()
+                        || !componentReference( entry["reference"].get<std::string>() )
+                        || !entry["schematicLinked"].is_boolean()
+                        || !liveFootprintIds.emplace( itemId ).second )
+                    {
+                        diagnostic( result, "invalid_live_inventory",
+                                    "live footprint inventory contains an invalid identity" );
+                        continue;
+                    }
+
+                    liveFootprints[entry["reference"].get<std::string>()].push_back(
+                            { itemId, entry["schematicLinked"].get<bool>() } );
+                }
             }
         }
     }
@@ -599,7 +622,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 
     for( const auto& [itemId, item] : previous )
     {
-        if( desired.contains( itemId ) )
+        if( item.itemType == "footprint" || desired.contains( itemId ) )
             continue;
 
         auto liveItem = live.find( itemId );
@@ -621,12 +644,49 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
         ++result.counts["delete"].get_ref<int64_t&>();
     }
 
+    std::map<std::string, MANAGED_ITEM> desiredFootprints;
+
+    const auto retainFootprintOwnership = [&]( const std::string& aComponent,
+                                                const std::string& aItemId )
+    {
+        MANAGED_ITEM item = { aComponent, "footprint", aItemId, JSON::object() };
+
+        if( !desiredFootprints.emplace( aItemId, item ).second
+            || !desiredLogicalIds.emplace( item.itemType, item.logicalId ).second )
+        {
+            diagnostic( result, "invalid_desired_operations",
+                        "desired PCB ownership identities are not unique" );
+        }
+    };
+
     for( const auto& [component, placement] : placements )
     {
+        const std::string managedId = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aContext.projectName, "footprint", component );
+        const auto previousOwned = previous.find( managedId );
+        const bool ownedBefore = previousOwned != previous.end();
+        const auto liveOwned = live.find( managedId );
+
+        if( liveOwned != live.end() && liveOwned->second != "footprint" )
+        {
+            diagnostic( result, "managed_footprint_identity_conflict",
+                        "component " + component
+                                + " has a deterministic footprint UUID used by another item type" );
+            continue;
+        }
+
         auto footprints = liveFootprints.find( component );
 
         if( footprints == liveFootprints.end() )
         {
+            if( liveOwned != live.end() )
+            {
+                diagnostic( result, "managed_footprint_identity_conflict",
+                            "deterministic footprint for component " + component
+                                    + " exists with a different reference or link" );
+                continue;
+            }
+
             if( !placement.instance.is_object() )
             {
                 diagnostic( result, "missing_component_footprint",
@@ -638,13 +698,16 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
             result.actions.push_back(
                     { { "action", "create_footprint" },
                       { "component", component },
+                      { "logicalId", component },
                       { "itemType", "footprint" },
+                      { "itemId", managedId },
                       { "instance", placement.instance },
                       { "position", { { "xNm", placement.xNm },
                                         { "yNm", placement.yNm } } },
                       { "rotationDegrees", placement.rotationDegrees },
                       { "side", placement.side },
                       { "locked", placement.locked } } );
+            retainFootprintOwnership( component, managedId );
             ++result.counts["placement"].get_ref<int64_t&>();
             ++result.counts["footprintCreate"].get_ref<int64_t&>();
             continue;
@@ -659,12 +722,31 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 
         const LIVE_FOOTPRINT& footprint = footprints->second.front();
 
+        if( footprint.itemId == managedId && !ownedBefore )
+        {
+            diagnostic( result, "unmanaged_uuid_collision",
+                        "deterministic footprint UUID for component " + component
+                                + " exists without KDS ownership" );
+            continue;
+        }
+
+        if( footprint.itemId != managedId && ownedBefore )
+        {
+            diagnostic( result, "managed_footprint_identity_conflict",
+                        "owned footprint for component " + component
+                                + " was removed or replaced by an unmanaged instance" );
+            continue;
+        }
+
         if( !footprint.schematicLinked )
         {
             diagnostic( result, "unlinked_component_footprint",
                         "PCB footprint " + component + " is not linked to a schematic symbol" );
             continue;
         }
+
+        if( ownedBefore )
+            retainFootprintOwnership( component, managedId );
 
         JSON item = { { "id", { { "value", footprint.itemId } } },
                       { "position", { { "xNm", std::to_string( placement.xNm ) },
@@ -683,17 +765,46 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
         ++result.counts["placement"].get_ref<int64_t&>();
     }
 
+    for( const auto& [itemId, item] : previous )
+    {
+        if( item.itemType != "footprint" || desiredFootprints.contains( itemId ) )
+            continue;
+
+        auto liveItem = live.find( itemId );
+
+        if( liveItem == live.end() )
+            continue;
+
+        if( liveItem->second != "footprint" )
+        {
+            diagnostic( result, "managed_footprint_identity_conflict",
+                        "obsolete managed footprint UUID " + itemId
+                                + " belongs to another item type" );
+            continue;
+        }
+
+        result.actions.push_back( { { "action", "delete" },
+                                    { "logicalId", item.logicalId },
+                                    { "itemType", item.itemType },
+                                    { "itemId", item.itemId } } );
+        ++result.counts["delete"].get_ref<int64_t&>();
+        ++result.counts["footprintDelete"].get_ref<int64_t&>();
+    }
+
     if( !result.diagnostics.empty() )
     {
         result.actions = JSON::array();
         result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
-                          { "placement", 0 }, { "footprintCreate", 0 } };
+                          { "placement", 0 }, { "footprintCreate", 0 },
+                          { "footprintDelete", 0 } };
         return result;
     }
 
     JSON managedItems = JSON::array();
+    std::map<std::string, MANAGED_ITEM> nextOwned = desired;
+    nextOwned.insert( desiredFootprints.begin(), desiredFootprints.end() );
 
-    for( const auto& [itemId, item] : desired )
+    for( const auto& [itemId, item] : nextOwned )
     {
         managedItems.push_back( { { "logicalId", item.logicalId },
                                   { "itemType", item.itemType },
