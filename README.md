@@ -48,13 +48,13 @@ from any other KiCad version, and returns complete counts plus bounded pageable 
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
 
-The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v2` release
+The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v3` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
 the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
 Gerber, drill, IPC-D-356 electrical-test, placement, and BOM intent plus an explicit physical
-stackup. Export reruns the gates
-and the matching sibling `kicad-cli` from a private bounded project snapshot, so KiCad cannot rewrite
-live local settings while checking or plotting. The snapshot includes project-local symbol and
+stackup. Export reruns the gates and the matching sibling `kicad-cli` from a private bounded project
+snapshot, so KiCad cannot rewrite live local settings while checking or plotting. The snapshot
+includes project-local symbol and
 footprint libraries referenced by its native tables. A visible final-action confirmation is
 mandatory; ignored checks or exclusions also require explicit waiver approval. The native board's
 schematic-footprint reference/library-ID inventory must exactly match KDS, and the completed BOM and
@@ -62,7 +62,9 @@ placement reference sets must exactly match the compiled physical and non-DNP co
 KiChad validates every native artifact, writes a hash manifest, and atomically replaces only
 `fabrication/`; any failure preserves the prior package. Native KiCad plot timestamps are retained,
 so the manifest records exact bytes for each run rather than claiming byte-identical Gerbers across
-separate runs.
+separate runs. Optional STEP, multipage fabrication PDF, and inspectable IPC-2581C manufacturing
+XML can be declared in the same KDS sidecar. IPC-2581 is fixed to millimetres and precision 6, then
+parsed and structurally checked against the planned board and KDS references.
 
 KiChad forces the Codex app-server's built-in web search to live, high-context mode for new and
 resumed project conversations. The embedded agent instructions require current manufacturer,

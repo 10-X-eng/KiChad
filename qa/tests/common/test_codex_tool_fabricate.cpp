@@ -196,6 +196,7 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output gerbers)
   (output drill)
   (output ipcd356)
+  (output ipc2581)
   (output pick_place)
   (output bom)
   (output step)
@@ -256,7 +257,8 @@ std::string nativeReport( const std::string& aCheck, const wxFileName& aPath,
 
 
 bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
-                           bool aMalformed, bool aWrongPlacementReference,
+                           bool aMalformed, bool aForbiddenXmlDeclaration,
+                           bool aWrongIpc2581Reference, bool aWrongPlacementReference,
                            std::string& aError )
 {
     const std::filesystem::path root( aStaging.GetFullPath().ToStdString() );
@@ -332,16 +334,56 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
         }
         else if( kind == "ipcd356" )
         {
-            const std::string source = aMalformed
-                                               ? "P  CODE 00\nP  UNITS CUST 0\n"
-                                               : "P  CODE 00\nP  UNITS CUST 0\n"
-                                                 "327NET1             U1    -1          "
-                                                 "A01X+000000Y+000000X0100Y0100R000S1\n"
-                                                 "999\n";
+            const std::string source = "P  CODE 00\nP  UNITS CUST 0\n"
+                                       "327NET1             U1    -1          "
+                                       "A01X+000000Y+000000X0100Y0100R000S1\n"
+                                       "999\n";
 
             if( !write( output, source ) )
             {
                 aError = "could not write fake IPC-D-356 output";
+                return false;
+            }
+        }
+        else if( kind == "ipc2581" )
+        {
+            const std::string stackup = aMalformed
+                                                ? std::string()
+                                                : "<Stackup name=\"Primary_Stackup\"/>";
+            const std::string declaration =
+                    aForbiddenXmlDeclaration
+                            ? "<!DOCTYPE IPC-2581 [<!ENTITY unsafe \"forbidden\">]>\n"
+                            : std::string();
+            const std::string componentReference =
+                    aWrongIpc2581Reference ? "U2" : "U1";
+            const std::string source =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + declaration
+                    + "<IPC-2581 revision=\"C\" xmlns=\"http://webstds.ipc.org/2581\" "
+                    "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+                    "xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" "
+                    "xsi:schemaLocation=\"http://webstds.ipc.org/2581 "
+                    "http://webstds.ipc.org/2581/IPC-2581C.xsd\">"
+                    "<Content roleRef=\"Owner\"><StepRef name=\"design\"/></Content>"
+                    "<LogisticHeader/>"
+                    "<HistoryRecord><SoftwarePackage name=\"KiCad\" revision=\"10.0.4\" "
+                    "vendor=\"KiCad EDA\"/></HistoryRecord>"
+                    "<Bom><BomItem><RefDes name=\""
+                    + componentReference
+                    + "\"/></BomItem></Bom>"
+                    "<Ecad><CadHeader units=\"MILLIMETER\"/><CadData>"
+                    "<Layer name=\"F.Cu\" layerFunction=\"CONDUCTOR\"/>"
+                    "<Layer name=\"B.Cu\" layerFunction=\"CONDUCTOR\"/>"
+                    "<Layer name=\"Edge.Cuts\" layerFunction=\"BOARD_OUTLINE\"/>"
+                    + stackup
+                    + "<Step name=\"design\" type=\"BOARD\"><Component refDes=\""
+                    + componentReference
+                    + "\"/>"
+                    + "</Step></CadData></Ecad><Avl/></IPC-2581>\n";
+
+            if( !write( output, source ) )
+            {
+                aError = "could not write fake IPC-2581 output";
                 return false;
             }
         }
@@ -437,10 +479,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v2" );
+                       "kichad-production-10.0.4-v3" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 7 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 8 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
@@ -495,6 +537,8 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     std::string dirtyCheck;
     bool waiver = false;
     bool malformedArtifacts = false;
+    bool forbiddenXmlDeclaration = false;
+    bool wrongIpc2581Reference = false;
     bool wrongPlacementReference = false;
     bool fabricationFailure = false;
     bool mutateLiveInputDuringExport = false;
@@ -551,6 +595,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                 }
 
                 return writeNativeArtifacts( aPlan, aStaging, malformedArtifacts,
+                                             forbiddenXmlDeclaration, wrongIpc2581Reference,
                                              wrongPlacementReference, aError );
             } );
     wxFileName liveBoardPath( fixture.Root(), wxS( "design.kicad_pcb" ) );
@@ -622,11 +667,43 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_REQUIRE( !malformed.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( malformed )["error"]["code"].get<std::string>(),
                        "artifact_validation_failed" );
+    BOOST_CHECK_NE( envelope( malformed )["error"]["message"].get<std::string>().find(
+                            "missing its native board, stackup, or producer structure" ),
+                    std::string::npos );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
     BOOST_CHECK_EQUAL( fabricationCalls, 3 );
 
     malformedArtifacts = false;
+    forbiddenXmlDeclaration = true;
+    JSON forbiddenXml = registry.HandleWithContext( "fabricate", arguments, fixture.Root(),
+                                                     true, wxString(), true );
+    BOOST_REQUIRE( !forbiddenXml.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( forbiddenXml )["error"]["code"].get<std::string>(),
+                       "artifact_validation_failed" );
+    BOOST_CHECK_NE( envelope( forbiddenXml )["error"]["message"].get<std::string>().find(
+                            "forbidden document or entity declaration" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
+    BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
+    BOOST_CHECK_EQUAL( fabricationCalls, 4 );
+
+    forbiddenXmlDeclaration = false;
+    wrongIpc2581Reference = true;
+    JSON mismatchedIpc2581 = registry.HandleWithContext( "fabricate", arguments,
+                                                         fixture.Root(), true,
+                                                         wxString(), true );
+    BOOST_REQUIRE( !mismatchedIpc2581.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( mismatchedIpc2581 )["error"]["code"].get<std::string>(),
+                       "artifact_validation_failed" );
+    BOOST_CHECK_NE( envelope( mismatchedIpc2581 )["error"]["message"].get<std::string>().find(
+                            "missing a compiled KDS component reference" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
+    BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
+    BOOST_CHECK_EQUAL( fabricationCalls, 5 );
+
+    wrongIpc2581Reference = false;
     wrongPlacementReference = true;
     JSON mismatchedAssembly = registry.HandleWithContext( "fabricate", arguments,
                                                            fixture.Root(), true,
@@ -636,7 +713,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "artifact_validation_failed" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 4 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
 
     wrongPlacementReference = false;
     fabricationFailure = true;
@@ -647,7 +724,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "export_failed" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 5 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 7 );
 
     fabricationFailure = false;
     mutateLiveInputDuringExport = true;
@@ -658,7 +735,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "stale_inputs" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 8 );
     fixture.Write( wxS( "design.kicad_pcb" ), liveBoardBefore );
     mutateLiveInputDuringExport = false;
 
@@ -668,7 +745,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_REQUIRE( !dirty.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( dirty )["error"]["code"].get<std::string>(),
                        "drc_gate_failed" );
-    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 8 );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
 
     dirtyCheck.clear();
@@ -746,6 +823,9 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/electrical-test/"
                                       "fabrication_clean.d356" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/manufacturing/"
+                                      "fabrication_clean.ipc2581.xml" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/assembly/"
                                       "fabrication_clean-bom.csv" ) ) );
@@ -875,10 +955,14 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName electricalTestPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/electrical-test/fabrication_component.d356" ) );
+    wxFileName ipc2581Path(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/manufacturing/fabrication_component.ipc2581.xml" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
     BOOST_REQUIRE( electricalTestPath.FileExists() );
+    BOOST_REQUIRE( ipc2581Path.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );
@@ -887,6 +971,10 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     const std::string electricalTest = readText( electricalTestPath );
     BOOST_CHECK_NE( electricalTest.find( "327TEST_A" ), std::string::npos );
     BOOST_CHECK_NE( electricalTest.find( "327TEST_B" ), std::string::npos );
+    const std::string ipc2581 = readText( ipc2581Path );
+    BOOST_CHECK_NE( ipc2581.find( "<IPC-2581 revision=\"C\"" ), std::string::npos );
+    BOOST_CHECK_NE( ipc2581.find( "<Component refDes=\"R1\"" ), std::string::npos );
+    BOOST_CHECK_NE( ipc2581.find( "<Component refDes=\"R2\"" ), std::string::npos );
     const std::string bom = readText( bomPath );
     BOOST_CHECK_NE( bom.find( "\"R1\",\"10k\","
                               "\"Resistor_SMD:R_0603_1608Metric\",1,"

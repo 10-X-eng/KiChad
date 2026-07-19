@@ -27,6 +27,7 @@
   (output gerbers)
   (output drill)
   (output ipcd356)
+  (output ipc2581)
   (output pick_place)
   (output bom)
   (output step)

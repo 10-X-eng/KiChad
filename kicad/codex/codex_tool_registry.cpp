@@ -54,6 +54,7 @@
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
 #include <wx/utils.h>
+#include <wx/xml/xml.h>
 
 #include <picosha2.h>
 
@@ -1555,6 +1556,12 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
             arguments = { "pcb", "export", "ipcd356", "--output", output.string(),
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "ipc2581" )
+        {
+            arguments = { "pcb", "export", "ipc2581", "--output", output.string(),
+                          "--precision", "6", "--version", "C", "--units", "mm",
+                          aBoard.GetFullPath().ToStdString() };
+        }
         else if( kind == "pick_place" )
         {
             arguments = { "pcb", "export", "pos", "--output", output.string(),
@@ -1601,7 +1608,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         "erc", "drc", "sourcing", "fabrication"
     };
     static constexpr const char* OUTPUT_ORDER[] = {
-        "gerbers", "drill", "ipcd356", "pick_place", "bom", "step", "pdf"
+        "gerbers", "drill", "ipcd356", "ipc2581", "pick_place", "bom", "step", "pdf"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
         "gerbers", "drill", "ipcd356", "pick_place", "bom"
@@ -1724,6 +1731,10 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         {
             job["relativePath"] = "electrical-test/" + aFileStem + ".d356";
         }
+        else if( std::string_view( kind ) == "ipc2581" )
+        {
+            job["relativePath"] = "manufacturing/" + aFileStem + ".ipc2581.xml";
+        }
         else if( std::string_view( kind ) == "pick_place" )
         {
             job["relativePath"] = "assembly/" + aFileStem + "-positions.csv";
@@ -1745,7 +1756,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v2" },
+    return { { "profile", "kichad-production-10.0.4-v3" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -1901,6 +1912,261 @@ bool readFileEdges( const std::filesystem::path& aPath, std::string& aPrefix,
     aSuffix.resize( static_cast<size_t>( length - start ) );
     input.read( aSuffix.data(), static_cast<std::streamsize>( aSuffix.size() ) );
     return input.good() || input.eof();
+}
+
+
+bool validateIpc2581Artifact( const std::filesystem::path& aPath, const JSON& aPlan,
+                              std::string& aError )
+{
+    std::ifstream input( aPath, std::ios::binary );
+
+    if( !input )
+    {
+        aError = "could not read IPC-2581 artifact";
+        return false;
+    }
+
+    std::array<char, 64 * 1024> buffer;
+    std::string                 scanWindow;
+
+    while( input )
+    {
+        input.read( buffer.data(), static_cast<std::streamsize>( buffer.size() ) );
+        const std::streamsize bytes = input.gcount();
+
+        if( bytes <= 0 )
+            break;
+
+        scanWindow.append( buffer.data(), static_cast<size_t>( bytes ) );
+
+        if( scanWindow.find( "<!DOCTYPE" ) != std::string::npos
+            || scanWindow.find( "<!ENTITY" ) != std::string::npos )
+        {
+            aError = "IPC-2581 artifact contains a forbidden document or entity declaration";
+            return false;
+        }
+
+        constexpr size_t DECLARATION_OVERLAP = 16;
+
+        if( scanWindow.size() > DECLARATION_OVERLAP )
+            scanWindow.erase( 0, scanWindow.size() - DECLARATION_OVERLAP );
+    }
+
+    if( input.bad() )
+    {
+        aError = "could not inspect the complete IPC-2581 artifact";
+        return false;
+    }
+
+    wxXmlDocument document;
+    const std::string nativePath = aPath.string();
+
+    if( !document.Load( wxString::FromUTF8( nativePath.c_str() ) ) )
+    {
+        aError = "IPC-2581 artifact is not well-formed XML";
+        return false;
+    }
+
+    wxXmlNode* root = document.GetRoot();
+
+    if( !root || root->GetName() != wxS( "IPC-2581" )
+        || root->GetAttribute( wxS( "revision" ) ) != wxS( "C" )
+        || root->GetAttribute( wxS( "xmlns" ) ) != wxS( "http://webstds.ipc.org/2581" )
+        || root->GetAttribute( wxS( "xsi:schemaLocation" ) )
+                   != wxS( "http://webstds.ipc.org/2581 "
+                           "http://webstds.ipc.org/2581/IPC-2581C.xsd" ) )
+    {
+        aError = "IPC-2581 artifact has the wrong revision or root schema";
+        return false;
+    }
+
+    static const std::set<wxString> ALLOWED_TOP_LEVEL = {
+        wxS( "Content" ), wxS( "LogisticHeader" ), wxS( "HistoryRecord" ),
+        wxS( "Bom" ), wxS( "Ecad" ), wxS( "Avl" )
+    };
+    std::map<wxString, size_t> topLevelCounts;
+    wxXmlNode*                 content = nullptr;
+
+    for( wxXmlNode* child = root->GetChildren(); child; child = child->GetNext() )
+    {
+        if( child->GetType() != wxXML_ELEMENT_NODE )
+            continue;
+
+        if( !ALLOWED_TOP_LEVEL.contains( child->GetName() ) )
+        {
+            aError = "IPC-2581 artifact contains an unexpected top-level element";
+            return false;
+        }
+
+        if( ++topLevelCounts[child->GetName()] > 1 )
+        {
+            aError = "IPC-2581 artifact contains a duplicate top-level section";
+            return false;
+        }
+
+        if( child->GetName() == wxS( "Content" ) )
+            content = child;
+    }
+
+    if( topLevelCounts[wxS( "Content" )] != 1
+        || topLevelCounts[wxS( "LogisticHeader" )] != 1
+        || topLevelCounts[wxS( "HistoryRecord" )] != 1
+        || topLevelCounts[wxS( "Ecad" )] != 1 )
+    {
+        aError = "IPC-2581 artifact is missing a required top-level section";
+        return false;
+    }
+
+    const wxString expectedStep = wxString::FromUTF8( aPlan.at( "fileStem" )
+                                                               .get<std::string>()
+                                                               .c_str() );
+    bool contentStepMatches = false;
+
+    for( wxXmlNode* child = content->GetChildren(); child; child = child->GetNext() )
+    {
+        if( child->GetType() == wxXML_ELEMENT_NODE && child->GetName() == wxS( "StepRef" )
+            && child->GetAttribute( wxS( "name" ) ) == expectedStep )
+        {
+            contentStepMatches = true;
+        }
+    }
+
+    if( !contentStepMatches )
+    {
+        aError = "IPC-2581 Content does not reference the planned board step";
+        return false;
+    }
+
+    constexpr size_t MAX_IPC2581_XML_NODES = 2'000'000;
+    constexpr size_t MAX_IPC2581_XML_DEPTH = 256;
+    std::vector<std::pair<wxXmlNode*, size_t>> pending = { { root, 0 } };
+    std::set<std::string> componentReferences;
+    std::set<std::string> bomReferences;
+    size_t nodeCount = 0;
+    size_t cadHeaders = 0;
+    size_t boardSteps = 0;
+    size_t stackups = 0;
+    size_t conductorLayers = 0;
+    size_t outlineLayers = 0;
+    size_t softwarePackages = 0;
+
+    while( !pending.empty() )
+    {
+        const auto [first, depth] = pending.back();
+        pending.pop_back();
+
+        if( depth > MAX_IPC2581_XML_DEPTH )
+        {
+            aError = "IPC-2581 artifact exceeds the XML nesting limit";
+            return false;
+        }
+
+        for( wxXmlNode* node = first; node; node = node->GetNext() )
+        {
+            if( ++nodeCount > MAX_IPC2581_XML_NODES )
+            {
+                aError = "IPC-2581 artifact exceeds the XML node limit";
+                return false;
+            }
+
+            if( node->GetChildren() )
+                pending.emplace_back( node->GetChildren(), depth + 1 );
+
+            if( node->GetType() != wxXML_ELEMENT_NODE )
+                continue;
+
+            const wxString name = node->GetName();
+
+            if( name == wxS( "SoftwarePackage" ) )
+            {
+                ++softwarePackages;
+
+                if( node->GetAttribute( wxS( "name" ) ) != wxS( "KiCad" )
+                    || node->GetAttribute( wxS( "revision" ) ) != wxS( "10.0.4" )
+                    || node->GetAttribute( wxS( "vendor" ) ) != wxS( "KiCad EDA" ) )
+                {
+                    aError = "IPC-2581 artifact has the wrong native producer identity";
+                    return false;
+                }
+            }
+            else if( name == wxS( "CadHeader" ) )
+            {
+                ++cadHeaders;
+
+                if( node->GetAttribute( wxS( "units" ) ) != wxS( "MILLIMETER" ) )
+                {
+                    aError = "IPC-2581 artifact is not expressed in millimetres";
+                    return false;
+                }
+            }
+            else if( name == wxS( "Step" ) )
+            {
+                if( node->GetAttribute( wxS( "name" ) ) == expectedStep
+                    && node->GetAttribute( wxS( "type" ) ) == wxS( "BOARD" ) )
+                {
+                    ++boardSteps;
+                }
+            }
+            else if( name == wxS( "Stackup" ) )
+            {
+                ++stackups;
+            }
+            else if( name == wxS( "Layer" ) )
+            {
+                if( node->GetAttribute( wxS( "layerFunction" ) ) == wxS( "CONDUCTOR" ) )
+                    ++conductorLayers;
+                else if( node->GetAttribute( wxS( "layerFunction" ) )
+                         == wxS( "BOARD_OUTLINE" ) )
+                    ++outlineLayers;
+            }
+            else if( name == wxS( "Component" ) )
+            {
+                const std::string reference =
+                        node->GetAttribute( wxS( "refDes" ) ).ToStdString();
+
+                if( reference.empty() || !componentReferences.emplace( reference ).second )
+                {
+                    aError = "IPC-2581 artifact has an empty or duplicate component reference";
+                    return false;
+                }
+            }
+            else if( name == wxS( "RefDes" ) )
+            {
+                const std::string reference =
+                        node->GetAttribute( wxS( "name" ) ).ToStdString();
+
+                if( reference.empty() || !bomReferences.emplace( reference ).second )
+                {
+                    aError = "IPC-2581 artifact has an empty or duplicate BOM reference";
+                    return false;
+                }
+            }
+        }
+    }
+
+    if( softwarePackages != 1 || cadHeaders != 1 || boardSteps != 1 || stackups != 1
+        || conductorLayers < 2 || outlineLayers != 1 )
+    {
+        aError = "IPC-2581 artifact is missing its native board, stackup, or producer structure";
+        return false;
+    }
+
+    if( componentReferences != bomReferences )
+    {
+        aError = "IPC-2581 component and native BOM reference sets differ";
+        return false;
+    }
+
+    for( const JSON& expected : aPlan.at( "expectedBomReferences" ) )
+    {
+        if( !componentReferences.contains( expected.get<std::string>() ) )
+        {
+            aError = "IPC-2581 artifact is missing a compiled KDS component reference";
+            return false;
+        }
+    }
+
+    return true;
 }
 
 
@@ -2604,6 +2870,14 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path.starts_with( "manufacturing/" )
+                 && path.ends_with( ".ipc2581.xml" ) )
+        {
+            kind = "ipc2581";
+
+            if( !validateIpc2581Artifact( iterator->path(), aPlan, aError ) )
+                return false;
+        }
         else if( path.starts_with( "assembly/" ) && path.ends_with( "-positions.csv" ) )
         {
             kind = "pick_place";
@@ -2723,6 +2997,8 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "drill export is missing Excellon, map, or report artifacts";
         else if( kind == "ipcd356" && counts["ipcd356"] != 1 )
             aError = "IPC-D-356 export did not produce exactly one electrical-test artifact";
+        else if( kind == "ipc2581" && counts["ipc2581"] != 1 )
+            aError = "IPC-2581 export did not produce exactly one manufacturing artifact";
         else if( kind == "pick_place" && counts["pick_place"] != 1 )
             aError = "position export did not produce exactly one CSV artifact";
         else if( kind == "bom" && counts["bom"] != 1 )
