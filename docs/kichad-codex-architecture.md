@@ -55,8 +55,9 @@ components, connectivity, board intent, design rules, sourcing, verification, an
 `pcb` discovers the matching open board and instance token through KiCad 10's supported protobuf IPC
 API.  Its bounded `describe` operation exposes exact protobuf JSON fields and nested enum values, so
 the model does not infer message shapes.  It can read typed live items and create, field-mask update,
-or delete footprints, traces, vias, arcs, copper zones, rule areas, graphics, and text. Each mutation requires the
-pre-turn snapshot and is enclosed by KiCad `BeginCommit`/`EndCommit`; any validation, item-status,
+or delete footprints, traces, vias, arcs, copper zones, rule areas, graphics, text, and all five
+native dimension styles. Each mutation requires the pre-turn snapshot and is enclosed by KiCad
+`BeginCommit`/`EndCommit`; any validation, item-status,
 transport, or commit failure drops the pending commit.  IPC requests have bounded timeouts and
 execute off the wxWidgets UI thread; socket paths and instance tokens are not returned to the model.
 KiChad persists the required API-enabled setting in its isolated configuration before it launches
@@ -74,9 +75,10 @@ committed fixture, applies the KDS sidecar, and repeats the apply to prove stabl
 duplicate-free convergence. It verifies a deterministic managed copper zone is filled by KiCad's
 official zone engine after each transaction and a distinct managed keepout remains an unfilled,
 locked rule area with exact prohibited-item settings. It also creates deterministic native board
-text and verifies reference-resolved placement through a narrow native footprint transform: the
-parent and pad UUIDs, schematic symbol path, and child geometry survive a front-to-back flip. Its
-cleanup targets only the process and directory it created.
+text and all five native dimension styles, then reapplies each distinct oneof field mask and verifies
+reference-resolved placement through a narrow native footprint transform: the parent and pad UUIDs,
+schematic symbol path, and child geometry survive a front-to-back flip. Its cleanup targets only the
+process and directory it created.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for

@@ -86,7 +86,8 @@ bool uuid( const std::string& aText )
 bool managedType( const std::string& aType )
 {
     return aType == "shape" || aType == "trace" || aType == "arc" || aType == "via"
-           || aType == "zone" || aType == "rule_area" || aType == "text";
+           || aType == "zone" || aType == "rule_area" || aType == "text"
+           || aType == "dimension";
 }
 
 
@@ -104,7 +105,7 @@ bool componentReference( const std::string& aReference )
 }
 
 
-JSON updateFields( const std::string& aType )
+JSON updateFields( const std::string& aType, const JSON& aItem )
 {
     if( aType == "shape" )
         return JSON::array( { "shape", "layer", "locked" } );
@@ -131,6 +132,31 @@ JSON updateFields( const std::string& aType )
 
     if( aType == "text" )
         return JSON::array( { "text", "layer", "knockout", "locked" } );
+
+    if( aType == "dimension" )
+    {
+        JSON fields = JSON::array( { "locked", "layer", "text" } );
+
+        for( const char* geometry :
+             { "aligned", "orthogonal", "radial", "leader", "center" } )
+        {
+            if( aItem.contains( geometry ) )
+            {
+                fields.emplace_back( geometry );
+                break;
+            }
+        }
+
+        for( const char* field : { "override_text_enabled", "override_text", "prefix", "suffix",
+                                   "unit", "unit_format", "arrow_direction", "precision",
+                                   "suppress_trailing_zeroes", "line_thickness", "arrow_length",
+                                   "extension_offset", "text_position", "keep_text_aligned" } )
+        {
+            fields.emplace_back( field );
+        }
+
+        return fields;
+    }
 
     return JSON::array( { "position", "pad_stack", "locked", "net", "type" } );
 }
@@ -504,7 +530,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
                                     { "logicalId", item.logicalId },
                                     { "itemType", item.itemType },
                                     { "itemId", item.itemId },
-                                    { "fieldMask", updateFields( item.itemType ) },
+                                    { "fieldMask", updateFields( item.itemType, item.item ) },
                                     { "item", item.item } } );
         ++result.counts["update"].get_ref<int64_t&>();
     }

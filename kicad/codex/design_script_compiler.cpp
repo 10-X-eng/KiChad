@@ -557,6 +557,9 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(text VALUE (id ID) (layer LAYER) (at X Y) (size W H) "
                       "(stroke D) (angle A) (justify HORIZONTAL VERTICAL) "
                       "(font stroke|NAME) ...)" } },
+                  { { "form",
+                      "(dimension aligned|orthogonal|radial|leader|center (id ID) "
+                      "(layer LAYER) STYLE_GEOMETRY (line_width D) (arrow_length D) ...)" } },
                   { { "form", "(rule NAME ...)" } },
                   { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "

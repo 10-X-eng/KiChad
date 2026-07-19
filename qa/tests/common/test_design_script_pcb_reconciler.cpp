@@ -59,7 +59,23 @@ const std::string SOURCE = R"KDS((kichad_design
       (layer F.SilkS)
       (at 2mm 8mm)
       (size 1mm 1mm)
-      (stroke 0.15mm)))
+      (stroke 0.15mm))
+    (dimension aligned
+      (id board-width)
+      (layer Dwgs.User)
+      (from 0mm 0mm)
+      (to 20mm 0mm)
+      (height -2mm)
+      (extension_height 0.2mm)
+      (units mm)
+      (unit_format bare_suffix)
+      (precision fixed_2)
+      (line_width 0.15mm)
+      (arrow_length 0.8mm)
+      (arrow_direction inward)
+      (text_position outside)
+      (text_size 1mm 1mm)
+      (text_stroke 0.15mm)))
 )
 )KDS";
 
@@ -112,15 +128,15 @@ BOOST_FIXTURE_TEST_CASE( CreatesThenIdempotentlyUpdatesManagedItems, FIXTURE )
     RECONCILER::RESULT first =
             RECONCILER::Reconcile( operations, nullptr, JSON::array(), Context() );
     BOOST_REQUIRE_MESSAGE( first.ok, first.diagnostics.dump() );
-    BOOST_CHECK_EQUAL( first.counts["create"].get<int>(), 6 );
+    BOOST_CHECK_EQUAL( first.counts["create"].get<int>(), 7 );
     BOOST_CHECK_EQUAL( first.counts["update"].get<int>(), 0 );
-    BOOST_REQUIRE_EQUAL( first.nextState["managedPcbItems"].size(), 6 );
+    BOOST_REQUIRE_EQUAL( first.nextState["managedPcbItems"].size(), 7 );
 
     RECONCILER::RESULT repeated =
             RECONCILER::Reconcile( operations, first.nextState, Inventory(), Context() );
     BOOST_REQUIRE_MESSAGE( repeated.ok, repeated.diagnostics.dump() );
     BOOST_CHECK_EQUAL( repeated.counts["create"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeated.counts["update"].get<int>(), 6 );
+    BOOST_CHECK_EQUAL( repeated.counts["update"].get<int>(), 7 );
     BOOST_CHECK_EQUAL( repeated.counts["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeated.nextState.dump(), first.nextState.dump() );
     auto zoneUpdate = std::find_if(
@@ -147,6 +163,17 @@ BOOST_FIXTURE_TEST_CASE( CreatesThenIdempotentlyUpdatesManagedItems, FIXTURE )
     BOOST_REQUIRE( textUpdate != repeated.actions.end() );
     BOOST_CHECK_EQUAL( ( *textUpdate )["fieldMask"].dump(),
                        JSON::array( { "text", "layer", "knockout", "locked" } ).dump() );
+    auto dimensionUpdate = std::find_if(
+            repeated.actions.begin(), repeated.actions.end(),
+            []( const JSON& action ) { return action.value( "itemType", "" ) == "dimension"; } );
+    BOOST_REQUIRE( dimensionUpdate != repeated.actions.end() );
+    BOOST_CHECK_EQUAL(
+            ( *dimensionUpdate )["fieldMask"].dump(),
+            JSON::array( { "locked", "layer", "text", "aligned", "override_text_enabled",
+                           "override_text", "prefix", "suffix", "unit", "unit_format",
+                           "arrow_direction", "precision", "suppress_trailing_zeroes",
+                           "line_thickness", "arrow_length", "extension_offset",
+                           "text_position", "keep_text_aligned" } ).dump() );
 }
 
 
@@ -161,15 +188,15 @@ BOOST_FIXTURE_TEST_CASE( DeletesOnlyPreviouslyManagedObsoleteItems, FIXTURE )
     RECONCILER::RESULT changed =
             RECONCILER::Reconcile( reduced, first.nextState, Inventory(), Context() );
     BOOST_REQUIRE_MESSAGE( changed.ok, changed.diagnostics.dump() );
-    BOOST_CHECK_EQUAL( changed.counts["update"].get<int>(), 5 );
+    BOOST_CHECK_EQUAL( changed.counts["update"].get<int>(), 6 );
     BOOST_CHECK_EQUAL( changed.counts["delete"].get<int>(), 1 );
-    BOOST_REQUIRE_EQUAL( changed.actions.size(), 6 );
+    BOOST_REQUIRE_EQUAL( changed.actions.size(), 7 );
     auto deleted = std::find_if(
             changed.actions.begin(), changed.actions.end(),
             []( const JSON& action ) { return action.value( "action", "" ) == "delete"; } );
     BOOST_REQUIRE( deleted != changed.actions.end() );
     BOOST_CHECK_EQUAL( ( *deleted )["logicalId"].get<std::string>(), "trace-a" );
-    BOOST_REQUIRE_EQUAL( changed.nextState["managedPcbItems"].size(), 5 );
+    BOOST_REQUIRE_EQUAL( changed.nextState["managedPcbItems"].size(), 6 );
 }
 
 
@@ -250,10 +277,10 @@ BOOST_FIXTURE_TEST_CASE( ResolvesSchematicFootprintPlacementWithoutTakingOwnersh
     RECONCILER::RESULT placed =
             RECONCILER::Reconcile( desired, nullptr, inventory, Context() );
     BOOST_REQUIRE_MESSAGE( placed.ok, placed.diagnostics.dump() );
-    BOOST_CHECK_EQUAL( placed.counts["create"].get<int>(), 6 );
+    BOOST_CHECK_EQUAL( placed.counts["create"].get<int>(), 7 );
     BOOST_CHECK_EQUAL( placed.counts["placement"].get<int>(), 1 );
-    BOOST_REQUIRE_EQUAL( placed.nextState["managedPcbItems"].size(), 6 );
-    BOOST_REQUIRE_EQUAL( placed.actions.size(), 7 );
+    BOOST_REQUIRE_EQUAL( placed.nextState["managedPcbItems"].size(), 7 );
+    BOOST_REQUIRE_EQUAL( placed.actions.size(), 8 );
     auto placementAction = std::find_if(
             placed.actions.begin(), placed.actions.end(),
             []( const JSON& candidate )

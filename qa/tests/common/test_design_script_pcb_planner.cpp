@@ -85,7 +85,7 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
 }
 
 
-BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
+BOOST_AUTO_TEST_CASE( RefusesTypedStatementsWithoutNativeBackend )
 {
     const std::string source = R"KDS((kichad_design
   (version 1)
@@ -93,18 +93,17 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
   (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (board
     (stackup (copper_layers 4) (thickness 1.6mm))
-    (place R1 (at 1mm 1mm))
-    (dimension aligned (from 0mm 0mm) (to 1mm 1mm))))
+    (place R1 (at 1mm 1mm))))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
     BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
-    BOOST_CHECK( !compiled.plan["boardFullyTyped"].get<bool>() );
+    BOOST_CHECK( compiled.plan["boardFullyTyped"].get<bool>() );
 
     KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
     BOOST_CHECK( !plan.fullyLowered );
-    BOOST_CHECK_EQUAL( plan.counts["unsupported"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["unsupported"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["placements"].get<int>(), 1 );
 }
 
@@ -270,6 +269,71 @@ BOOST_AUTO_TEST_CASE( LowersBoardTextIntoDeterministicProtobufJson )
     BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
                        KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
                                "annotated_board", "text", "fab-note" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersEveryDimensionStyleIntoOneNativeProtobufType )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project dimensions)
+  (board
+    (dimension aligned
+      (id a) (layer Dwgs.User) (from 0mm 0mm) (to 10mm 0mm)
+      (height 2mm) (extension_height 0.2mm)
+      (units mm) (unit_format bare_suffix) (precision fixed_2)
+      (line_width 0.15mm) (arrow_length 0.8mm) (extension_offset 0.1mm)
+      (arrow_direction inward) (text_position inline)
+      (text_size 1mm 1mm) (text_stroke 0.15mm))
+    (dimension orthogonal
+      (id o) (layer Dwgs.User) (from 0mm 0mm) (to 0mm 10mm)
+      (height 2mm) (extension_height 0.2mm) (axis y)
+      (units automatic) (unit_format no_suffix) (precision scaled_in_3)
+      (line_width 0.15mm) (arrow_length 0.8mm) (extension_offset 0mm)
+      (arrow_direction outward) (text_position outside)
+      (text_size 1mm 1mm) (text_stroke 0.15mm))
+    (dimension radial
+      (id r) (layer Dwgs.User) (center 20mm 20mm) (radius_point 25mm 20mm)
+      (leader_length 2mm) (units mm) (unit_format paren_suffix) (precision fixed_3)
+      (line_width 0.15mm) (arrow_length 0.8mm) (text_at 28mm 22mm)
+      (text_size 1mm 1mm) (text_stroke 0.15mm))
+    (dimension leader
+      (id l) (layer Dwgs.User) (from 5mm 5mm) (to 8mm 5mm)
+      (border circle) (label "CHECK") (line_width 0.15mm) (arrow_length 0.8mm)
+      (text_at 11mm 5mm) (text_size 1mm 1mm) (text_stroke 0.15mm))
+    (dimension center
+      (id c) (layer Dwgs.User) (center 30mm 30mm) (to 33mm 30mm)
+      (line_width 0.15mm) (arrow_length 0.8mm))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 5 );
+
+    for( const nlohmann::json& operation : plan.operations )
+    {
+        BOOST_CHECK_EQUAL( operation["itemType"].get<std::string>(), "dimension" );
+        checkProtobufJson<kiapi::board::types::Dimension>( operation["item"] );
+    }
+
+    BOOST_CHECK( plan.operations[0]["item"].contains( "aligned" ) );
+    BOOST_CHECK_EQUAL( plan.operations[0]["item"]["arrowDirection"].get<std::string>(),
+                       "DAD_INWARD" );
+    BOOST_CHECK_EQUAL( plan.operations[1]["item"]["orthogonal"]["alignment"].get<std::string>(),
+                       "AA_Y_AXIS" );
+    BOOST_CHECK_EQUAL( plan.operations[2]["item"]["radial"]["leaderLength"]["valueNm"]
+                               .get<std::string>(),
+                       "2000000" );
+    BOOST_CHECK_EQUAL( plan.operations[3]["item"]["leader"]["borderStyle"].get<std::string>(),
+                       "DTBS_CIRCLE" );
+    BOOST_CHECK_EQUAL( plan.operations[3]["item"]["overrideText"].get<std::string>(), "CHECK" );
+    BOOST_CHECK( plan.operations[4]["item"].contains( "center" ) );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
+                       KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                               "dimensions", "dimension", "a" ) );
 }
 
 

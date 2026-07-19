@@ -696,14 +696,15 @@ void validateStackupLayers( const JSON& aStatements, RESULT& aResult )
                             "route layer " + layer + " is not present in the declared stackup" );
             }
         }
-        else if( kind == "text" )
+        else if( kind == "text" || kind == "dimension" )
         {
             const std::string layer = statement.value( "layer", "" );
 
             if( copperLayer( layer ) && copperLayerIndex( layer, copperLayers ) < 0 )
             {
-                diagnostic( aResult, "error", "text_layer_outside_stackup",
-                            "text layer " + layer + " is not present in the declared stackup" );
+                diagnostic( aResult, "error", kind + "_layer_outside_stackup",
+                            kind + " layer " + layer
+                                    + " is not present in the declared stackup" );
             }
         }
         else if( kind == "via" )
@@ -2025,6 +2026,527 @@ JSON compileText( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
 }
 
 
+JSON compileDimensionText( const DOCUMENT& aDocument,
+                           const std::map<std::string, size_t>& aFields,
+                           RESULT& aResult )
+{
+    JSON        position = { { "xNm", 0 }, { "yNm", 0 } };
+    JSON        size = JSON::object();
+    int64_t     stroke = 0;
+    double      angle = 0.0;
+    std::string horizontal = "center";
+    std::string vertical = "center";
+    std::string fontName;
+    bool        bold = false;
+    bool        italic = false;
+    bool        underlined = false;
+    bool        mirrored = false;
+
+    if( aFields.contains( "text_at" )
+        && ( !parseVectorForm( aDocument, aFields.at( "text_at" ), position )
+             || !internalVector( position ) ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_text_position",
+                    "dimension text_at requires bounded coordinates with physical units" );
+    }
+
+    if( !aFields.contains( "text_size" )
+        || !parseVectorForm( aDocument, aFields.at( "text_size" ), size )
+        || size.value( "xNm", int64_t( 0 ) ) < 1000
+        || size.value( "xNm", int64_t( 0 ) ) > 250000000
+        || size.value( "yNm", int64_t( 0 ) ) < 1000
+        || size.value( "yNm", int64_t( 0 ) ) > 250000000 )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_text_size",
+                    "dimension text_size requires width and height from 1um through 250mm" );
+    }
+
+    const int64_t maximumStroke =
+            std::min( size.value( "xNm", int64_t( 0 ) ),
+                      size.value( "yNm", int64_t( 0 ) ) )
+            / 4;
+
+    if( !aFields.contains( "text_stroke" )
+        || !parseDistanceForm( aDocument, aFields.at( "text_stroke" ), stroke )
+        || stroke <= 0 || stroke > maximumStroke )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_text_stroke",
+                    "dimension text_stroke must be positive and at most one quarter of text_size" );
+    }
+
+    if( aFields.contains( "text_angle" )
+        && !parseAngleForm( aDocument, aFields.at( "text_angle" ), angle ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_text_angle",
+                    "dimension text_angle must use an explicit deg suffix" );
+    }
+
+    if( aFields.contains( "text_justify" ) )
+    {
+        const DOCUMENT::NODE& justify = aDocument.Nodes()[aFields.at( "text_justify" )];
+
+        if( justify.children.size() != 3
+            || !scalarText( aDocument, justify.children[1], horizontal )
+            || !scalarText( aDocument, justify.children[2], vertical )
+            || ( horizontal != "left" && horizontal != "center" && horizontal != "right" )
+            || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_text_justification",
+                        "dimension text_justify requires horizontal and vertical alignment" );
+        }
+    }
+
+    if( aFields.contains( "font" ) )
+    {
+        std::string font;
+
+        if( !parseScalarForm( aDocument, aFields.at( "font" ), font ) || font.empty()
+            || font.size() > MAX_FONT_NAME_BYTES )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_font",
+                        "dimension font must be stroke or a bounded installed font name" );
+        }
+        else if( font != "stroke" )
+        {
+            fontName = std::move( font );
+        }
+    }
+
+    const auto parseBoolean = [&]( const char* aField, bool& aValue )
+    {
+        if( aFields.contains( aField )
+            && !parseBooleanForm( aDocument, aFields.at( aField ), aValue ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_text_boolean",
+                        std::string( "dimension " ) + aField + " must be true or false" );
+        }
+    };
+    parseBoolean( "bold", bold );
+    parseBoolean( "italic", italic );
+    parseBoolean( "underlined", underlined );
+    parseBoolean( "mirrored", mirrored );
+
+    return { { "position", std::move( position ) },
+             { "size", std::move( size ) },
+             { "strokeNm", stroke },
+             { "angleDegrees", angle },
+             { "angleExplicit", aFields.contains( "text_angle" ) },
+             { "horizontalJustification", horizontal },
+             { "verticalJustification", vertical },
+             { "fontName", fontName },
+             { "bold", bold },
+             { "italic", italic },
+             { "underlined", underlined },
+             { "mirrored", mirrored } };
+}
+
+
+JSON compileDimension( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
+                       std::set<std::string>& aLogicalIds )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string           style;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], style )
+        || ( style != "aligned" && style != "orthogonal" && style != "radial"
+             && style != "leader" && style != "center" ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_style",
+                    "dimension style must be aligned, orthogonal, radial, leader, or center" );
+    }
+
+    std::set<std::string> allowed = { "id", "layer", "line_width", "arrow_length", "locked" };
+    const std::set<std::string> textFields = {
+        "text_at", "text_size", "text_stroke", "text_angle", "text_justify", "font",
+        "bold", "italic", "underlined", "mirrored"
+    };
+    const std::set<std::string> measurementFields = {
+        "units", "unit_format", "precision", "suppress_trailing_zeroes", "prefix",
+        "suffix", "override"
+    };
+
+    if( style != "center" )
+        allowed.insert( textFields.begin(), textFields.end() );
+
+    if( style == "aligned" || style == "orthogonal" || style == "radial" )
+        allowed.insert( measurementFields.begin(), measurementFields.end() );
+
+    if( style == "aligned" || style == "orthogonal" )
+    {
+        allowed.insert( { "from", "to", "height", "extension_height", "extension_offset",
+                          "arrow_direction", "text_position", "keep_text_aligned" } );
+    }
+
+    if( style == "orthogonal" )
+        allowed.emplace( "axis" );
+    else if( style == "radial" )
+        allowed.insert( { "center", "radius_point", "leader_length", "keep_text_aligned" } );
+    else if( style == "leader" )
+        allowed.insert( { "from", "to", "border", "label", "extension_offset" } );
+    else if( style == "center" )
+        allowed.insert( { "center", "to" } );
+
+    std::map<std::string, size_t> fields;
+    collectFields( aDocument, aNode, 2, allowed, fields, aResult, "dimension " + style );
+    std::string logicalId;
+    std::string layer;
+    int64_t lineWidth = 0;
+    int64_t arrowLength = 0;
+    int64_t extensionOffset = 0;
+    bool locked = false;
+
+    if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
+        || !validIdentifier( logicalId ) )
+    {
+        diagnostic( aResult, "error", "invalid_board_id",
+                    "dimension requires a bounded (id LOGICAL_ID)" );
+    }
+    else if( !aLogicalIds.emplace( logicalId ).second )
+    {
+        diagnostic( aResult, "error", "duplicate_board_id",
+                    "board logical id " + logicalId + " occurs more than once" );
+    }
+
+    if( !fields.contains( "layer" ) || !parseScalarForm( aDocument, fields["layer"], layer )
+        || !boardLayer( layer ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_layer",
+                    "dimension requires a named KiCad board layer" );
+    }
+
+    if( !fields.contains( "line_width" )
+        || !parseDistanceForm( aDocument, fields["line_width"], lineWidth )
+        || !internalDistance( lineWidth ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_line_width",
+                    "dimension requires a positive bounded line_width" );
+    }
+
+    if( !fields.contains( "arrow_length" )
+        || !parseDistanceForm( aDocument, fields["arrow_length"], arrowLength )
+        || !internalDistance( arrowLength ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_arrow_length",
+                    "dimension requires a positive bounded arrow_length" );
+    }
+
+    if( fields.contains( "extension_offset" )
+        && ( !parseDistanceForm( aDocument, fields["extension_offset"], extensionOffset )
+             || !internalDistance( extensionOffset, true ) ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_extension_offset",
+                    "dimension extension_offset must be a non-negative bounded distance" );
+    }
+
+    if( fields.contains( "locked" )
+        && !parseBooleanForm( aDocument, fields["locked"], locked ) )
+    {
+        diagnostic( aResult, "error", "invalid_dimension_locked",
+                    "dimension locked must be true or false" );
+    }
+
+    JSON geometry = JSON::object();
+    const auto parsePoint = [&]( const char* aField, JSON& aPoint )
+    {
+        if( !fields.contains( aField )
+            || !parseVectorForm( aDocument, fields[aField], aPoint )
+            || !internalVector( aPoint ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_geometry",
+                        std::string( "dimension requires bounded " ) + aField
+                                + " coordinates with physical units" );
+        }
+    };
+
+    if( style == "aligned" || style == "orthogonal" )
+    {
+        JSON start = JSON::object();
+        JSON end = JSON::object();
+        int64_t height = 0;
+        int64_t extensionHeight = 0;
+        parsePoint( "from", start );
+        parsePoint( "to", end );
+
+        if( !fields.contains( "height" )
+            || !parseDistanceForm( aDocument, fields["height"], height ) || height == 0
+            || height < std::numeric_limits<int>::min()
+            || height > std::numeric_limits<int>::max() )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_height",
+                        "aligned and orthogonal dimensions require a non-zero bounded height" );
+        }
+
+        if( !fields.contains( "extension_height" )
+            || !parseDistanceForm( aDocument, fields["extension_height"], extensionHeight )
+            || !internalDistance( extensionHeight, true ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_extension_height",
+                        "dimension extension_height must be a non-negative bounded distance" );
+        }
+
+        if( !start.empty() && start == end )
+            diagnostic( aResult, "error", "zero_length_dimension",
+                        "dimension endpoints must differ" );
+
+        geometry = { { "start", std::move( start ) }, { "end", std::move( end ) },
+                     { "heightNm", height }, { "extensionHeightNm", extensionHeight } };
+
+        if( style == "orthogonal" )
+        {
+            std::string axis;
+
+            if( !fields.contains( "axis" ) || !parseScalarForm( aDocument, fields["axis"], axis )
+                || ( axis != "x" && axis != "y" ) )
+            {
+                diagnostic( aResult, "error", "invalid_dimension_axis",
+                            "orthogonal dimension axis must be x or y" );
+            }
+
+            geometry["axis"] = axis;
+        }
+    }
+    else if( style == "radial" )
+    {
+        JSON center = JSON::object();
+        JSON radiusPoint = JSON::object();
+        int64_t leaderLength = 0;
+        parsePoint( "center", center );
+        parsePoint( "radius_point", radiusPoint );
+
+        if( !fields.contains( "leader_length" )
+            || !parseDistanceForm( aDocument, fields["leader_length"], leaderLength )
+            || !internalDistance( leaderLength ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_leader_length",
+                        "radial dimension requires a positive bounded leader_length" );
+        }
+
+        if( !center.empty() && center == radiusPoint )
+            diagnostic( aResult, "error", "zero_length_dimension",
+                        "radial dimension radius_point must differ from center" );
+
+        geometry = { { "center", std::move( center ) },
+                     { "radiusPoint", std::move( radiusPoint ) },
+                     { "leaderLengthNm", leaderLength } };
+    }
+    else if( style == "leader" )
+    {
+        JSON start = JSON::object();
+        JSON end = JSON::object();
+        std::string border;
+        std::string label;
+        parsePoint( "from", start );
+        parsePoint( "to", end );
+
+        if( !fields.contains( "border" ) || !parseScalarForm( aDocument, fields["border"], border )
+            || ( border != "none" && border != "rectangle" && border != "circle"
+                 && border != "roundrect" ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_border",
+                        "leader dimension border must be none, rectangle, circle, or roundrect" );
+        }
+
+        if( !fields.contains( "label" ) || !parseScalarForm( aDocument, fields["label"], label )
+            || label.empty() || label.size() > MAX_TEXT_BYTES
+            || label.find( '\r' ) != std::string::npos
+            || label.find( '\n' ) != std::string::npos )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_label",
+                        "leader dimension requires a bounded single-line label" );
+        }
+
+        if( !start.empty() && start == end )
+            diagnostic( aResult, "error", "zero_length_dimension",
+                        "leader dimension endpoints must differ" );
+
+        geometry = { { "start", std::move( start ) }, { "end", std::move( end ) },
+                     { "border", border }, { "label", label } };
+    }
+    else if( style == "center" )
+    {
+        JSON center = JSON::object();
+        JSON end = JSON::object();
+        parsePoint( "center", center );
+        parsePoint( "to", end );
+
+        if( !center.empty() && center == end )
+            diagnostic( aResult, "error", "zero_length_dimension",
+                        "center dimension endpoint must differ from center" );
+
+        geometry = { { "center", std::move( center ) }, { "end", std::move( end ) } };
+    }
+
+    std::string units = "automatic";
+    std::string unitFormat = "no_suffix";
+    std::string precision = "fixed_0";
+    bool suppressTrailingZeroes = false;
+    std::string prefix = style == "radial" ? "R " : "";
+    std::string suffix;
+    bool overrideEnabled = false;
+    std::string overrideText;
+    const bool measured = style == "aligned" || style == "orthogonal" || style == "radial";
+
+    if( measured )
+    {
+        if( !fields.contains( "units" ) || !parseScalarForm( aDocument, fields["units"], units )
+            || ( units != "mm" && units != "mil" && units != "in"
+                 && units != "automatic" ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_units",
+                        "measurement dimension units must be mm, mil, in, or automatic" );
+        }
+
+        if( !fields.contains( "unit_format" )
+            || !parseScalarForm( aDocument, fields["unit_format"], unitFormat )
+            || ( unitFormat != "no_suffix" && unitFormat != "bare_suffix"
+                 && unitFormat != "paren_suffix" ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_unit_format",
+                        "dimension unit_format must be no_suffix, bare_suffix, or paren_suffix" );
+        }
+
+        static const std::set<std::string> PRECISIONS = {
+            "fixed_0", "fixed_1", "fixed_2", "fixed_3", "fixed_4", "fixed_5",
+            "scaled_in_2", "scaled_in_3", "scaled_in_4", "scaled_in_5"
+        };
+
+        if( !fields.contains( "precision" )
+            || !parseScalarForm( aDocument, fields["precision"], precision )
+            || !PRECISIONS.contains( precision ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_precision",
+                        "dimension precision must be a canonical fixed or scaled precision" );
+        }
+
+        if( fields.contains( "suppress_trailing_zeroes" )
+            && !parseBooleanForm( aDocument, fields["suppress_trailing_zeroes"],
+                                  suppressTrailingZeroes ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_suppress_zeroes",
+                        "dimension suppress_trailing_zeroes must be true or false" );
+        }
+
+        const auto parseAffix = [&]( const char* aField, std::string& aValue )
+        {
+            if( fields.contains( aField )
+                && ( !parseScalarForm( aDocument, fields[aField], aValue )
+                     || aValue.size() > 256 || aValue.find( '\r' ) != std::string::npos
+                     || aValue.find( '\n' ) != std::string::npos ) )
+            {
+                diagnostic( aResult, "error", "invalid_dimension_affix",
+                            std::string( "dimension " ) + aField
+                                    + " must be at most 256 UTF-8 bytes on one line" );
+            }
+        };
+        parseAffix( "prefix", prefix );
+        parseAffix( "suffix", suffix );
+
+        if( fields.contains( "override" ) )
+        {
+            overrideEnabled = true;
+
+            if( !parseScalarForm( aDocument, fields["override"], overrideText )
+                || overrideText.size() > MAX_TEXT_BYTES
+                || overrideText.find( '\r' ) != std::string::npos
+                || overrideText.find( '\n' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_dimension_override",
+                            "dimension override must be bounded single-line text" );
+            }
+        }
+    }
+
+    std::string arrowDirection = "outward";
+    std::string textPosition = "manual";
+    bool keepTextAligned = false;
+
+    if( style == "aligned" || style == "orthogonal" )
+    {
+        textPosition = "outside";
+        keepTextAligned = true;
+
+        if( !fields.contains( "arrow_direction" )
+            || !parseScalarForm( aDocument, fields["arrow_direction"], arrowDirection )
+            || ( arrowDirection != "inward" && arrowDirection != "outward" ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_arrow_direction",
+                        "dimension arrow_direction must be inward or outward" );
+        }
+
+        if( !fields.contains( "text_position" )
+            || !parseScalarForm( aDocument, fields["text_position"], textPosition )
+            || ( textPosition != "outside" && textPosition != "inline"
+                 && textPosition != "manual" ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_text_position_mode",
+                        "dimension text_position must be outside, inline, or manual" );
+        }
+    }
+
+    if( style == "aligned" || style == "orthogonal" || style == "radial" )
+    {
+        if( fields.contains( "keep_text_aligned" )
+            && !parseBooleanForm( aDocument, fields["keep_text_aligned"], keepTextAligned ) )
+        {
+            diagnostic( aResult, "error", "invalid_dimension_keep_text_aligned",
+                        "dimension keep_text_aligned must be true or false" );
+        }
+    }
+
+    JSON text = style == "center" ? JSON::object() : compileDimensionText( aDocument, fields,
+                                                                            aResult );
+    const bool requiresTextAt = style == "radial" || style == "leader"
+                                || textPosition == "manual";
+
+    if( style != "center" && requiresTextAt && !fields.contains( "text_at" ) )
+    {
+        diagnostic( aResult, "error", "missing_dimension_text_position",
+                    "this dimension style or text_position requires text_at" );
+    }
+    else if( style != "center" && !requiresTextAt && fields.contains( "text_at" ) )
+    {
+        diagnostic( aResult, "error", "ignored_dimension_text_position",
+                    "text_at is valid only for manual, radial, and leader dimensions" );
+    }
+
+    if( style != "center" && keepTextAligned && text.value( "angleExplicit", false ) )
+    {
+        diagnostic( aResult, "error", "ignored_dimension_text_angle",
+                    "text_angle is not accepted while keep_text_aligned is true" );
+    }
+
+    if( style == "leader" )
+    {
+        overrideEnabled = true;
+        overrideText = geometry.value( "label", "" );
+        unitFormat = "no_suffix";
+    }
+
+    return { { "kind", "dimension" },
+             { "logicalId", logicalId },
+             { "dimensionStyle", style },
+             { "layer", layer },
+             { "geometry", std::move( geometry ) },
+             { "text", std::move( text ) },
+             { "units", units },
+             { "unitFormat", unitFormat },
+             { "precision", precision },
+             { "suppressTrailingZeroes", suppressTrailingZeroes },
+             { "prefix", prefix },
+             { "suffix", suffix },
+             { "overrideEnabled", overrideEnabled },
+             { "overrideText", overrideText },
+             { "lineWidthNm", lineWidth },
+             { "arrowLengthNm", arrowLength },
+             { "extensionOffsetNm", extensionOffset },
+             { "arrowDirection", arrowDirection },
+             { "textPosition", textPosition },
+             { "keepTextAligned", keepTextAligned },
+             { "locked", locked },
+             { "typed", true } };
+}
+
+
 JSON compileKeepoutProhibitions( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult )
 {
     std::map<std::string, size_t> fields;
@@ -2236,6 +2758,11 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
         else if( head == "text" )
         {
             result.statements.emplace_back( compileText( aDocument, child, result, logicalIds ) );
+        }
+        else if( head == "dimension" )
+        {
+            result.statements.emplace_back(
+                    compileDimension( aDocument, child, result, logicalIds ) );
         }
         else if( head == "keepout" )
         {

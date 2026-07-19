@@ -427,6 +427,85 @@ BOOST_AUTO_TEST_CASE( CompilesBoundedBoardTextAndRejectsUnsafeTypography )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesAllNativeDimensionStylesWithoutIgnoredIntent )
+{
+    const std::string valid = R"KDS((kichad_design
+  (version 1)
+  (project dimension_board)
+  (board
+    (dimension aligned
+      (id aligned-width) (layer Dwgs.User)
+      (from 0mm 0mm) (to 20mm 0mm) (height 3mm) (extension_height 0.2mm)
+      (units mm) (unit_format bare_suffix) (precision fixed_2)
+      (suppress_trailing_zeroes true) (prefix "W=") (suffix " nominal")
+      (line_width 0.15mm) (arrow_length 0.8mm) (extension_offset 0.1mm)
+      (arrow_direction inward) (text_position manual) (keep_text_aligned false)
+      (text_at 10mm 3mm) (text_size 1mm 1mm) (text_stroke 0.15mm)
+      (text_angle 0deg) (text_justify center center) (font stroke) (locked true))
+    (dimension orthogonal
+      (id orthogonal-height) (layer Dwgs.User)
+      (from 0mm 0mm) (to 0mm 10mm) (height -2mm) (extension_height 0mm) (axis y)
+      (units automatic) (unit_format no_suffix) (precision scaled_in_4)
+      (line_width 0.15mm) (arrow_length 0.8mm) (extension_offset 0mm)
+      (arrow_direction outward) (text_position inline) (keep_text_aligned true)
+      (text_size 1mm 1mm) (text_stroke 0.15mm))
+    (dimension radial
+      (id radius) (layer Dwgs.User)
+      (center 30mm 20mm) (radius_point 35mm 20mm) (leader_length 3mm)
+      (units mm) (unit_format paren_suffix) (precision fixed_3)
+      (prefix "R ") (line_width 0.15mm) (arrow_length 0.8mm)
+      (keep_text_aligned false) (text_at 40mm 22mm)
+      (text_size 1mm 1mm) (text_stroke 0.15mm) (text_angle 30deg))
+    (dimension leader
+      (id callout) (layer Dwgs.User)
+      (from 5mm 15mm) (to 10mm 15mm) (border roundrect) (label "Inspect joint")
+      (line_width 0.15mm) (arrow_length 0.8mm) (extension_offset 0.1mm)
+      (text_at 15mm 15mm) (text_size 1mm 1mm) (text_stroke 0.15mm)
+      (bold true) (italic true))
+    (dimension center
+      (id hole-center) (layer Dwgs.User)
+      (center 25mm 25mm) (to 28mm 25mm)
+      (line_width 0.15mm) (arrow_length 0.8mm) (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( valid );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( compiled.ir["pcb"].size(), 5 );
+    BOOST_CHECK_EQUAL( compiled.ir["pcb"][0]["dimensionStyle"].get<std::string>(), "aligned" );
+    BOOST_CHECK_EQUAL( compiled.ir["pcb"][1]["geometry"]["axis"].get<std::string>(), "y" );
+    BOOST_CHECK_EQUAL( compiled.ir["pcb"][2]["geometry"]["leaderLengthNm"].get<int64_t>(),
+                       3000000 );
+    BOOST_CHECK_EQUAL( compiled.ir["pcb"][3]["overrideText"].get<std::string>(),
+                       "Inspect joint" );
+    BOOST_CHECK( compiled.ir["pcb"][3]["overrideEnabled"].get<bool>() );
+    BOOST_CHECK_EQUAL( compiled.ir["pcb"][4]["dimensionStyle"].get<std::string>(), "center" );
+    BOOST_CHECK( compiled.ir["pcb"][4]["text"].empty() );
+    BOOST_CHECK( compiled.plan["boardFullyTyped"].get<bool>() );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project invalid_dimension)
+  (board
+    (dimension center
+      (id bad-center) (layer Missing.Layer)
+      (center 1mm 1mm) (to 1mm 1mm)
+      (line_width 0mm)
+      (text_size 1mm 1mm))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT rejected =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !rejected.ok );
+    const std::string diagnostics = rejected.diagnostics.dump();
+
+    for( const char* code : { "unknown_board_field", "invalid_dimension_layer",
+                              "invalid_dimension_line_width", "invalid_dimension_arrow_length",
+                              "zero_length_dimension" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCopperZoneGeometryBeforePlanning )
 {
     std::string oversized = R"KDS((kichad_design
@@ -607,6 +686,9 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK_NE( description.dump().find( "hatch_offsets" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "prohibit" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "font stroke|NAME" ), std::string::npos );
+    BOOST_CHECK_NE( description.dump().find(
+                            "dimension aligned|orthogonal|radial|leader|center" ),
+                    std::string::npos );
 }
 
 

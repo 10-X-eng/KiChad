@@ -1388,7 +1388,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                  { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
-    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 7 );
+    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 12 );
     BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
@@ -1400,11 +1400,11 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     JSON repeatedData = envelope( repeated )["data"];
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 7 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 12 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
 
-    auto getOne = [&]( const std::string& aItemType )
+    auto getItems = [&]( const std::string& aItemType, size_t aExpectedCount )
     {
         JSON response = registry.Handle( "pcb", { { "operation", "get" },
                                                    { "path", boardName },
@@ -1412,9 +1412,14 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                    { "limit", 10 } } );
         BOOST_REQUIRE_MESSAGE( response.at( "success" ).get<bool>(), response.dump() );
         JSON data = envelope( response )["data"];
-        BOOST_REQUIRE_EQUAL( data["totalItems"].get<int>(), 1 );
-        BOOST_REQUIRE_EQUAL( data["items"].size(), 1 );
-        return data["items"][0];
+        BOOST_REQUIRE_EQUAL( data["totalItems"].get<size_t>(), aExpectedCount );
+        BOOST_REQUIRE_EQUAL( data["items"].size(), aExpectedCount );
+        return data["items"];
+    };
+
+    auto getOne = [&]( const std::string& aItemType )
+    {
+        return getItems( aItemType, 1 )[0];
     };
 
     const auto stableUuid = []( const std::string& aType, const std::string& aLogicalId )
@@ -1508,6 +1513,68 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( text["text"]["hyperlink"].get<std::string>(),
                        "https://github.com/10-X-eng/KiChad" );
     BOOST_CHECK_EQUAL( text["locked"].get<std::string>(), "LS_LOCKED" );
+
+    JSON dimensions = getItems( "dimension", 5 );
+    const auto findDimension = [&]( const std::string& aLogicalId,
+                                    const std::string& aStyle )
+    {
+        const std::string expectedId = stableUuid( "dimension", aLogicalId );
+        auto found = std::find_if(
+                dimensions.begin(), dimensions.end(),
+                [&]( const JSON& candidate )
+                {
+                    return candidate["id"]["value"].get<std::string>() == expectedId
+                           && candidate.contains( aStyle );
+                } );
+        BOOST_REQUIRE( found != dimensions.end() );
+        return *found;
+    };
+    JSON dimension = findDimension( "board-width", "aligned" );
+    BOOST_CHECK_EQUAL( dimension["id"]["value"].get<std::string>(),
+                       stableUuid( "dimension", "board-width" ) );
+    BOOST_CHECK_EQUAL( dimension["layer"].get<std::string>(), "BL_Dwgs_User" );
+    BOOST_CHECK_EQUAL( dimension["aligned"]["start"]["xNm"].get<std::string>(),
+                       "20000000" );
+    BOOST_CHECK_EQUAL( dimension["aligned"]["end"]["xNm"].get<std::string>(),
+                       "60000000" );
+    BOOST_CHECK_EQUAL( dimension["aligned"]["height"]["valueNm"].get<std::string>(),
+                       "-3000000" );
+    BOOST_CHECK_EQUAL(
+            dimension["aligned"]["extensionHeight"]["valueNm"].get<std::string>(),
+            "200000" );
+    BOOST_CHECK_EQUAL( dimension["prefix"].get<std::string>(), "W=" );
+    BOOST_CHECK_EQUAL( dimension["unit"].get<std::string>(), "DU_MILLIMETERS" );
+    BOOST_CHECK_EQUAL( dimension["unitFormat"].get<std::string>(), "DUF_BARE_SUFFIX" );
+    BOOST_CHECK_EQUAL( dimension["precision"].get<std::string>(), "DP_FIXED_2" );
+    BOOST_CHECK_EQUAL( dimension["arrowDirection"].get<std::string>(), "DAD_INWARD" );
+    BOOST_CHECK_EQUAL( dimension["textPosition"].get<std::string>(), "DTP_MANUAL" );
+    BOOST_CHECK_EQUAL( dimension["text"]["position"]["xNm"].get<std::string>(),
+                       "40000000" );
+    BOOST_CHECK_EQUAL( dimension["text"]["position"]["yNm"].get<std::string>(),
+                       "17000000" );
+    BOOST_CHECK_EQUAL( dimension["lineThickness"]["valueNm"].get<std::string>(),
+                       "150000" );
+    BOOST_CHECK_EQUAL( dimension["arrowLength"]["valueNm"].get<std::string>(),
+                       "800000" );
+    BOOST_CHECK_EQUAL( dimension["extensionOffset"]["valueNm"].get<std::string>(),
+                       "100000" );
+    BOOST_CHECK( dimension["suppressTrailingZeroes"].get<bool>() );
+    BOOST_CHECK( !dimension.value( "keepTextAligned", false ) );
+    BOOST_CHECK_EQUAL( dimension["locked"].get<std::string>(), "LS_LOCKED" );
+
+    JSON orthogonal = findDimension( "board-height", "orthogonal" );
+    BOOST_CHECK_EQUAL( orthogonal["orthogonal"]["alignment"].get<std::string>(),
+                       "AA_Y_AXIS" );
+    BOOST_CHECK( orthogonal["keepTextAligned"].get<bool>() );
+    JSON radial = findDimension( "mounting-radius", "radial" );
+    BOOST_CHECK_EQUAL( radial["radial"]["leaderLength"]["valueNm"].get<std::string>(),
+                       "2000000" );
+    JSON leader = findDimension( "inspect-callout", "leader" );
+    BOOST_CHECK_EQUAL( leader["leader"]["borderStyle"].get<std::string>(),
+                       "DTBS_ROUNDRECT" );
+    BOOST_CHECK_EQUAL( leader["overrideText"].get<std::string>(), "Inspect joint" );
+    JSON center = findDimension( "mounting-center", "center" );
+    BOOST_CHECK_EQUAL( center["center"]["end"]["xNm"].get<std::string>(), "47000000" );
 
     JSON footprint = getOne( "footprint" );
     BOOST_CHECK_EQUAL( footprint["id"]["value"].get<std::string>(),

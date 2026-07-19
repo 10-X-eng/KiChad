@@ -219,6 +219,61 @@ installed anywhere the design is rendered. All normal KiCad copper, technical, f
 user board layers are accepted; copper layers are checked against the declared stackup and the
 target board must have the authored layer enabled.
 
+### Dimension form
+
+KDS has one canonical dimension form whose style selects one of KiCad's five native dimension
+geometries:
+
+```scheme
+(dimension aligned|orthogonal|radial|leader|center
+  (id LOGICAL_ID)
+  (layer Dwgs.User)
+  ; aligned/orthogonal: (from X Y) (to X Y) (height SIGNED_DISTANCE)
+  ;                     (extension_height DISTANCE), plus (axis x|y) for orthogonal
+  ; radial:             (center X Y) (radius_point X Y) (leader_length DISTANCE)
+  ; leader:             (from X Y) (to X Y)
+  ;                     (border none|rectangle|circle|roundrect) (label "TEXT")
+  ; center:             (center X Y) (to X Y)
+  ; aligned, orthogonal, and radial measurement policy:
+  (units mm|mil|in|automatic)
+  (unit_format no_suffix|bare_suffix|paren_suffix)
+  (precision fixed_0|fixed_1|fixed_2|fixed_3|fixed_4|fixed_5|
+             scaled_in_2|scaled_in_3|scaled_in_4|scaled_in_5)
+  (suppress_trailing_zeroes true|false)
+  (prefix "TEXT") (suffix "TEXT") (override "TEXT")
+  ; aligned and orthogonal layout policy:
+  (arrow_direction inward|outward)
+  (text_position outside|inline|manual)
+  ; also accepted by radial dimensions:
+  (keep_text_aligned true|false)
+  ; non-center text appearance:
+  (text_at X Y)
+  (text_size WIDTH HEIGHT)
+  (text_stroke WIDTH)
+  (text_angle ANGLE)
+  (text_justify left|center|right top|center|bottom)
+  (font stroke|"INSTALLED FONT NAME")
+  (bold true|false) (italic true|false)
+  (underlined true|false) (mirrored true|false)
+  ; common physical policy:
+  (line_width DISTANCE)
+  (arrow_length DISTANCE)
+  ; aligned, orthogonal, and leader only:
+  (extension_offset DISTANCE)
+  (locked true|false))
+```
+
+`id`, `layer`, `line_width`, and `arrow_length` are required for every style. Geometry fields are
+required exactly as shown and endpoints must differ. Measurement fields are required for aligned,
+orthogonal, and radial dimensions; radial dimensions default to the conventional `R ` prefix.
+`text_size` and `text_stroke` are required for every style except center marks. `text_at` is required
+for radial and leader dimensions and whenever aligned or orthogonal text is manual; it is rejected
+when automatic positioning would ignore it. An explicit text angle is likewise rejected while
+`keep_text_aligned` is true. Leader labels compile to KiCad's native override text, while center
+marks reject all text and measurement fields. Fields that do not apply to the selected style are
+errors instead of silently retaining intent. The compiler lowers every style into the same native
+KiCad `Dimension` protobuf type and uses the authored style as its single geometry oneof.
+
 ## Compiler pipeline
 
 1. Parse bounded, lossless s-expressions.
@@ -241,13 +296,13 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes rectangular outlines, component placement, straight traces,
-arcs, vias, copper zones, keepout rule areas, and native board text. A zone explicitly declares its
-net, stable ID, one or more copper layers, bounded polygon/hole geometry, clearance, minimum
-thickness, connection and thermal policy, island policy, solid or hatched fill, priority, border
-display, and lock state. No manufacturing setting is inherited silently. Zone creation and updates
-are committed through KiCad 10 IPC, after which KiCad's official refill operation is polled until
-every desired zone reports filled. Refill failure retains the recovery journal and aborts the apply
-result rather than claiming success.
+arcs, vias, copper zones, keepout rule areas, native board text, and all five native dimension
+styles. A zone explicitly declares its net, stable ID, one or more copper layers, bounded
+polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
+solid or hatched fill, priority, border display, and lock state. No manufacturing setting is
+inherited silently. Zone creation and updates are committed through KiCad 10 IPC, after which
+KiCad's official refill operation is polled until every desired zone reports filled. Refill failure
+retains the recovery journal and aborts the apply result rather than claiming success.
 Keepouts use a separate deterministic ownership type and exact `rule_area_settings` update mask, so
 their unfilled state is never confused with a failed copper refill.
 
@@ -255,17 +310,20 @@ Placement requires exactly one live footprint with the KDS component reference a
 an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
 state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
 existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
-The backend still refuses stackup, dimensions, or any structurally retained form before
-mutation until that form has its own typed backend and rollback coverage.
+The backend still refuses stackup or any structurally retained form before mutation until that form
+has its own typed backend and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
-an isolated temporary project, starts its own build-tree PCB Editor, applies seven managed items, and
+an isolated temporary project, starts its own build-tree PCB Editor, applies twelve managed items, and
 reapplies the unchanged source to verify updates reuse the same deterministic identities. It also
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
 and flipped child layers survive both applies. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
 keepout with exact prohibited-item policy. The seventh is multiline native board text with exact
-position, layer, typography, hyperlink, and lock state.
+position, layer, typography, hyperlink, and lock state. The remaining five are aligned, orthogonal,
+radial, leader, and center dimensions with exact native geometry, units, precision, layout policy,
+labels, and text placement. Reapply groups updates by exact field mask so each dimension oneof is
+updated independently.
 
 ## Production support rule
 

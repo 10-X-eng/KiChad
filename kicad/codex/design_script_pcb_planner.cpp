@@ -184,6 +184,161 @@ JSON planText( const JSON& aStatement, const std::string& aProject )
 }
 
 
+JSON planDimension( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "dimension", logicalId );
+    const std::string style = aStatement.at( "dimensionStyle" ).get<std::string>();
+    const JSON& geometry = aStatement.at( "geometry" );
+    const std::map<std::string, std::string> horizontalEnums = {
+        { "left", "HA_LEFT" }, { "center", "HA_CENTER" }, { "right", "HA_RIGHT" }
+    };
+    const std::map<std::string, std::string> verticalEnums = {
+        { "top", "VA_TOP" }, { "center", "VA_CENTER" }, { "bottom", "VA_BOTTOM" }
+    };
+    const std::map<std::string, std::string> unitEnums = {
+        { "in", "DU_INCHES" }, { "mil", "DU_MILS" }, { "mm", "DU_MILLIMETERS" },
+        { "automatic", "DU_AUTOMATIC" }
+    };
+    const std::map<std::string, std::string> unitFormatEnums = {
+        { "no_suffix", "DUF_NO_SUFFIX" }, { "bare_suffix", "DUF_BARE_SUFFIX" },
+        { "paren_suffix", "DUF_PAREN_SUFFIX" }
+    };
+    const std::map<std::string, std::string> precisionEnums = {
+        { "fixed_0", "DP_FIXED_0" }, { "fixed_1", "DP_FIXED_1" },
+        { "fixed_2", "DP_FIXED_2" }, { "fixed_3", "DP_FIXED_3" },
+        { "fixed_4", "DP_FIXED_4" }, { "fixed_5", "DP_FIXED_5" },
+        { "scaled_in_2", "DP_SCALED_IN_2" }, { "scaled_in_3", "DP_SCALED_IN_3" },
+        { "scaled_in_4", "DP_SCALED_IN_4" }, { "scaled_in_5", "DP_SCALED_IN_5" }
+    };
+    const std::map<std::string, std::string> arrowEnums = {
+        { "inward", "DAD_INWARD" }, { "outward", "DAD_OUTWARD" }
+    };
+    const std::map<std::string, std::string> textPositionEnums = {
+        { "outside", "DTP_OUTSIDE" }, { "inline", "DTP_INLINE" },
+        { "manual", "DTP_MANUAL" }
+    };
+    JSON item = {
+        { "id", { { "value", itemId } } },
+        { "locked", lockedEnum( aStatement ) },
+        { "layer", layerEnum( aStatement.at( "layer" ).get<std::string>() ) },
+        { "overrideTextEnabled", aStatement.at( "overrideEnabled" ) },
+        { "overrideText", aStatement.at( "overrideText" ) },
+        { "prefix", aStatement.at( "prefix" ) },
+        { "suffix", aStatement.at( "suffix" ) },
+        { "unit", unitEnums.at( aStatement.at( "units" ).get<std::string>() ) },
+        { "unitFormat",
+          unitFormatEnums.at( aStatement.at( "unitFormat" ).get<std::string>() ) },
+        { "arrowDirection",
+          arrowEnums.at( aStatement.at( "arrowDirection" ).get<std::string>() ) },
+        { "precision",
+          precisionEnums.at( aStatement.at( "precision" ).get<std::string>() ) },
+        { "suppressTrailingZeroes", aStatement.at( "suppressTrailingZeroes" ) },
+        { "lineThickness",
+          { { "valueNm", std::to_string( aStatement.at( "lineWidthNm" ).get<int64_t>() ) } } },
+        { "arrowLength",
+          { { "valueNm", std::to_string( aStatement.at( "arrowLengthNm" ).get<int64_t>() ) } } },
+        { "extensionOffset",
+          { { "valueNm",
+              std::to_string( aStatement.at( "extensionOffsetNm" ).get<int64_t>() ) } } },
+        { "textPosition",
+          textPositionEnums.at( aStatement.at( "textPosition" ).get<std::string>() ) },
+        { "keepTextAligned", aStatement.at( "keepTextAligned" ) }
+    };
+
+    if( style != "center" )
+    {
+        const JSON& text = aStatement.at( "text" );
+        item["text"] = {
+            { "position", vectorProto( text.at( "position" ) ) },
+            { "attributes",
+              { { "fontName", text.at( "fontName" ) },
+                { "horizontalAlignment",
+                  horizontalEnums.at(
+                          text.at( "horizontalJustification" ).get<std::string>() ) },
+                { "verticalAlignment",
+                  verticalEnums.at( text.at( "verticalJustification" ).get<std::string>() ) },
+                { "angle", { { "valueDegrees", text.at( "angleDegrees" ) } } },
+                { "lineSpacing", 1.0 },
+                { "strokeWidth",
+                  { { "valueNm", std::to_string( text.at( "strokeNm" ).get<int64_t>() ) } } },
+                { "italic", text.at( "italic" ) },
+                { "bold", text.at( "bold" ) },
+                { "underlined", text.at( "underlined" ) },
+                { "visible", true },
+                { "mirrored", text.at( "mirrored" ) },
+                { "multiline", false },
+                { "keepUpright", false },
+                { "size", vectorProto( text.at( "size" ) ) } } },
+            { "text", aStatement.at( "overrideText" ) },
+            { "hyperlink", "" }
+        };
+    }
+
+    if( style == "aligned" )
+    {
+        item["aligned"] = {
+            { "start", vectorProto( geometry.at( "start" ) ) },
+            { "end", vectorProto( geometry.at( "end" ) ) },
+            { "height",
+              { { "valueNm",
+                  std::to_string( geometry.at( "heightNm" ).get<int64_t>() ) } } },
+            { "extensionHeight",
+              { { "valueNm",
+                  std::to_string( geometry.at( "extensionHeightNm" ).get<int64_t>() ) } } }
+        };
+    }
+    else if( style == "orthogonal" )
+    {
+        item["orthogonal"] = {
+            { "start", vectorProto( geometry.at( "start" ) ) },
+            { "end", vectorProto( geometry.at( "end" ) ) },
+            { "height",
+              { { "valueNm",
+                  std::to_string( geometry.at( "heightNm" ).get<int64_t>() ) } } },
+            { "extensionHeight",
+              { { "valueNm",
+                  std::to_string( geometry.at( "extensionHeightNm" ).get<int64_t>() ) } } },
+            { "alignment", geometry.at( "axis" ) == "x" ? "AA_X_AXIS" : "AA_Y_AXIS" }
+        };
+    }
+    else if( style == "radial" )
+    {
+        item["radial"] = {
+            { "center", vectorProto( geometry.at( "center" ) ) },
+            { "radiusPoint", vectorProto( geometry.at( "radiusPoint" ) ) },
+            { "leaderLength",
+              { { "valueNm",
+                  std::to_string( geometry.at( "leaderLengthNm" ).get<int64_t>() ) } } }
+        };
+    }
+    else if( style == "leader" )
+    {
+        const std::map<std::string, std::string> borderEnums = {
+            { "none", "DTBS_NONE" }, { "rectangle", "DTBS_RECTANGLE" },
+            { "circle", "DTBS_CIRCLE" }, { "roundrect", "DTBS_ROUNDRECT" }
+        };
+        item["leader"] = {
+            { "start", vectorProto( geometry.at( "start" ) ) },
+            { "end", vectorProto( geometry.at( "end" ) ) },
+            { "borderStyle", borderEnums.at( geometry.at( "border" ).get<std::string>() ) }
+        };
+    }
+    else
+    {
+        item["center"] = { { "center", vectorProto( geometry.at( "center" ) ) },
+                           { "end", vectorProto( geometry.at( "end" ) ) } };
+    }
+
+    return { { "action", "upsert" },
+             { "itemType", "dimension" },
+             { "logicalId", logicalId },
+             { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
+
 JSON planRoute( const JSON& aStatement, const std::string& aProject )
 {
     const std::string kind = aStatement.at( "kind" ).get<std::string>();
@@ -514,6 +669,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             else if( kind == "text" )
             {
                 result.operations.emplace_back( planText( statement, project ) );
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "dimension" )
+            {
+                result.operations.emplace_back( planDimension( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
             else if( kind == "place" )

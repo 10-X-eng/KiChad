@@ -437,6 +437,8 @@ kiapi::common::types::KiCadObjectType pcbObjectType( const std::string& aItemTyp
         return KOT_PCB_SHAPE;
     if( aItemType == "text" )
         return KOT_PCB_TEXT;
+    if( aItemType == "dimension" )
+        return KOT_PCB_DIMENSION;
 
     return KOT_UNKNOWN;
 }
@@ -460,6 +462,8 @@ std::unique_ptr<google::protobuf::Message> newPcbItem( const std::string& aItemT
         return std::make_unique<BoardGraphicShape>();
     if( aItemType == "text" )
         return std::make_unique<BoardText>();
+    if( aItemType == "dimension" )
+        return std::make_unique<Dimension>();
 
     return {};
 }
@@ -748,6 +752,8 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
         return "via";
     if( aItem.Is<BoardText>() )
         return "text";
+    if( aItem.Is<Dimension>() )
+        return "dimension";
     if( aItem.Is<Zone>() )
     {
         Zone zone;
@@ -1058,7 +1064,8 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
                         const nlohmann::json& aActions, std::string& aError )
 {
     std::vector<const nlohmann::json*> creates;
-    std::map<std::string, std::vector<const nlohmann::json*>> updates;
+    std::map<std::pair<std::string, std::string>,
+             std::vector<const nlohmann::json*>> updates;
     std::vector<const nlohmann::json*> deletes;
 
     for( const nlohmann::json& action : aActions )
@@ -1068,7 +1075,8 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
         if( kind == "create" )
             creates.emplace_back( &action );
         else if( kind == "update" )
-            updates[action.at( "itemType" ).get<std::string>()].emplace_back( &action );
+            updates[{ action.at( "itemType" ).get<std::string>(),
+                      action.at( "fieldMask" ).dump() }].emplace_back( &action );
         else
             deletes.emplace_back( &action );
     }
@@ -1111,8 +1119,10 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
         }
     }
 
-    for( const auto& [itemType, actions] : updates )
+    for( const auto& [key, actions] : updates )
     {
+        const std::string& itemType = key.first;
+
         for( size_t begin = 0; begin < actions.size(); begin += 200 )
         {
             const size_t end = std::min( begin + 200, actions.size() );
@@ -1289,7 +1299,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
             { { "type", "string" },
               { "enum", JSON::array(
                                 { "footprint", "trace", "via", "arc", "zone", "rule_area",
-                                  "shape", "text" } ) },
+                                  "shape", "text", "dimension" } ) },
               { "description", "KiCad 10 protobuf board item type." } };
     pcbSchema["properties"]["messagePath"] =
             { { "type", "string" }, { "maxLength", 512 },
