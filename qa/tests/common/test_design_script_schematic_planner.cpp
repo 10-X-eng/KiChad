@@ -12,6 +12,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <kicad/codex/design_script_compiler.h>
+#include <kicad/codex/design_script_pcb_planner.h>
 #include <kicad/codex/design_script_schematic_planner.h>
 #include <kicad/codex/lossless_sexpr_document.h>
 
@@ -359,6 +360,110 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(href \"https://example.com/constraint-summary\")" ),
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
+                    std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersTypedNestedGroupsAndRejectsMissingNativeOccurrences )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project grouped_native)
+  (library symbol Local (table project) (uri "${KIPRJMOD}/Local.kicad_sym"))
+  (sheet root (parent none) (file "grouped_native.kicad_sch") (title "Groups"))
+  (sheet child (parent root) (file "child.kicad_sch") (title "Child")
+    (at 20mm 20mm) (size 30mm 20mm)
+    (pin SIG input (at 20mm 25mm) (side left)))
+  (component R1 (symbol "Local:R") (value "1k") (footprint none)
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+  (component R2 (symbol "Local:R") (value "2k") (footprint none)
+    (unit 1 (sheet root) (at 60mm 40mm) (rotation 0deg) (mirror none)))
+  (net SIG (pin R1 1 1) (pin R2 1 1))
+  (no_connect R1 1 2)
+  (wire root-wire (sheet root) (from 40mm 40mm) (to 60mm 40mm)
+    (stroke default solid))
+  (wire child-wire (sheet child) (from 20mm 25mm) (to 30mm 25mm)
+    (stroke default solid))
+  (group signal-core (sheet root) (name "Signal core") (locked true)
+    (members (member component R1 1) (member net_label SIG R1 1 1 1)))
+  (group root-bundle (sheet root) (name "Root bundle") (locked false)
+    (members (member drawing root-wire) (member sheet child)
+      (member no_connect R1 1 2 1) (member group signal-core)))
+  (group child-interface (sheet child) (name "Child interface") (locked true)
+    (members (member hierarchical_label child SIG) (member drawing child-wire)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const std::string cache = R"SYM((symbol "Local:R"
+  (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+  (property "Value" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+  (symbol "R_1_1"
+    (pin passive line (at 0 3.81 270) (length 1.27)
+      (name "" (effects (font (size 1.27 1.27))))
+      (number "1" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 0 -3.81 90) (length 1.27)
+      (name "" (effects (font (size 1.27 1.27))))
+      (number "2" (effects (font (size 1.27 1.27)))))))
+)SYM";
+    const nlohmann::json resolved = {
+        { "Local:R",
+          { { "libraryId", "Local:R" }, { "cacheSource", cache },
+            { "flags",
+              { { "excludeFromSim", false }, { "inBom", true }, { "onBoard", false },
+                { "inPosFiles", false } } },
+            { "properties", nlohmann::json::object() },
+            { "units",
+              { { "1", nlohmann::json::array(
+                               { { { "number", "1" }, { "xNm", 0 }, { "yNm", 3810000 } },
+                                 { { "number", "2" }, { "xNm", 0 },
+                                   { "yNm", -3810000 } } } ) } } } } }
+    };
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                    compiled.ir, nlohmann::json::object(), resolved );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( plan.counts["groups"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["managedItems"].size(), 13 );
+    const std::string rootNative = plan.operations[0]["files"][0]["newDocumentSource"];
+    const std::string childNative = plan.operations[0]["files"][1]["newDocumentSource"];
+    BOOST_CHECK_NE( rootNative.find( "(group \"Signal core\"" ), std::string::npos );
+    BOOST_CHECK_NE( rootNative.find( "(group \"Root bundle\"" ), std::string::npos );
+    BOOST_CHECK_NE( childNative.find( "(group \"Child interface\"" ), std::string::npos );
+    const std::string nestedUuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+            "grouped_native", "schematic_group", "signal-core" );
+    BOOST_CHECK_NE( rootNative.find( nestedUuid ), std::string::npos );
+    BOOST_CHECK_NE( rootNative.find( "(locked yes)" ), std::string::npos );
+    const size_t rootBundle = rootNative.find( "(group \"Root bundle\"" );
+    const size_t instances = rootNative.find( "(sheet_instances", rootBundle );
+    BOOST_REQUIRE_NE( rootBundle, std::string::npos );
+    BOOST_REQUIRE_NE( instances, std::string::npos );
+    BOOST_CHECK_EQUAL( rootNative.substr( rootBundle, instances - rootBundle )
+                               .find( "(locked yes)" ),
+                       std::string::npos );
+    BOOST_CHECK_NE( childNative.find( "(locked yes)" ), std::string::npos );
+
+    std::string invalid = program;
+    const std::string occurrence = "(member net_label SIG R1 1 1 1)";
+    const size_t occurrenceAt = invalid.find( occurrence );
+    BOOST_REQUIRE_NE( occurrenceAt, std::string::npos );
+    invalid.replace( occurrenceAt, occurrence.size(),
+                     "(member net_label SIG R1 1 1 2)" );
+    compiled = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    plan = KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+            compiled.ir, nlohmann::json::object(), resolved );
+    BOOST_CHECK( !plan.fullyLowered );
+    BOOST_CHECK_NE( plan.diagnostics.dump().find( "unresolved_schematic_group_member" ),
+                    std::string::npos );
+
+    compiled = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE( compiled.ok );
+    compiled.ir["schematic"]["groups"][0]["members"].push_back(
+            { { "kind", "group" }, { "id", "root-bundle" } } );
+    plan = KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+            compiled.ir, nlohmann::json::object(), resolved );
+    BOOST_CHECK( !plan.fullyLowered );
+    BOOST_CHECK_NE( plan.diagnostics.dump().find( "recursive_schematic_group" ),
                     std::string::npos );
 }
 

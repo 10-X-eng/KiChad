@@ -750,6 +750,44 @@ identity but reconciles the native item by sheet and alias name. A same-name ali
 previously managed is never claimed; apply fails before mutation. Repeated apply is byte-idempotent,
 and removing the KDS declaration removes only the alias named in prior managed state.
 
+Schematic groups use one typed, AI-readable containment representation:
+
+```scheme
+(group signal-core
+  (sheet root)
+  (name "AI signal core")
+  (locked true)
+  (members
+    (member component R1 1)
+    (member drawing root-wire)
+    (member net_label SENSOR_OUT R1 1 1 1)))
+
+(group review-bundle
+  (sheet root)
+  (name "AI review bundle")
+  (locked false)
+  (members
+    (member sheet analog)
+    (member group signal-core)))
+```
+
+Every member names the semantic KDS object instead of exposing an opaque native UUID. The complete
+member vocabulary is `drawing ID`, `component REF UNIT`, `sheet CHILD_SHEET_ID`,
+`hierarchical_label SHEET_ID PIN_NAME`, `net_label NET REF UNIT PIN OCCURRENCE`,
+`no_connect REF UNIT PIN OCCURRENCE`, and `group GROUP_ID`. Occurrences are 1-based and select one
+native item when a library unit contains repeated pin numbers. The planner resolves every typed
+member to its stable UUID only after exact symbol pins and hierarchy items exist.
+
+A group and all of its direct members must live on the same native schematic screen. A child sheet
+symbol therefore belongs to a group on its parent sheet, while that child sheet's hierarchical
+labels belong to groups inside the child. An item can have only one direct parent group; nested
+groups must be acyclic, and empty groups are rejected because KiCad does not serialize them. Group
+ID, visible name, lock state, and member UUID set all participate in guarded reconciliation,
+idempotence, rollback, and the real KiCad 10 loader gate. KiChad also closes KiCad 10's native
+schematic lock persistence gap so `(locked yes)` is read, retained by the group object, and written
+again. Design-block library links are intentionally not overloaded onto this form: they remain the
+separate `project.design_blocks` capability until their authoring and update workflow is complete.
+
 ### Library dependencies and project tables
 
 KDS uses one library declaration for installed and project-local dependencies:
@@ -1239,8 +1277,9 @@ labels, and text placement. Reapply groups updates by exact field mask so each d
 updated independently. The same fixture reconciles a root and child schematic, retains the root
 screen UUID and unmanaged company field, creates stable native hierarchy identities, proves the
 repeat apply changes zero schematic files, injects a failed native validator and verifies exact
-root-file rollback, recovers from the retained journal, and finally exports a non-empty netlist
-through KiCad's real schematic loader.
+root-file rollback, recovers from the retained journal, checks nested named/locked group membership
+on both native screens, and finally exports a non-empty netlist through KiCad's real schematic
+loader.
 
 Before applying the sidecar, the same smoke proof invokes KiChad's native `verify` tool against the
 current-format root schematic and board. This exercises the real sibling KiCad 10.0.4 CLI rather
@@ -1279,8 +1318,9 @@ A form is documented as executable only after it has all of the following covera
 - relevant ERC, DRC, sourcing, and fabrication-output assertions.
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
-components, nets, no-connect state, sourcing, board statement kinds, global rules, net classes,
-custom rules, checks, and outputs. Global rules, net classes, custom rules, and executable board forms have
+components, nets, no-connect state, typed schematic groups, sourcing, board statement kinds, global
+rules, net classes, custom rules, checks, and outputs. Global rules, net classes, custom rules, and
+executable board forms have
 backend-specific type checking and rollback coverage. Project symbol/footprint tables are
 executable with native parser validation, atomic installation, journaling, and rollback coverage.
 Project-local root and derived symbol content, physical and virtual/power component unit placement,
@@ -1288,8 +1328,8 @@ native inclusion flags, connectivity, and no-connect state are executable with l
 reconciliation, stable identity, native netlist validation,
 journaling, rollback, and a disposable live integration proof. Confined project-local footprint
 instances are executable through KiCad's native parser and transaction API. Free text, text boxes,
-native graphics, embedded images, and complete table grids/cells are executable through lossless
-reconciliation and KiCad's native schematic loader. Global installed symbol content, library
+native graphics, embedded images, complete table grids/cells, and named/locked nested groups are
+executable through lossless reconciliation and KiCad's native schematic loader. Global installed symbol content, library
 authoring, footprint/model authoring, and the incomplete schematic facets named by the capability
 catalog remain non-executable until their own lossless backends and rollback tests land. Nested
 sheet hierarchy is executable through the same transaction. Native backend

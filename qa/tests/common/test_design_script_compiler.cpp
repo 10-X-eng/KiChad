@@ -1876,6 +1876,78 @@ BOOST_AUTO_TEST_CASE( CompilesCompleteAiNativeSchematicTableGrid )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesTypedNestedSchematicGroupsWithNativeScreenSemantics )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_groups)
+  (library symbol Local (table project) (uri "${KIPRJMOD}/Local.kicad_sym"))
+  (library footprint Local (table project) (uri "${KIPRJMOD}/Local.pretty"))
+  (sheet root (parent none) (file "schematic_groups.kicad_sch") (title "Groups"))
+  (sheet child (parent root) (file "child.kicad_sch") (title "Child")
+    (at 20mm 20mm) (size 30mm 20mm)
+    (pin SIG input (at 20mm 25mm) (side left)))
+  (component U1 (symbol "Local:Part") (value "Part") (footprint "Local:Part")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+  (component U2 (symbol "Local:Part") (value "Part") (footprint "Local:Part")
+    (unit 1 (sheet root) (at 60mm 40mm) (rotation 0deg) (mirror none)))
+  (net SIG (pin U1 1 1) (pin U2 1 1))
+  (no_connect U1 1 2)
+  (wire root-wire (sheet root) (from 40mm 40mm) (to 60mm 40mm)
+    (stroke default solid))
+  (wire child-wire (sheet child) (from 20mm 25mm) (to 30mm 25mm)
+    (stroke 0.2mm dash))
+  (group signal-core (sheet root) (name "Signal core") (locked true)
+    (members
+      (member component U1 1)
+      (member net_label SIG U1 1 1 1)))
+  (group root-bundle (sheet root) (name "Root bundle") (locked false)
+    (members
+      (member drawing root-wire)
+      (member sheet child)
+      (member no_connect U1 1 2 1)
+      (member group signal-core)))
+  (group child-interface (sheet child) (name "Child interface") (locked true)
+    (members
+      (member hierarchical_label child SIG)
+      (member drawing child-wire)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& groups = result.ir["schematic"]["groups"];
+    BOOST_REQUIRE_EQUAL( groups.size(), 3 );
+    BOOST_CHECK_EQUAL( groups[0]["id"], "signal-core" );
+    BOOST_CHECK( groups[0]["locked"].get<bool>() );
+    BOOST_CHECK_EQUAL( groups[0]["members"][0]["kind"], "component" );
+    BOOST_CHECK_EQUAL( groups[0]["members"][1]["occurrence"], 1 );
+    BOOST_CHECK_EQUAL( groups[1]["members"][3]["kind"], "group" );
+    BOOST_CHECK_EQUAL( result.plan["counts"]["groups"], 3 );
+
+    std::string invalid = program;
+    const std::string nested = "(member group signal-core)";
+    const size_t nestedAt = invalid.find( nested );
+    BOOST_REQUIRE_NE( nestedAt, std::string::npos );
+    invalid.replace( nestedAt, nested.size(), "(member group root-bundle)" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "recursive_schematic_group" ),
+                    std::string::npos );
+
+    invalid = program;
+    const std::string childDrawing = "(member drawing child-wire)";
+    const size_t childDrawingAt = invalid.find( childDrawing );
+    BOOST_REQUIRE_NE( childDrawingAt, std::string::npos );
+    invalid.replace( childDrawingAt, childDrawing.size(), "(member drawing root-wire)" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find(
+                            "mismatched_schematic_group_member_sheet" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "multiply_grouped_schematic_item" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design
@@ -2044,6 +2116,7 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     bool foundQualifiedTitleBlock = false;
     bool foundQualifiedDirectives = false;
     bool foundQualifiedTextGraphics = false;
+    bool foundQualifiedGroups = false;
 
     for( const nlohmann::json& facet : coverage["facets"] )
     {
@@ -2084,11 +2157,19 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
                     && std::find( facet["kdsForms"].begin(), facet["kdsForms"].end(), "table" )
                                != facet["kdsForms"].end();
         }
+
+        if( id == "schematic.groups" )
+        {
+            foundQualifiedGroups = state == "qualified" && facet["gaps"].empty()
+                                   && facet["kdsForms"]
+                                              == nlohmann::json::array( { "group" } );
+        }
     }
 
     BOOST_CHECK( foundQualifiedTitleBlock );
     BOOST_CHECK( foundQualifiedDirectives );
     BOOST_CHECK( foundQualifiedTextGraphics );
+    BOOST_CHECK( foundQualifiedGroups );
     BOOST_CHECK( domains == expectedDomains );
 
     for( const std::string& state : allowedStates )

@@ -115,8 +115,9 @@ buses, diagonal bus entries, net-targeted directive flags, and polygonal schemat
 border-attached directives, plus stable multiline free text and text boxes with complete geometry,
 border/fill, typography, and hyperlink state, and all native schematic polyline, rounded-rectangle,
 circle, arc, and cubic-Bézier geometries, plus digest-verified self-contained images with semantic
-descriptions, and AI-native schematic table grids with explicit dimensions, complete per-cell
-typography/fill, rectangular merges, stable identities, and native rotation. It also applies and
+descriptions, AI-native schematic table grids with explicit dimensions, complete per-cell
+typography/fill, rectangular merges, stable identities, and native rotation, plus named locked
+schematic groups with typed membership and safe nested containment. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

@@ -39,6 +39,7 @@
     (unit 1 (sheet root) (at 50mm 50mm) (rotation 0deg) (mirror none)))
   (net Net1 (pin R1 1 1) (pin R2 1 1))
   (net GND (pin R1 1 2) (pin #PWR01 1 1))
+  (no_connect R2 1 2)
   (wire root-wire (sheet root) (from 80mm 40mm) (to 90mm 40mm)
     (stroke default default))
   (junction root-junction (sheet root) (at 90mm 40mm)
@@ -142,6 +143,25 @@
   (bus_entry root-entry (sheet root) (from 85mm 48.73mm) (to 86.27mm 50mm)
     (stroke default default))
   (bus_alias ROOT_SIGNALS (sheet root) (members Net1))
+  (group signal-core
+    (sheet root) (name "AI signal core") (locked true)
+    (members
+      (member component R1 1)
+      (member drawing root-wire)
+      (member net_label Net1 R1 1 1 1)))
+  (group root-review-bundle
+    (sheet root) (name "AI root review bundle") (locked false)
+    (members
+      (member drawing root-pin-summary)
+      (member sheet power)
+      (member group signal-core)))
+  (group power-interface
+    (sheet power) (name "AI power interface") (locked true)
+    (members
+      (member component R2 1)
+      (member hierarchical_label power VIN)
+      (member net_label Net1 R2 1 1 1)
+      (member no_connect R2 1 2 1)))
   (board
     (stackup
       (finish "ENIG")

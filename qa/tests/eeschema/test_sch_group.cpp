@@ -33,6 +33,7 @@
 #include <sch_sheet.h>
 #include <sch_screen.h>
 #include <sch_group.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 #include <sch_symbol.h>
 #include <sch_pin.h>
 #include <lib_symbol.h>
@@ -41,6 +42,11 @@
 #include <qa_utils/wx_utils/wx_assert.h>
 
 #include "eeschema_test_utils.h"
+
+#include <wx/file.h>
+#include <wx/filename.h>
+
+#include <memory>
 
 class TEST_SCH_GROUP_FIXTURE : public KI_TEST::SCHEMATIC_TEST_FIXTURE
 {
@@ -51,7 +57,14 @@ public:
         //m_screen = SCH_SCREEN( &m_schematic );
     }
 
-    ~TEST_SCH_GROUP_FIXTURE() {}
+    ~TEST_SCH_GROUP_FIXTURE()
+    {
+        for( const wxString& path : m_tempFiles )
+        {
+            if( wxFileExists( path ) )
+                wxRemoveFile( path );
+        }
+    }
 
     void CreateTestSchematic()
     {
@@ -105,6 +118,8 @@ public:
     SCH_SYMBOL* m_parent_symbol;
     SCH_PIN*    m_sch_pin; // owned by m_parent_symbol, not us
 
+    std::vector<wxString> m_tempFiles;
+
     void CreateGroup()
     {
         SCH_GROUP* group = new SCH_GROUP( m_screen );
@@ -151,6 +166,20 @@ BOOST_AUTO_TEST_CASE( CreateGroup )
     BOOST_CHECK_EQUAL( std::distance( groups.begin(), groups.end() ), 1 );
 }
 
+
+BOOST_AUTO_TEST_CASE( LockStateParticipatesInGroupData )
+{
+    SCH_GROUP unlocked;
+    SCH_GROUP locked;
+    BOOST_CHECK( unlocked == locked );
+    locked.SetLocked( true );
+    BOOST_CHECK( locked.IsLocked() );
+    BOOST_CHECK( !( unlocked == locked ) );
+    std::unique_ptr<EDA_ITEM> clone( locked.Clone() );
+    BOOST_REQUIRE( clone );
+    BOOST_CHECK( clone->IsLocked() );
+}
+
 BOOST_AUTO_TEST_CASE( LoadSchGroups )
 {
     LoadSchematic( SchematicQAPath( "groups_load_save" ) );
@@ -161,8 +190,21 @@ BOOST_AUTO_TEST_CASE( LoadSchGroups )
 
     SCH_GROUP* group = static_cast<SCH_GROUP*>( *groups.begin() );
     BOOST_CHECK_EQUAL( group->GetName(), "GroupName" );
+    BOOST_CHECK( group->IsLocked() );
 
     BOOST_CHECK_EQUAL( group->GetItems().size(), 2 );
+
+    wxString savedPath = wxFileName::CreateTempFileName( wxT( "locked_group_round_trip" ) );
+    m_tempFiles.push_back( savedPath );
+    SCH_IO_KICAD_SEXPR io;
+    SCH_SHEET* root = m_schematic->GetTopLevelSheet( 0 );
+    BOOST_REQUIRE( root );
+    BOOST_CHECK_NO_THROW( io.SaveSchematicFile( savedPath, root, m_schematic.get() ) );
+    wxFile savedFile( savedPath );
+    wxString savedSource;
+    BOOST_REQUIRE( savedFile.IsOpened() );
+    BOOST_REQUIRE( savedFile.ReadAll( &savedSource ) );
+    BOOST_CHECK_NE( savedSource.find( wxT( "(locked yes)" ) ), wxString::npos );
 }
 
 BOOST_AUTO_TEST_SUITE_END()

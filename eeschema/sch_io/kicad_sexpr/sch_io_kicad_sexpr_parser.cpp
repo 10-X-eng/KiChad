@@ -5214,6 +5214,11 @@ void SCH_IO_KICAD_SEXPR_PARSER::parseGroup()
             break;
         }
 
+        case T_locked:
+            groupInfo.locked = parseBool();
+            NeedRIGHT();
+            break;
+
         case T_members:
         {
             parseGroupMembers( groupInfo );
@@ -5221,7 +5226,7 @@ void SCH_IO_KICAD_SEXPR_PARSER::parseGroup()
         }
 
         default:
-            Expecting( "uuid, lib_id, members" );
+            Expecting( "uuid, locked, lib_id, members" );
         }
     }
 }
@@ -5261,6 +5266,7 @@ void SCH_IO_KICAD_SEXPR_PARSER::resolveGroups( SCH_SCREEN* aParent )
         group->SetName( groupInfo.name );
 
         const_cast<KIID&>( group->m_Uuid ) = groupInfo.uuid;
+        group->SetLocked( groupInfo.locked );
 
         if( groupInfo.libId.IsValid() )
             group->SetDesignBlockLibId( groupInfo.libId );

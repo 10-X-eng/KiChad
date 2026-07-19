@@ -119,9 +119,10 @@ nlohmann::json DesignScriptCapabilities()
                                 { "text", "text_box", "polyline", "rectangle", "circle",
                                   "arc", "bezier", "image", "table" },
                                 "Stable free text, text boxes, all native drawing geometries, digest-verified self-contained images, and semantic table grids with complete cell formatting and rectangular merges." ),
-                    capability( "schematic.groups", "schematic", "unrepresented", {},
-                                "Schematic groups and membership.",
-                                { "No group identity or containment form exists." } ),
+                    capability( "schematic.groups", "schematic", "qualified", { "group" },
+                                "Stable named groups, native locking, typed direct membership, "
+                                "nested containment, screen ownership, and repeated-pin occurrence "
+                                "selection." ),
                     capability( "schematic.fields", "schematic", "partial", { "component" },
                                 "Component required fields and bounded custom string properties.",
                                 { "Field position, visibility, typography, hyperlinking, text variables, and project field templates are absent." } ),

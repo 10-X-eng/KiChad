@@ -41,6 +41,7 @@
 	)
 	(group "GroupName"
 		(uuid "7267eac2-0eb2-494a-bc81-61295bcdf08c")
+		(locked yes)
 		(members "7e1da7e2-473f-48bf-b7bf-2eb79e1b1372" "d26fc350-11e5-4917-ba78-4e25070d7aa8")
 	)
 	(sheet_instances

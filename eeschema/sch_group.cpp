@@ -188,6 +188,7 @@ void SCH_GROUP::swapData( SCH_ITEM* aImage )
     std::swap( m_items, image->m_items );
     std::swap( m_name, image->m_name );
     std::swap( m_designBlockLibId, image->m_designBlockLibId );
+    std::swap( m_locked, image->m_locked );
 
     // A group doesn't own its children (they're owned by the schematic), so undo doesn't do a
     // deep clone when making an image.  However, it's still safest to update the parentGroup
@@ -403,7 +404,7 @@ bool SCH_GROUP::operator==( const SCH_ITEM& aSchItem ) const
 
 bool SCH_GROUP::operator==( const SCH_GROUP& aOther ) const
 {
-    if( m_items.size() != aOther.m_items.size() )
+    if( m_locked != aOther.m_locked || m_items.size() != aOther.m_items.size() )
         return false;
 
     // The items in groups are in unordered sets hashed by the pointer value, so we need to

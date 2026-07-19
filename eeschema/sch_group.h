@@ -63,6 +63,9 @@ public:
 
     wxString GetClass() const override { return wxT( "SCH_GROUP" ); }
 
+    bool IsLocked() const override { return m_locked; }
+    void SetLocked( bool aLocked ) override { m_locked = aLocked; }
+
     std::unordered_set<SCH_ITEM*> GetSchItems() const;
 
     /*
@@ -158,6 +161,9 @@ public:
 
     /// @copydoc SCH_ITEM::swapData
     void swapData( SCH_ITEM* aImage ) override;
+
+private:
+    bool m_locked = false;
 };
 
 #endif

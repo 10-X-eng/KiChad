@@ -95,6 +95,7 @@ lib_name
 lib_symbols
 line
 line_spacing
+locked
 local
 margins
 members
@@ -181,4 +182,3 @@ xy
 x
 y
 yes
-

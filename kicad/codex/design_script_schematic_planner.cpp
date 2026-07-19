@@ -1181,6 +1181,28 @@ std::string busAliasExpression( const JSON& aAlias )
 }
 
 
+std::string schematicGroupExpression( const JSON& aGroup, const std::string& aUuid,
+                                      std::vector<std::string> aMemberUuids )
+{
+    std::sort( aMemberUuids.begin(), aMemberUuids.end() );
+    std::ostringstream output;
+    output << "(group " << quoted( aGroup.at( "name" ).get<std::string>() ) << "\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n";
+
+    if( aGroup.at( "locked" ).get<bool>() )
+        output << "    (locked yes)\n";
+
+    output << "    (members";
+
+    for( const std::string& memberUuid : aMemberUuids )
+        output << ' ' << quoted( memberUuid );
+
+    output << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
 bool validSheetShape( const JSON& aSheet )
 {
     if( !aSheet.is_object() || !aSheet.contains( "id" ) || !aSheet["id"].is_string()
@@ -1244,6 +1266,123 @@ bool validBusAliasShape( const JSON& aAlias )
                             return aMember.is_string()
                                    && !aMember.get<std::string>().empty();
                         } );
+}
+
+
+bool validGroupShape( const JSON& aGroup )
+{
+    if( !aGroup.is_object() || !aGroup.contains( "id" ) || !aGroup["id"].is_string()
+        || aGroup["id"].get<std::string>().empty()
+        || aGroup["id"].get<std::string>().size() > 128 || !aGroup.contains( "sheet" )
+        || !aGroup["sheet"].is_string() || aGroup["sheet"].get<std::string>().empty()
+        || aGroup["sheet"].get<std::string>().size() > 128 || !aGroup.contains( "name" )
+        || !aGroup["name"].is_string() || aGroup["name"].get<std::string>().empty()
+        || aGroup["name"].get<std::string>().size() > 4096
+        || !aGroup.contains( "locked" ) || !aGroup["locked"].is_boolean()
+        || !aGroup.contains( "members" ) || !aGroup["members"].is_array()
+        || aGroup["members"].empty() || aGroup["members"].size() > 4096 )
+    {
+        return false;
+    }
+
+    for( const JSON& member : aGroup["members"] )
+    {
+        if( !member.is_object() || !member.contains( "kind" )
+            || !member["kind"].is_string() )
+        {
+            return false;
+        }
+
+        const std::string kind = member["kind"].get<std::string>();
+
+        if( kind == "drawing" || kind == "sheet" || kind == "group" )
+        {
+            if( !member.contains( "id" ) || !member["id"].is_string()
+                || member["id"].get<std::string>().empty()
+                || member["id"].get<std::string>().size() > 128 )
+            {
+                return false;
+            }
+        }
+        else if( kind == "component" )
+        {
+            if( !member.contains( "reference" ) || !member["reference"].is_string()
+                || member["reference"].get<std::string>().empty()
+                || !member.contains( "unit" ) || !member["unit"].is_number_integer()
+                || member["unit"].get<int64_t>() < 1
+                || member["unit"].get<int64_t>() > 256 )
+            {
+                return false;
+            }
+        }
+        else if( kind == "hierarchical_label" )
+        {
+            if( !member.contains( "sheet" ) || !member["sheet"].is_string()
+                || member["sheet"].get<std::string>().empty()
+                || !member.contains( "pin" ) || !member["pin"].is_string()
+                || member["pin"].get<std::string>().empty() )
+            {
+                return false;
+            }
+        }
+        else if( kind == "net_label" || kind == "no_connect" )
+        {
+            if( !member.contains( "reference" ) || !member["reference"].is_string()
+                || member["reference"].get<std::string>().empty()
+                || !member.contains( "unit" ) || !member["unit"].is_number_integer()
+                || member["unit"].get<int64_t>() < 1
+                || member["unit"].get<int64_t>() > 256
+                || !member.contains( "pin" ) || !member["pin"].is_string()
+                || member["pin"].get<std::string>().empty()
+                || !member.contains( "occurrence" )
+                || !member["occurrence"].is_number_integer()
+                || member["occurrence"].get<int64_t>() < 1
+                || member["occurrence"].get<int64_t>() > 256
+                || ( kind == "net_label"
+                     && ( !member.contains( "net" ) || !member["net"].is_string()
+                          || member["net"].get<std::string>().empty() ) ) )
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+std::string groupMemberKey( const JSON& aMember )
+{
+    const std::string kind = aMember.at( "kind" ).get<std::string>();
+
+    if( kind == "drawing" || kind == "sheet" || kind == "group" )
+        return kind + "/" + aMember.at( "id" ).get<std::string>();
+
+    if( kind == "component" )
+    {
+        return kind + "/" + aMember.at( "reference" ).get<std::string>() + "/"
+               + std::to_string( aMember.at( "unit" ).get<int64_t>() );
+    }
+
+    if( kind == "hierarchical_label" )
+    {
+        return kind + "/" + aMember.at( "sheet" ).get<std::string>() + "/"
+               + aMember.at( "pin" ).get<std::string>();
+    }
+
+    std::string key = kind + "/";
+
+    if( kind == "net_label" )
+        key += aMember.at( "net" ).get<std::string>() + "/";
+
+    return key + aMember.at( "reference" ).get<std::string>() + "/"
+           + std::to_string( aMember.at( "unit" ).get<int64_t>() ) + "/"
+           + aMember.at( "pin" ).get<std::string>() + "/"
+           + std::to_string( aMember.at( "occurrence" ).get<int64_t>() );
 }
 
 
@@ -1935,6 +2074,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     result.counts = { { "files", 0 }, { "sheets", 0 }, { "pins", 0 },
                       { "components", 0 }, { "netEndpoints", 0 },
                       { "noConnects", 0 }, { "drawings", 0 }, { "busAliases", 0 },
+                      { "groups", 0 },
                       { "librarySymbols", 0 },
                       { "managedItems", 0 } };
 
@@ -1956,6 +2096,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
         || !aCompilerIr["schematic"]["drawings"].is_array()
         || !aCompilerIr["schematic"].contains( "busAliases" )
         || !aCompilerIr["schematic"]["busAliases"].is_array()
+        || !aCompilerIr["schematic"].contains( "groups" )
+        || !aCompilerIr["schematic"]["groups"].is_array()
         || !aExistingScreenUuids.is_object() || !aResolvedSymbols.is_object() )
     {
         diagnostic( result, "invalid_compiler_ir",
@@ -1990,13 +2132,14 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     const JSON& sourceNoConnects = aCompilerIr["schematic"]["noConnects"];
     const JSON& sourceDrawings = aCompilerIr["schematic"]["drawings"];
     const JSON& sourceBusAliases = aCompilerIr["schematic"]["busAliases"];
+    const JSON& sourceGroups = aCompilerIr["schematic"]["groups"];
 
     if( sourceSheets.empty() )
     {
-        if( !sourceDrawings.empty() || !sourceBusAliases.empty() )
+        if( !sourceDrawings.empty() || !sourceBusAliases.empty() || !sourceGroups.empty() )
         {
             diagnostic( result, "invalid_schematic_ir",
-                        "schematic drawings require a declared hierarchy" );
+                        "schematic drawings, aliases, and groups require a declared hierarchy" );
             return result;
         }
 
@@ -2158,6 +2301,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     std::map<std::string, std::vector<JSON>> placementsBySheet;
     std::map<std::string, std::map<std::string, JSON>> librariesBySheet;
     std::map<std::string, std::vector<PIN_POINT>> endpointPositions;
+    std::map<std::string, JSON> groupTargets;
     std::set<std::string> componentReferences;
 
     try
@@ -2230,6 +2374,11 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                 placementsBySheet[sheetId].push_back(
                         { { "component", component }, { "unit", unit },
                           { "resolved", resolved } } );
+                const std::string logicalId = reference + "/" + unitKey;
+                groupTargets["component/" + logicalId] = {
+                    { "sheet", sheetId },
+                    { "uuid", stableUuid( project, "schematic_symbol", logicalId ) }
+                };
                 librariesBySheet[sheetId][libraryId] = resolved;
                 const int64_t originX = unit["position"]["xNm"].get<int64_t>();
                 const int64_t originY = unit["position"]["yNm"].get<int64_t>();
@@ -2331,8 +2480,9 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                          { "logicalId", id },
                          { "uuid", uuid },
                          { "source", source } };
-        drawingsBySheet[drawing["sheet"].get<std::string>()].push_back(
-                std::move( planned ) );
+        const std::string drawingSheet = drawing["sheet"].get<std::string>();
+        groupTargets["drawing/" + id] = { { "sheet", drawingSheet }, { "uuid", uuid } };
+        drawingsBySheet[drawingSheet].push_back( std::move( planned ) );
     }
 
     const auto addEndpoint = [&]( const JSON& aEndpoint, const std::string& aNetName,
@@ -2376,6 +2526,12 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
             connectivityBySheet[point.sheet].push_back(
                     { { "kind", kind }, { "logicalId", logicalId }, { "uuid", uuid },
                       { "source", source } } );
+            const std::string groupKey = aNoConnect
+                                                 ? "no_connect/" + endpoint + "/"
+                                                           + std::to_string( index + 1 )
+                                                 : "net_label/" + aNetName + "/" + endpoint
+                                                           + "/" + std::to_string( index + 1 );
+            groupTargets[groupKey] = { { "sheet", point.sheet }, { "uuid", uuid } };
         }
     };
 
@@ -2403,6 +2559,141 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     {
         diagnostic( result, "invalid_schematic_ir", error.what() );
     }
+
+    if( !result.diagnostics.empty() )
+        return result;
+
+    for( const std::string& id : orderedIds )
+    {
+        const JSON& sheet = sheets.at( id );
+
+        if( id != rootId )
+        {
+            for( const JSON& pin : sheet["pins"] )
+            {
+                const std::string logicalId = id + "/" + pin["name"].get<std::string>();
+                groupTargets["hierarchical_label/" + logicalId] = {
+                    { "sheet", id },
+                    { "uuid", stableUuid( project, "schematic_hier_label", logicalId ) }
+                };
+            }
+        }
+
+        for( const std::string& childId : children[id] )
+        {
+            groupTargets["sheet/" + childId] = {
+                { "sheet", id },
+                { "uuid", stableUuid( project, "schematic_sheet", childId ) }
+            };
+        }
+    }
+
+    std::map<std::string, std::vector<JSON>> groupsBySheet;
+    std::set<std::string> groupIds;
+
+    for( const JSON& group : sourceGroups )
+    {
+        if( !validGroupShape( group ) || !sheets.contains( group.value( "sheet", "" ) )
+            || !groupIds.emplace( group.value( "id", "" ) ).second )
+        {
+            diagnostic( result, "invalid_schematic_ir",
+                        "schematic IR contains a malformed or duplicate group" );
+            continue;
+        }
+
+        const std::string id = group["id"].get<std::string>();
+        const std::string sheet = group["sheet"].get<std::string>();
+        groupTargets["group/" + id] = {
+            { "sheet", sheet },
+            { "uuid", stableUuid( project, "schematic_group", id ) }
+        };
+    }
+
+    std::set<std::string> groupedTargets;
+    std::map<std::string, std::vector<std::string>> nestedGroups;
+
+    for( const JSON& group : sourceGroups )
+    {
+        if( !validGroupShape( group ) || !groupIds.contains( group.value( "id", "" ) ) )
+            continue;
+
+        const std::string id = group["id"].get<std::string>();
+        const std::string sheet = group["sheet"].get<std::string>();
+        std::vector<std::string> memberUuids;
+
+        for( const JSON& member : group["members"] )
+        {
+            const std::string key = groupMemberKey( member );
+
+            if( member["kind"] == "group" )
+                nestedGroups[id].push_back( member["id"].get<std::string>() );
+
+            auto target = groupTargets.find( key );
+
+            if( target == groupTargets.end() )
+            {
+                diagnostic( result, "unresolved_schematic_group_member",
+                            "group " + id + " member " + key
+                                    + " does not resolve to a generated native item" );
+                continue;
+            }
+
+            if( target->second.value( "sheet", "" ) != sheet )
+            {
+                diagnostic( result, "mismatched_schematic_group_member_sheet",
+                            "group " + id + " member " + key
+                                    + " is on a different native schematic screen" );
+                continue;
+            }
+
+            if( !groupedTargets.emplace( key ).second )
+            {
+                diagnostic( result, "multiply_grouped_schematic_item",
+                            "native schematic item " + key
+                                    + " is a direct member of more than one group" );
+                continue;
+            }
+
+            memberUuids.push_back( target->second["uuid"].get<std::string>() );
+        }
+
+        if( memberUuids.size() != group["members"].size() )
+            continue;
+
+        const std::string uuid = stableUuid( project, "schematic_group", id );
+        groupsBySheet[sheet].push_back(
+                { { "kind", "group" },
+                  { "logicalId", id },
+                  { "uuid", uuid },
+                  { "source", schematicGroupExpression( group, uuid, memberUuids ) } } );
+    }
+
+    std::map<std::string, int> groupVisitState;
+    std::function<void( const std::string& )> visitGroup = [&]( const std::string& aId )
+    {
+        if( groupVisitState[aId] == 2 )
+            return;
+
+        if( groupVisitState[aId] == 1 )
+        {
+            diagnostic( result, "recursive_schematic_group",
+                        "schematic group IR contains a nesting cycle at " + aId );
+            return;
+        }
+
+        groupVisitState[aId] = 1;
+
+        for( const std::string& child : nestedGroups[aId] )
+        {
+            if( groupIds.contains( child ) )
+                visitGroup( child );
+        }
+
+        groupVisitState[aId] = 2;
+    };
+
+    for( const std::string& id : groupIds )
+        visitGroup( id );
 
     if( !result.diagnostics.empty() )
         return result;
@@ -2533,6 +2824,15 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                           { "uuid", uuid } } );
             }
 
+            for( JSON group : groupsBySheet[id] )
+            {
+                group["file"] = file;
+                items.push_back( group );
+                JSON ownership = std::move( group );
+                ownership.erase( "source" );
+                managedItems.push_back( std::move( ownership ) );
+            }
+
             std::ostringstream document;
             document << "(kicad_sch\n"
                      << "  (version " << SCHEMATIC_FILE_VERSION << ")\n"
@@ -2640,6 +2940,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     result.counts["noConnects"] = sourceNoConnects.size();
     result.counts["drawings"] = sourceDrawings.size();
     result.counts["busAliases"] = sourceBusAliases.size();
+    result.counts["groups"] = sourceGroups.size();
 
     for( const auto& [ sheet, symbols ] : librariesBySheet )
         result.counts["librarySymbols"] = result.counts["librarySymbols"].get<size_t>()

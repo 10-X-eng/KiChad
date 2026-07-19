@@ -131,6 +131,7 @@ private:
         wxString          name;
         KIID              uuid;
         LIB_ID            libId;
+        bool              locked = false;
         std::vector<KIID> memberUuids;
     };
 
