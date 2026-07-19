@@ -145,6 +145,7 @@ bool validManagedItem( const JSON& aItem )
                 || aItem["kind"] == "circle" || aItem["kind"] == "arc"
                 || aItem["kind"] == "bezier"
                 || aItem["kind"] == "image"
+                || aItem["kind"] == "table"
                 || aItem["kind"] == "lib_symbol"
                 || aItem["kind"] == "bus_alias" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()

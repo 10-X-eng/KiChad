@@ -11,6 +11,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
@@ -1788,6 +1789,93 @@ BOOST_AUTO_TEST_CASE( CompilesDigestVerifiedSelfContainedSchematicImage )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesCompleteAiNativeSchematicTableGrid )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_table)
+  (sheet root (parent none) (file "schematic_table.kicad_sch") (title "Table"))
+  (table pin-summary
+    (sheet root) (at 80mm 80mm) (rotation 90deg)
+    (columns 20mm 30mm) (rows 8mm 10mm)
+    (border (external true) (header true) (stroke 0.3mm dash #10203080))
+    (separators (rows true) (columns false) (stroke default solid default))
+    (cells
+      (cell 1 1 "Pin summary"
+        (margins 0.5mm 0.6mm 0.7mm 0.8mm) (exclude_from_sim true)
+        (fill color #40506099) (text_size 1.2mm 1.5mm) (font "DejaVu Sans")
+        (line_spacing 1.25) (thickness 0.2mm) (color #708090cc)
+        (justify left top) (mirror true) (bold true) (italic true)
+        (hyperlink "https://example.com/pin-summary"))
+      (cell 1 2 ""
+        (margins 0mm 0mm 0mm 0mm) (exclude_from_sim false)
+        (fill none default) (text_size 1.27mm 1.27mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify center center) (mirror false) (bold false) (italic false)
+        (hyperlink none))
+      (cell 2 1 "VCC"
+        (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+        (fill background default) (text_size 1mm 1mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify left center) (mirror false) (bold true) (italic false)
+        (hyperlink none))
+      (cell 2 2 "3V3 supply"
+        (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+        (fill none default) (text_size 1mm 1mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify left center) (mirror false) (bold false) (italic false)
+        (hyperlink none)))
+    (merges (merge 1 1 1 2)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& table = result.ir["schematic"]["drawings"][0];
+    BOOST_CHECK_EQUAL( table["kind"], "table" );
+    BOOST_CHECK_EQUAL( table["id"], "pin-summary" );
+    BOOST_CHECK_EQUAL( table["rotationDegrees"], 90 );
+    BOOST_CHECK_EQUAL( table["columnWidthsNm"].size(), 2 );
+    BOOST_CHECK_EQUAL( table["rowHeightsNm"][1], 10000000 );
+    BOOST_CHECK_EQUAL( table["cells"].size(), 4 );
+    BOOST_CHECK_EQUAL( table["cells"][0]["fill"]["color"]["a"], 153 );
+    BOOST_CHECK_EQUAL( table["cells"][0]["font"], "DejaVu Sans" );
+    BOOST_CHECK( table["cells"][0]["exclude_from_sim"].get<bool>() );
+    BOOST_CHECK_EQUAL( table["merges"].size(), 1 );
+    BOOST_CHECK_EQUAL( table["merges"][0]["lastColumn"], 1 );
+
+    std::string invalid = program;
+    const size_t duplicate = invalid.find( "(cell 2 2" );
+    BOOST_REQUIRE_NE( duplicate, std::string::npos );
+    invalid.replace( duplicate, 9, "(cell 2 1" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "duplicate_schematic_table_cell" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "incomplete_schematic_table_cells" ),
+                    std::string::npos );
+
+    invalid = program;
+    const std::string emptyCovered = "(cell 1 2 \"\"";
+    const size_t covered = invalid.find( emptyCovered );
+    BOOST_REQUIRE_NE( covered, std::string::npos );
+    invalid.replace( covered, emptyCovered.size(), "(cell 1 2 \"hidden\"" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "covered_schematic_table_cell_content" ),
+                    std::string::npos );
+
+    invalid = program;
+    const std::string oneMerge = "(merges (merge 1 1 1 2))";
+    const size_t merge = invalid.find( oneMerge );
+    BOOST_REQUIRE_NE( merge, std::string::npos );
+    invalid.replace( merge, oneMerge.size(),
+                     "(merges (merge 1 1 1 2) (merge 1 2 2 2))" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "overlapping_schematic_table_merge" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design
@@ -1955,6 +2043,7 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     std::map<std::string, size_t> counts;
     bool foundQualifiedTitleBlock = false;
     bool foundQualifiedDirectives = false;
+    bool foundQualifiedTextGraphics = false;
 
     for( const nlohmann::json& facet : coverage["facets"] )
     {
@@ -1987,10 +2076,19 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
                     && facet["kdsForms"] == nlohmann::json::array( { "directive",
                                                                      "rule_area" } );
         }
+
+        if( id == "schematic.text_graphics" )
+        {
+            foundQualifiedTextGraphics =
+                    state == "qualified" && facet["gaps"].empty()
+                    && std::find( facet["kdsForms"].begin(), facet["kdsForms"].end(), "table" )
+                               != facet["kdsForms"].end();
+        }
     }
 
     BOOST_CHECK( foundQualifiedTitleBlock );
     BOOST_CHECK( foundQualifiedDirectives );
+    BOOST_CHECK( foundQualifiedTextGraphics );
     BOOST_CHECK( domains == expectedDomains );
 
     for( const std::string& state : allowedStates )

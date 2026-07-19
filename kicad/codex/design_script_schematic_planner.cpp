@@ -895,6 +895,192 @@ std::string schematicImageExpression( const JSON& aDrawing, const std::string& a
 }
 
 
+void appendSchematicTableStroke( std::ostringstream& aOutput, const JSON& aStroke,
+                                 const std::string& aIndent )
+{
+    aOutput << aIndent << "(stroke\n"
+            << aIndent << "  (width "
+            << millimetres( aStroke.at( "widthNm" ).get<int64_t>() ) << ")\n"
+            << aIndent << "  (type " << aStroke.at( "lineStyle" ).get<std::string>()
+            << ")\n";
+
+    if( !aStroke.at( "color" ).is_null() )
+        appendSchematicColor( aOutput, aStroke.at( "color" ), aIndent + "  " );
+
+    aOutput << aIndent << ")\n";
+}
+
+
+std::string schematicTableExpression( const JSON& aDrawing, const std::string& aProject,
+                                      const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    const JSON& columnWidths = aDrawing.at( "columnWidthsNm" );
+    const JSON& rowHeights = aDrawing.at( "rowHeightsNm" );
+    const JSON& border = aDrawing.at( "border" );
+    const JSON& separators = aDrawing.at( "separators" );
+    const size_t columnCount = columnWidths.size();
+    const size_t rowCount = rowHeights.size();
+    const int rotation = aDrawing.at( "rotationDegrees" ).get<int>();
+    std::vector<int64_t> columnOffsets( columnCount, 0 );
+    std::vector<int64_t> rowOffsets( rowCount, 0 );
+
+    for( size_t column = 1; column < columnCount; ++column )
+    {
+        columnOffsets[column] = columnOffsets[column - 1]
+                                + columnWidths[column - 1].get<int64_t>();
+    }
+
+    for( size_t row = 1; row < rowCount; ++row )
+        rowOffsets[row] = rowOffsets[row - 1] + rowHeights[row - 1].get<int64_t>();
+
+    std::vector<std::pair<int, int>> spans( rowCount * columnCount, { 1, 1 } );
+
+    for( const JSON& merge : aDrawing.at( "merges" ) )
+    {
+        const int firstRow = merge.at( "firstRow" ).get<int>();
+        const int firstColumn = merge.at( "firstColumn" ).get<int>();
+        const int lastRow = merge.at( "lastRow" ).get<int>();
+        const int lastColumn = merge.at( "lastColumn" ).get<int>();
+        spans[static_cast<size_t>( firstRow ) * columnCount
+              + static_cast<size_t>( firstColumn )] = {
+            lastColumn - firstColumn + 1, lastRow - firstRow + 1
+        };
+
+        for( int row = firstRow; row <= lastRow; ++row )
+        {
+            for( int column = firstColumn; column <= lastColumn; ++column )
+            {
+                if( row != firstRow || column != firstColumn )
+                {
+                    spans[static_cast<size_t>( row ) * columnCount
+                          + static_cast<size_t>( column )] = { 0, 0 };
+                }
+            }
+        }
+    }
+
+    std::map<std::pair<int, int>, const JSON*> cells;
+
+    for( const JSON& cell : aDrawing.at( "cells" ) )
+    {
+        cells[{ cell.at( "row" ).get<int>(), cell.at( "column" ).get<int>() }] = &cell;
+    }
+
+    std::ostringstream output;
+    output << "(table\n"
+           << "    (column_count " << columnCount << ")\n"
+           << "    (border\n"
+           << "      (external " << ( border.at( "external" ).get<bool>() ? "yes" : "no" )
+           << ")\n"
+           << "      (header " << ( border.at( "header" ).get<bool>() ? "yes" : "no" )
+           << ")\n";
+    appendSchematicTableStroke( output, border.at( "stroke" ), "      " );
+    output << "    )\n"
+           << "    (separators\n"
+           << "      (rows " << ( separators.at( "rows" ).get<bool>() ? "yes" : "no" )
+           << ")\n"
+           << "      (cols " << ( separators.at( "columns" ).get<bool>() ? "yes" : "no" )
+           << ")\n";
+    appendSchematicTableStroke( output, separators.at( "stroke" ), "      " );
+    output << "    )\n"
+           << "    (column_widths";
+
+    for( const JSON& width : columnWidths )
+        output << ' ' << millimetres( width.get<int64_t>() );
+
+    output << ")\n"
+           << "    (row_heights";
+
+    for( const JSON& height : rowHeights )
+        output << ' ' << millimetres( height.get<int64_t>() );
+
+    output << ")\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "    (cells\n";
+
+    const int64_t originX = position.at( "xNm" ).get<int64_t>();
+    const int64_t originY = position.at( "yNm" ).get<int64_t>();
+    const std::string tableId = aDrawing.at( "id" ).get<std::string>();
+
+    for( size_t row = 0; row < rowCount; ++row )
+    {
+        for( size_t column = 0; column < columnCount; ++column )
+        {
+            const JSON& cell = *cells.at( { static_cast<int>( row ),
+                                            static_cast<int>( column ) } );
+            const auto [ columnSpan, rowSpan ] = spans[row * columnCount + column];
+            int64_t cellWidth = columnWidths[column].get<int64_t>();
+            int64_t cellHeight = rowHeights[row].get<int64_t>();
+
+            if( columnSpan > 1 )
+            {
+                cellWidth = 0;
+
+                for( int offset = 0; offset < columnSpan; ++offset )
+                    cellWidth += columnWidths[column + static_cast<size_t>( offset )].get<int64_t>();
+            }
+
+            if( rowSpan > 1 )
+            {
+                cellHeight = 0;
+
+                for( int offset = 0; offset < rowSpan; ++offset )
+                    cellHeight += rowHeights[row + static_cast<size_t>( offset )].get<int64_t>();
+            }
+
+            int64_t x = originX + columnOffsets[column];
+            int64_t y = originY + rowOffsets[row];
+            int64_t sizeX = cellWidth;
+            int64_t sizeY = cellHeight;
+
+            if( rotation == 90 )
+            {
+                x = originX + rowOffsets[row];
+                y = originY - columnOffsets[column];
+                sizeX = cellHeight;
+                sizeY = -cellWidth;
+            }
+
+            const JSON& margins = cell.at( "margins" );
+            const JSON& fill = cell.at( "fill" );
+            const std::string cellUuid = stableUuid(
+                    aProject, "schematic_table_cell",
+                    tableId + "/" + std::to_string( row + 1 ) + "/"
+                            + std::to_string( column + 1 ) );
+            output << "      (table_cell " << quoted( cell.at( "content" ).get<std::string>() )
+                   << "\n"
+                   << "        (exclude_from_sim "
+                   << ( cell.at( "exclude_from_sim" ).get<bool>() ? "yes" : "no" ) << ")\n"
+                   << "        (at " << millimetres( x ) << ' ' << millimetres( y ) << ' '
+                   << rotation << ")\n"
+                   << "        (size " << millimetres( sizeX ) << ' ' << millimetres( sizeY )
+                   << ")\n"
+                   << "        (margins "
+                   << millimetres( margins.at( "leftNm" ).get<int64_t>() ) << ' '
+                   << millimetres( margins.at( "topNm" ).get<int64_t>() ) << ' '
+                   << millimetres( margins.at( "rightNm" ).get<int64_t>() ) << ' '
+                   << millimetres( margins.at( "bottomNm" ).get<int64_t>() ) << ")\n"
+                   << "        (span " << columnSpan << ' ' << rowSpan << ")\n"
+                   << "        (fill\n"
+                   << "          (type " << fill.at( "type" ).get<std::string>() << ")\n";
+
+            if( !fill.at( "color" ).is_null() )
+                appendSchematicColor( output, fill.at( "color" ), "          " );
+
+            output << "        )\n";
+            appendSchematicTextEffects( output, cell, "        " );
+            output << "        (uuid " << quoted( cellUuid ) << ")\n"
+                   << "      )\n";
+        }
+    }
+
+    output << "    )\n"
+           << "  )";
+    return output.str();
+}
+
+
 std::string directivePropertyExpression( const JSON& aProperty )
 {
     const JSON& position = aProperty.at( "position" );
@@ -1112,6 +1298,31 @@ bool validSchematicPointShape( const JSON& aPoint )
     return aPoint.is_object() && aPoint.contains( "xNm" )
            && aPoint["xNm"].is_number_integer() && aPoint.contains( "yNm" )
            && aPoint["yNm"].is_number_integer();
+}
+
+
+bool validSchematicStrokeShape( const JSON& aStroke )
+{
+    static const std::set<std::string> LINE_STYLES = {
+        "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+    };
+    return aStroke.is_object() && aStroke.contains( "widthNm" )
+           && aStroke["widthNm"].is_number_integer() && aStroke.contains( "lineStyle" )
+           && aStroke["lineStyle"].is_string()
+           && LINE_STYLES.contains( aStroke["lineStyle"].get<std::string>() )
+           && aStroke.contains( "color" ) && validSchematicColorShape( aStroke["color"] );
+}
+
+
+bool validSchematicFillShape( const JSON& aFill )
+{
+    static const std::set<std::string> FILL_TYPES = {
+        "none", "outline", "background", "color", "hatch", "reverse_hatch",
+        "cross_hatch"
+    };
+    return aFill.is_object() && aFill.contains( "type" ) && aFill["type"].is_string()
+           && FILL_TYPES.contains( aFill["type"].get<std::string>() )
+           && aFill.contains( "color" ) && validSchematicColorShape( aFill["color"] );
 }
 
 
@@ -1352,6 +1563,139 @@ bool validDrawingShape( const JSON& aDrawing )
                && aDrawing.contains( "dataBase64" ) && aDrawing["dataBase64"].is_string()
                && aDrawing.contains( "byteCount" )
                && aDrawing["byteCount"].is_number_unsigned();
+    }
+
+    if( kind == "table" )
+    {
+        if( !aDrawing.contains( "position" )
+            || !validSchematicPointShape( aDrawing["position"] )
+            || !aDrawing.contains( "rotationDegrees" )
+            || !aDrawing["rotationDegrees"].is_number_integer()
+            || ( aDrawing["rotationDegrees"] != 0 && aDrawing["rotationDegrees"] != 90 )
+            || !aDrawing.contains( "columnWidthsNm" )
+            || !aDrawing["columnWidthsNm"].is_array()
+            || aDrawing["columnWidthsNm"].empty()
+            || aDrawing["columnWidthsNm"].size() > 256
+            || !aDrawing.contains( "rowHeightsNm" )
+            || !aDrawing["rowHeightsNm"].is_array()
+            || aDrawing["rowHeightsNm"].empty() || aDrawing["rowHeightsNm"].size() > 256
+            || !aDrawing.contains( "border" ) || !aDrawing["border"].is_object()
+            || !aDrawing["border"].contains( "external" )
+            || !aDrawing["border"]["external"].is_boolean()
+            || !aDrawing["border"].contains( "header" )
+            || !aDrawing["border"]["header"].is_boolean()
+            || !aDrawing["border"].contains( "stroke" )
+            || !validSchematicStrokeShape( aDrawing["border"]["stroke"] )
+            || !aDrawing.contains( "separators" ) || !aDrawing["separators"].is_object()
+            || !aDrawing["separators"].contains( "rows" )
+            || !aDrawing["separators"]["rows"].is_boolean()
+            || !aDrawing["separators"].contains( "columns" )
+            || !aDrawing["separators"]["columns"].is_boolean()
+            || !aDrawing["separators"].contains( "stroke" )
+            || !validSchematicStrokeShape( aDrawing["separators"]["stroke"] )
+            || !aDrawing.contains( "cells" ) || !aDrawing["cells"].is_array()
+            || !aDrawing.contains( "merges" ) || !aDrawing["merges"].is_array() )
+        {
+            return false;
+        }
+
+        if( !std::all_of( aDrawing["columnWidthsNm"].begin(),
+                          aDrawing["columnWidthsNm"].end(),
+                          []( const JSON& aValue ) { return aValue.is_number_integer(); } )
+            || !std::all_of( aDrawing["rowHeightsNm"].begin(),
+                             aDrawing["rowHeightsNm"].end(),
+                             []( const JSON& aValue ) { return aValue.is_number_integer(); } ) )
+        {
+            return false;
+        }
+
+        const size_t columnCount = aDrawing["columnWidthsNm"].size();
+        const size_t rowCount = aDrawing["rowHeightsNm"].size();
+
+        if( rowCount > 65536 / columnCount
+            || aDrawing["cells"].size() != rowCount * columnCount )
+        {
+            return false;
+        }
+
+        std::set<std::pair<int, int>> coordinates;
+
+        for( const JSON& cell : aDrawing["cells"] )
+        {
+            if( !cell.is_object() || !cell.contains( "row" )
+                || !cell["row"].is_number_integer() || !cell.contains( "column" )
+                || !cell["column"].is_number_integer() || !cell.contains( "content" )
+                || !cell["content"].is_string() || !cell.contains( "margins" )
+                || !cell["margins"].is_object() || !cell.contains( "exclude_from_sim" )
+                || !cell["exclude_from_sim"].is_boolean() || !cell.contains( "fill" )
+                || !validSchematicFillShape( cell["fill"] )
+                || !validSchematicTextEffectsShape( cell ) )
+            {
+                return false;
+            }
+
+            for( const char* margin : { "leftNm", "topNm", "rightNm", "bottomNm" } )
+            {
+                if( !cell["margins"].contains( margin )
+                    || !cell["margins"][margin].is_number_integer() )
+                {
+                    return false;
+                }
+            }
+
+            const int row = cell["row"].get<int>();
+            const int column = cell["column"].get<int>();
+
+            if( row < 0 || column < 0 || static_cast<size_t>( row ) >= rowCount
+                || static_cast<size_t>( column ) >= columnCount
+                || !coordinates.emplace( row, column ).second )
+            {
+                return false;
+            }
+        }
+
+        std::vector<bool> merged( rowCount * columnCount, false );
+
+        for( const JSON& merge : aDrawing["merges"] )
+        {
+            if( !merge.is_object() || !merge.contains( "firstRow" )
+                || !merge["firstRow"].is_number_integer() || !merge.contains( "firstColumn" )
+                || !merge["firstColumn"].is_number_integer() || !merge.contains( "lastRow" )
+                || !merge["lastRow"].is_number_integer() || !merge.contains( "lastColumn" )
+                || !merge["lastColumn"].is_number_integer() )
+            {
+                return false;
+            }
+
+            const int firstRow = merge["firstRow"].get<int>();
+            const int firstColumn = merge["firstColumn"].get<int>();
+            const int lastRow = merge["lastRow"].get<int>();
+            const int lastColumn = merge["lastColumn"].get<int>();
+
+            if( firstRow < 0 || firstColumn < 0 || lastRow < firstRow
+                || lastColumn < firstColumn || static_cast<size_t>( lastRow ) >= rowCount
+                || static_cast<size_t>( lastColumn ) >= columnCount
+                || ( firstRow == lastRow && firstColumn == lastColumn ) )
+            {
+                return false;
+            }
+
+            for( int row = firstRow; row <= lastRow; ++row )
+            {
+                for( int column = firstColumn; column <= lastColumn; ++column )
+                {
+                    const size_t offset = static_cast<size_t>( row ) * columnCount
+                                          + static_cast<size_t>( column );
+
+                    if( merged[offset] )
+                        return false;
+
+                    merged[offset] = true;
+                }
+            }
+        }
+
+        return true;
     }
 
     if( kind == "rule_area" )
@@ -1974,6 +2318,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                            ? textBoxExpression( drawing, uuid )
                                    : kind == "image"
                                            ? schematicImageExpression( drawing, uuid )
+                                   : kind == "table"
+                                           ? schematicTableExpression( drawing, project, uuid )
                                    : kind == "polyline" || kind == "rectangle"
                                                      || kind == "circle" || kind == "arc"
                                                      || kind == "bezier"

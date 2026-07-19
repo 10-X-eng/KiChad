@@ -51,6 +51,8 @@ constexpr size_t MAX_SCHEMATIC_TEXT_BYTES = 64 * 1024;
 constexpr size_t MAX_FONT_NAME_BYTES = 256;
 constexpr size_t MAX_HYPERLINK_BYTES = 2048;
 constexpr size_t MAX_SCHEMATIC_IMAGE_BYTES = 8 * 1024 * 1024;
+constexpr size_t MAX_SCHEMATIC_TABLE_AXIS = 256;
+constexpr size_t MAX_SCHEMATIC_TABLE_CELLS = 65536;
 constexpr size_t MAX_LIBRARIES = 512;
 constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
 
@@ -3429,6 +3431,721 @@ JSON compileSchematicImage( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+bool compileSchematicTableLines( const DOCUMENT& aDocument, size_t aNode, bool aBorder,
+                                 JSON& aLines,
+                                 KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    const std::string name = aBorder ? "border" : "separators";
+    const std::set<std::string> booleanFields = aBorder
+                                                        ? std::set<std::string>{ "external", "header" }
+                                                        : std::set<std::string>{ "rows", "columns" };
+    std::set<std::string> fields;
+    bool valid = true;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_table_" + name + "_field",
+                        "table " + name + " field '" + head + "' occurs more than once" );
+            valid = false;
+            continue;
+        }
+
+        if( booleanFields.contains( head ) )
+        {
+            std::string boolean;
+
+            if( !parseSingleValueForm( aDocument, child, boolean )
+                || ( boolean != "true" && boolean != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_" + name + "_" + head,
+                            "table " + name + " " + head + " must be true or false" );
+                valid = false;
+            }
+            else
+            {
+                aLines[head] = boolean == "true";
+            }
+
+            continue;
+        }
+
+        if( head == "stroke" )
+        {
+            JSON stroke;
+
+            if( !parseCompleteSchematicStroke( aDocument, child, false, stroke ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_" + name + "_stroke",
+                            "table " + name + " stroke requires default or 0.01 mm through 10 mm, a native line style, and default or #RRGGBB[AA] color" );
+                valid = false;
+            }
+            else
+            {
+                aLines["stroke"] = std::move( stroke );
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_table_" + name + "_field",
+                    aBorder ? "table border supports external, header, and stroke"
+                            : "table separators supports rows, columns, and stroke" );
+        valid = false;
+    }
+
+    for( const std::string& required : booleanFields )
+    {
+        if( !aLines.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_table_" + name + "_field",
+                        "table " + name + " is missing " + required );
+            valid = false;
+        }
+    }
+
+    if( !aLines.contains( "stroke" ) )
+    {
+        diagnostic( aResult, "error", "missing_schematic_table_" + name + "_field",
+                    "table " + name + " is missing stroke" );
+        valid = false;
+    }
+
+    return valid;
+}
+
+
+JSON compileSchematicTableCell( const DOCUMENT& aDocument, size_t aNode,
+                                size_t aRowCount, size_t aColumnCount,
+                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string rowText;
+    std::string columnText;
+    std::string content;
+    int64_t row = 0;
+    int64_t column = 0;
+
+    if( node.children.size() < 4
+        || !scalarText( aDocument, node.children[1], rowText )
+        || !scalarText( aDocument, node.children[2], columnText )
+        || !scalarText( aDocument, node.children[3], content )
+        || !parseBoundedInteger( rowText, 1, static_cast<int64_t>( aRowCount ), row )
+        || !parseBoundedInteger( columnText, 1, static_cast<int64_t>( aColumnCount ), column )
+        || content.size() > MAX_SCHEMATIC_TEXT_BYTES
+        || content.find( '\0' ) != std::string::npos )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_table_cell",
+                    "cell requires a valid 1-based row and column plus content up to 65536 UTF-8 bytes" );
+        return JSON::object();
+    }
+
+    JSON cell = { { "row", row - 1 }, { "column", column - 1 }, { "content", content } };
+    std::set<std::string> fields;
+
+    for( size_t index = 4; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_table_cell_field",
+                        "cell " + rowText + "," + columnText + " field '" + head
+                                + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "margins" )
+        {
+            const DOCUMENT::NODE& margins = aDocument.Nodes()[child];
+            JSON values = JSON::array();
+            bool valid = margins.children.size() == 5;
+
+            for( size_t marginIndex = 1; marginIndex < margins.children.size(); ++marginIndex )
+            {
+                std::string valueText;
+                int64_t value = 0;
+
+                if( !scalarText( aDocument, margins.children[marginIndex], valueText )
+                    || !parseDistance( valueText, value ) || value < 0
+                    || value > 2'000'000'000 )
+                {
+                    valid = false;
+                }
+
+                values.push_back( value );
+            }
+
+            if( !valid )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_margins",
+                            "cell margins requires left, top, right, and bottom distances from 0 to 2 m" );
+            }
+            else
+            {
+                cell["margins"] = { { "leftNm", values[0] }, { "topNm", values[1] },
+                                      { "rightNm", values[2] }, { "bottomNm", values[3] } };
+            }
+
+            continue;
+        }
+
+        if( head == "fill" )
+        {
+            JSON fill;
+
+            if( !parseCompleteSchematicFill( aDocument, child, fill ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_fill",
+                            "cell fill requires none|outline|background with default, or color|hatch|reverse_hatch|cross_hatch with #RRGGBB[AA]" );
+            }
+            else
+            {
+                cell["fill"] = std::move( fill );
+            }
+
+            continue;
+        }
+
+        if( head == "text_size" )
+        {
+            JSON size;
+
+            if( !parseSchematicPoint( aDocument, child, size )
+                || size["xNm"].get<int64_t>() < 100'000
+                || size["yNm"].get<int64_t>() < 100'000
+                || size["xNm"].get<int64_t>() > 50'000'000
+                || size["yNm"].get<int64_t>() > 50'000'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_text_size",
+                            "cell text_size requires two dimensions from 0.1 mm through 50 mm" );
+            }
+            else
+            {
+                cell["size"] = std::move( size );
+            }
+
+            continue;
+        }
+
+        if( head == "font" )
+        {
+            std::string font;
+
+            if( !parseSingleValueForm( aDocument, child, font ) || font.empty()
+                || font.size() > MAX_FONT_NAME_BYTES || font.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_font",
+                            "cell font requires stroke or a name up to 256 UTF-8 bytes" );
+            }
+            else
+            {
+                cell["font"] = font;
+            }
+
+            continue;
+        }
+
+        if( head == "line_spacing" )
+        {
+            std::string spacingText;
+            double spacing = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, spacingText )
+                || !parseFiniteDecimal( spacingText, spacing ) || spacing < 0.5 || spacing > 5.0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_line_spacing",
+                            "cell line_spacing requires a finite value from 0.5 through 5" );
+            }
+            else
+            {
+                cell["lineSpacing"] = spacing;
+            }
+
+            continue;
+        }
+
+        if( head == "thickness" )
+        {
+            std::string thicknessText;
+            int64_t thickness = 0;
+
+            if( !parseSingleValueForm( aDocument, child, thicknessText )
+                || ( thicknessText != "auto"
+                     && ( !parseDistance( thicknessText, thickness ) || thickness < 10'000
+                          || thickness > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_thickness",
+                            "cell thickness requires auto or 0.01 mm through 10 mm" );
+            }
+            else
+            {
+                cell["thicknessNm"] = thicknessText == "auto" ? 0 : thickness;
+            }
+
+            continue;
+        }
+
+        if( head == "color" )
+        {
+            std::string colorText;
+            JSON color;
+
+            if( !parseSingleValueForm( aDocument, child, colorText )
+                || ( colorText != "default" && !parseHexColor( colorText, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_color",
+                            "cell color requires default or #RRGGBB[AA]" );
+            }
+            else
+            {
+                cell["color"] = colorText == "default" ? JSON( nullptr )
+                                                          : schematicNativeColor( color );
+            }
+
+            continue;
+        }
+
+        if( head == "justify" )
+        {
+            const DOCUMENT::NODE& justify = aDocument.Nodes()[child];
+            std::string horizontal;
+            std::string vertical;
+
+            if( justify.children.size() != 3
+                || !scalarText( aDocument, justify.children[1], horizontal )
+                || !scalarText( aDocument, justify.children[2], vertical )
+                || ( horizontal != "left" && horizontal != "center" && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_justify",
+                            "cell justify requires left|center|right and top|center|bottom" );
+            }
+            else
+            {
+                cell["justify"] = { { "horizontal", horizontal }, { "vertical", vertical } };
+            }
+
+            continue;
+        }
+
+        if( head == "hyperlink" )
+        {
+            std::string hyperlink;
+
+            if( !parseSingleValueForm( aDocument, child, hyperlink )
+                || hyperlink.size() > MAX_HYPERLINK_BYTES
+                || hyperlink.find( '\0' ) != std::string::npos
+                || hyperlink.find( '\r' ) != std::string::npos
+                || hyperlink.find( '\n' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_hyperlink",
+                            "cell hyperlink requires none or one line up to 2048 UTF-8 bytes" );
+            }
+            else
+            {
+                cell["hyperlink"] = hyperlink == "none" ? "" : hyperlink;
+            }
+
+            continue;
+        }
+
+        if( head == "exclude_from_sim" || head == "mirror" || head == "bold"
+            || head == "italic" )
+        {
+            std::string boolean;
+
+            if( !parseSingleValueForm( aDocument, child, boolean )
+                || ( boolean != "true" && boolean != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cell_" + head,
+                            "cell " + head + " must be true or false" );
+            }
+            else
+            {
+                cell[head] = boolean == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_table_cell_field",
+                    "cell supports margins, exclude_from_sim, fill, text_size, font, line_spacing, thickness, color, justify, mirror, bold, italic, and hyperlink" );
+    }
+
+    for( const char* required : { "margins", "exclude_from_sim", "fill", "size", "font",
+                                  "lineSpacing", "thicknessNm", "color", "justify", "mirror",
+                                  "bold", "italic", "hyperlink" } )
+    {
+        if( !cell.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_table_cell_field",
+                        "cell " + rowText + "," + columnText + " is missing " + required );
+        }
+    }
+
+    return cell;
+}
+
+
+JSON compileSchematicTable( const DOCUMENT& aDocument, size_t aNode,
+                            KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_table",
+                    "table requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON table = { { "kind", "table" }, { "id", id } };
+    std::set<std::string> fields;
+    size_t cellsNode = DOCUMENT::NO_NODE;
+    size_t mergesNode = DOCUMENT::NO_NODE;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_table_field",
+                        "table field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet ) || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_sheet",
+                            "table sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                table["sheet"] = sheet;
+            }
+
+            continue;
+        }
+
+        if( head == "at" )
+        {
+            JSON position;
+
+            if( !parseSchematicPoint( aDocument, child, position ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_at",
+                            "table at requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                table["position"] = std::move( position );
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string rotationText;
+            double rotation = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, rotationText )
+                || !parseFiniteDecimal( rotationText, rotation, "deg" )
+                || ( rotation != 0.0 && rotation != 90.0 ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_rotation",
+                            "table rotation requires 0deg or 90deg" );
+            }
+            else
+            {
+                table["rotationDegrees"] = static_cast<int>( rotation );
+            }
+
+            continue;
+        }
+
+        if( head == "columns" || head == "rows" )
+        {
+            const DOCUMENT::NODE& dimensions = aDocument.Nodes()[child];
+            JSON values = JSON::array();
+            bool valid = dimensions.children.size() >= 2
+                         && dimensions.children.size() <= MAX_SCHEMATIC_TABLE_AXIS + 1;
+            int64_t total = 0;
+
+            for( size_t dimension = 1; dimension < dimensions.children.size(); ++dimension )
+            {
+                std::string valueText;
+                int64_t value = 0;
+
+                if( !scalarText( aDocument, dimensions.children[dimension], valueText )
+                    || !parseDistance( valueText, value ) || value < 100'000
+                    || value > 2'000'000'000 )
+                {
+                    valid = false;
+                }
+
+                total += value;
+                values.push_back( value );
+            }
+
+            if( !valid || total > 2'000'000'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_" + head,
+                            "table " + head + " requires 1 through 256 dimensions from 0.1 mm through 2 m with a total no greater than 2 m" );
+            }
+            else
+            {
+                table[head == "columns" ? "columnWidthsNm" : "rowHeightsNm"] =
+                        std::move( values );
+            }
+
+            continue;
+        }
+
+        if( head == "border" || head == "separators" )
+        {
+            JSON lines = JSON::object();
+
+            if( compileSchematicTableLines( aDocument, child, head == "border", lines, aResult ) )
+                table[head] = std::move( lines );
+
+            continue;
+        }
+
+        if( head == "cells" )
+        {
+            cellsNode = child;
+            continue;
+        }
+
+        if( head == "merges" )
+        {
+            mergesNode = child;
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_table_field",
+                    "table supports sheet, at, rotation, columns, rows, border, separators, cells, and merges" );
+    }
+
+    for( const char* required : { "sheet", "position", "rotationDegrees", "columnWidthsNm",
+                                  "rowHeightsNm", "border", "separators" } )
+    {
+        if( !table.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_table_field",
+                        "table " + id + " is missing " + required );
+        }
+    }
+
+    if( cellsNode == DOCUMENT::NO_NODE )
+        diagnostic( aResult, "error", "missing_schematic_table_field", "table " + id + " is missing cells" );
+
+    if( mergesNode == DOCUMENT::NO_NODE )
+        diagnostic( aResult, "error", "missing_schematic_table_field", "table " + id + " is missing merges" );
+
+    if( !table.contains( "columnWidthsNm" ) || !table.contains( "rowHeightsNm" ) )
+        return table;
+
+    const size_t columnCount = table["columnWidthsNm"].size();
+    const size_t rowCount = table["rowHeightsNm"].size();
+
+    if( rowCount > MAX_SCHEMATIC_TABLE_CELLS / columnCount )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_table_cell_count",
+                    "table may contain no more than 65536 cells" );
+        return table;
+    }
+
+    std::map<std::pair<int64_t, int64_t>, JSON> cells;
+
+    if( cellsNode != DOCUMENT::NO_NODE )
+    {
+        const DOCUMENT::NODE& cellList = aDocument.Nodes()[cellsNode];
+
+        for( size_t index = 1; index < cellList.children.size(); ++index )
+        {
+            const size_t child = cellList.children[index];
+
+            if( aDocument.ListHead( child ) != "cell" )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_cells",
+                            "table cells may contain only cell forms" );
+                continue;
+            }
+
+            JSON cell = compileSchematicTableCell( aDocument, child, rowCount, columnCount, aResult );
+
+            if( !cell.contains( "row" ) || !cell.contains( "column" ) )
+                continue;
+
+            const std::pair<int64_t, int64_t> key = {
+                cell["row"].get<int64_t>(), cell["column"].get<int64_t>()
+            };
+
+            if( !cells.emplace( key, std::move( cell ) ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_schematic_table_cell",
+                            "table cell " + std::to_string( key.first + 1 ) + ","
+                                    + std::to_string( key.second + 1 ) + " occurs more than once" );
+            }
+        }
+    }
+
+    if( cells.size() != rowCount * columnCount )
+    {
+        diagnostic( aResult, "error", "incomplete_schematic_table_cells",
+                    "table " + id + " must define every cell exactly once" );
+    }
+
+    table["cells"] = JSON::array();
+
+    for( size_t row = 0; row < rowCount; ++row )
+    {
+        for( size_t column = 0; column < columnCount; ++column )
+        {
+            auto cell = cells.find( { static_cast<int64_t>( row ), static_cast<int64_t>( column ) } );
+
+            if( cell != cells.end() )
+                table["cells"].push_back( std::move( cell->second ) );
+        }
+    }
+
+    table["merges"] = JSON::array();
+    std::vector<bool> mergedCells( rowCount * columnCount, false );
+    std::vector<bool> coveredCells( rowCount * columnCount, false );
+
+    if( mergesNode != DOCUMENT::NO_NODE )
+    {
+        const DOCUMENT::NODE& merges = aDocument.Nodes()[mergesNode];
+
+        for( size_t index = 1; index < merges.children.size(); ++index )
+        {
+            const size_t child = merges.children[index];
+            const DOCUMENT::NODE& merge = aDocument.Nodes()[child];
+            std::string firstRowText;
+            std::string firstColumnText;
+            std::string lastRowText;
+            std::string lastColumnText;
+            int64_t firstRow = 0;
+            int64_t firstColumn = 0;
+            int64_t lastRow = 0;
+            int64_t lastColumn = 0;
+
+            if( aDocument.ListHead( child ) != "merge" || merge.children.size() != 5
+                || !scalarText( aDocument, merge.children[1], firstRowText )
+                || !scalarText( aDocument, merge.children[2], firstColumnText )
+                || !scalarText( aDocument, merge.children[3], lastRowText )
+                || !scalarText( aDocument, merge.children[4], lastColumnText )
+                || !parseBoundedInteger( firstRowText, 1, static_cast<int64_t>( rowCount ), firstRow )
+                || !parseBoundedInteger( firstColumnText, 1, static_cast<int64_t>( columnCount ), firstColumn )
+                || !parseBoundedInteger( lastRowText, 1, static_cast<int64_t>( rowCount ), lastRow )
+                || !parseBoundedInteger( lastColumnText, 1, static_cast<int64_t>( columnCount ), lastColumn )
+                || firstRow > lastRow || firstColumn > lastColumn
+                || ( firstRow == lastRow && firstColumn == lastColumn ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_table_merge",
+                            "merge requires a nontrivial in-bounds rectangle as START_ROW START_COLUMN END_ROW END_COLUMN" );
+                continue;
+            }
+
+            bool overlaps = false;
+
+            for( int64_t row = firstRow - 1; row < lastRow; ++row )
+            {
+                for( int64_t column = firstColumn - 1; column < lastColumn; ++column )
+                {
+                    const size_t offset = static_cast<size_t>( row ) * columnCount
+                                          + static_cast<size_t>( column );
+                    overlaps = overlaps || mergedCells[offset];
+                }
+            }
+
+            if( overlaps )
+            {
+                diagnostic( aResult, "error", "overlapping_schematic_table_merge",
+                            "table merge rectangles must not overlap" );
+                continue;
+            }
+
+            for( int64_t row = firstRow - 1; row < lastRow; ++row )
+            {
+                for( int64_t column = firstColumn - 1; column < lastColumn; ++column )
+                {
+                    mergedCells[static_cast<size_t>( row ) * columnCount
+                                + static_cast<size_t>( column )] = true;
+
+                    if( row != firstRow - 1 || column != firstColumn - 1 )
+                    {
+                        coveredCells[static_cast<size_t>( row ) * columnCount
+                                     + static_cast<size_t>( column )] = true;
+                    }
+                }
+            }
+
+            table["merges"].push_back( { { "firstRow", firstRow - 1 },
+                                          { "firstColumn", firstColumn - 1 },
+                                          { "lastRow", lastRow - 1 },
+                                          { "lastColumn", lastColumn - 1 } } );
+        }
+    }
+
+    if( table["cells"].size() == rowCount * columnCount )
+    {
+        for( size_t offset = 0; offset < coveredCells.size(); ++offset )
+        {
+            if( coveredCells[offset]
+                && !table["cells"][offset]["content"].get<std::string>().empty() )
+            {
+                diagnostic( aResult, "error", "covered_schematic_table_cell_content",
+                            "cells covered by a merge must have empty content; content belongs to the merge's top-left cell" );
+            }
+        }
+    }
+
+    if( table.contains( "position" ) )
+    {
+        const int64_t x = table["position"]["xNm"].get<int64_t>();
+        const int64_t y = table["position"]["yNm"].get<int64_t>();
+        int64_t width = 0;
+        int64_t height = 0;
+
+        for( const JSON& value : table["columnWidthsNm"] )
+            width += value.get<int64_t>();
+
+        for( const JSON& value : table["rowHeightsNm"] )
+            height += value.get<int64_t>();
+        const int rotation = table.value( "rotationDegrees", 0 );
+        const bool inBounds = rotation == 0
+                                      ? x + width <= 2'000'000'000 && y + height <= 2'000'000'000
+                                      : x + height <= 2'000'000'000 && y >= width;
+
+        if( !inBounds )
+        {
+            diagnostic( aResult, "error", "invalid_schematic_table_extent",
+                        "table geometry must remain within the 0 through 2 m schematic coordinate range" );
+        }
+    }
+
+    return table;
+}
+
+
 JSON compileSchematicBusAlias( const DOCUMENT& aDocument, size_t aNode,
                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -5159,6 +5876,18 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(image ID (sheet ID) (at X Y) (scale FACTOR) "
                       "(media_type image/png|jpeg|gif|bmp|webp) (sha256 DIGEST) "
                       "(description TEXT) (data_base64 DATA))" } },
+                  { { "form",
+                      "(table ID (sheet ID) (at X Y) (rotation 0deg|90deg) "
+                      "(columns WIDTH ...) (rows HEIGHT ...) "
+                      "(border (external BOOL) (header BOOL) (stroke WIDTH STYLE COLOR)) "
+                      "(separators (rows BOOL) (columns BOOL) (stroke WIDTH STYLE COLOR)) "
+                      "(cells (cell ROW COLUMN CONTENT (margins LEFT TOP RIGHT BOTTOM) "
+                      "(exclude_from_sim BOOL) (fill TYPE COLOR) (text_size W H) "
+                      "(font stroke|NAME) (line_spacing NUMBER) (thickness auto|SIZE) "
+                      "(color default|#RRGGBB[AA]) "
+                      "(justify left|center|right top|center|bottom) (mirror BOOL) "
+                      "(bold BOOL) (italic BOOL) (hyperlink none|TEXT)) ...) "
+                      "(merges (merge START_ROW START_COLUMN END_ROW END_COLUMN) ...))" } },
                   { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
@@ -5562,6 +6291,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "image" )
         {
             JSON drawing = compileSchematicImage( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "table" )
+        {
+            JSON drawing = compileSchematicTable( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )

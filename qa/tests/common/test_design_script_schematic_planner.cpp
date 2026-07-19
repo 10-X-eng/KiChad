@@ -500,6 +500,72 @@ BOOST_AUTO_TEST_CASE( LowersVerifiedSchematicImageToChunkedNativeData )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersAiNativeTableGridAndMergeToCurrentNativeFormat )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_table)
+  (sheet root (parent none) (file "schematic_table.kicad_sch") (title "Table"))
+  (table pin-summary
+    (sheet root) (at 80mm 80mm) (rotation 90deg)
+    (columns 20mm 30mm) (rows 8mm 10mm)
+    (border (external true) (header true) (stroke 0.3mm dash #10203080))
+    (separators (rows true) (columns false) (stroke default solid default))
+    (cells
+      (cell 1 1 "Pin summary"
+        (margins 0.5mm 0.6mm 0.7mm 0.8mm) (exclude_from_sim true)
+        (fill color #40506099) (text_size 1.2mm 1.5mm) (font "DejaVu Sans")
+        (line_spacing 1.25) (thickness 0.2mm) (color #708090cc)
+        (justify left top) (mirror true) (bold true) (italic true)
+        (hyperlink "https://example.com/pin-summary"))
+      (cell 1 2 ""
+        (margins 0mm 0mm 0mm 0mm) (exclude_from_sim false)
+        (fill none default) (text_size 1.27mm 1.27mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify center center) (mirror false) (bold false) (italic false)
+        (hyperlink none))
+      (cell 2 1 "VCC"
+        (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+        (fill background default) (text_size 1mm 1mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify left center) (mirror false) (bold true) (italic false)
+        (hyperlink none))
+      (cell 2 2 "3V3 supply"
+        (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+        (fill none default) (text_size 1mm 1mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify left center) (mirror false) (bold false) (italic false)
+        (hyperlink none)))
+    (merges (merge 1 1 1 2)))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT first =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT second =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( first.fullyLowered, first.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( first.operations.dump(), second.operations.dump() );
+    BOOST_CHECK_EQUAL( first.counts["drawings"].get<int>(), 1 );
+    const std::string native = first.operations[0]["files"][0]["newDocumentSource"];
+    BOOST_CHECK_NE( native.find( "(table\n    (column_count 2)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(column_widths 20 30)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(row_heights 8 10)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(table_cell \"Pin summary\"" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(at 80 80 90)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 8 -50)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(span 2 1)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(span 0 0)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(face \"DejaVu Sans\")" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(href \"https://example.com/pin-summary\")" ),
+                    std::string::npos );
+
+    std::string parseError;
+    BOOST_CHECK_MESSAGE( KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( native, &parseError ),
+                         parseError );
+}
+
+
 BOOST_AUTO_TEST_CASE( ExportsGeneratedHierarchyForOptInNativeValidation )
 {
     wxString exportDirectory;

@@ -670,8 +670,78 @@ native KiCad schematic. PNG, JPEG, GIF, BMP, and WebP signatures are recognized;
 lowercase SHA-256 digest are checked against strict base64 decoding before planning. Decoded data
 is bounded to 8 MiB, PNG dimensions are derived and bounded, and scale is explicit. The planner
 chunks the verified bytes into KiCad 10's native `image/data` representation under a stable UUID;
-the native image loader is part of the live qualification gate. The broader facet remains
-`partial` only until tables and table cells are represented.
+the native image loader is part of the live qualification gate.
+
+Schematic tables use one AI-native grid representation:
+
+```scheme
+(table pin-summary
+  (sheet analog)
+  (at 180mm 170mm)
+  (rotation 90deg)
+  (columns 18mm 27mm)
+  (rows 7mm 7mm)
+  (border
+    (external true)
+    (header true)
+    (stroke 0.3mm dash #10203080))
+  (separators
+    (rows true)
+    (columns false)
+    (stroke default solid default))
+  (cells
+    (cell 1 1 "AI pin summary"
+      (margins 0.5mm 0.6mm 0.7mm 0.8mm)
+      (exclude_from_sim true)
+      (fill color #40506099)
+      (text_size 1.2mm 1.5mm)
+      (font "DejaVu Sans")
+      (line_spacing 1.25)
+      (thickness 0.2mm)
+      (color #708090cc)
+      (justify left top)
+      (mirror true)
+      (bold true)
+      (italic true)
+      (hyperlink "https://example.com/pin-summary"))
+    (cell 1 2 ""
+      (margins 0mm 0mm 0mm 0mm) (exclude_from_sim false)
+      (fill none default) (text_size 1.27mm 1.27mm) (font stroke)
+      (line_spacing 1) (thickness auto) (color default)
+      (justify center center) (mirror false) (bold false) (italic false)
+      (hyperlink none))
+    (cell 2 1 "VCC"
+      (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+      (fill background default) (text_size 1mm 1mm) (font stroke)
+      (line_spacing 1) (thickness auto) (color default)
+      (justify left center) (mirror false) (bold true) (italic false)
+      (hyperlink none))
+    (cell 2 2 "3V3 supply"
+      (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+      (fill none default) (text_size 1mm 1mm) (font stroke)
+      (line_spacing 1) (thickness auto) (color default)
+      (justify left center) (mirror false) (bold false) (italic false)
+      (hyperlink none)))
+  (merges (merge 1 1 1 2)))
+```
+
+Rows and columns are ordered dimensions; cells use clear 1-based row/column addresses and every
+grid address is declared exactly once. Each cell preserves all native content, margins, simulation
+inclusion, fill, font, size, line spacing, thickness, color, justification, mirroring, bold/italic,
+and hyperlink state. A `merge` is one inclusive top-left/bottom-right rectangle. Merge rectangles
+cannot overlap, and covered cells keep their formatting but must have empty content because the
+content belongs to the merge's top-left cell. This is the only authored merge representation: the
+planner deterministically derives KiCad's positive anchor span, zero spans for covered cells, and
+the position and extent of every cell.
+
+Tables contain 1 through 256 rows and columns and no more than 65,536 cells; individual and total
+dimensions, anchor, and rotated extent are bounded to the schematic coordinate range. Rotation is
+the native horizontal or vertical table orientation (`0deg` or `90deg`). Border and separator
+visibility remain independent of their complete native stroke style and color. Table and cell
+UUIDs are stable derivatives of the table ID and cell address. Reconciliation owns the table as one
+atomic native item, while the real KiCad 10 schematic loader validates nested cells and merge spans.
+The qualified `schematic.text_graphics` facet therefore covers free text, text boxes, every native
+free graphic, embedded images, tables, and table cells.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are
@@ -1217,8 +1287,10 @@ Project-local root and derived symbol content, physical and virtual/power compon
 native inclusion flags, connectivity, and no-connect state are executable with lossless
 reconciliation, stable identity, native netlist validation,
 journaling, rollback, and a disposable live integration proof. Confined project-local footprint
-instances are executable through KiCad's native parser and transaction API. Global installed symbol
-content, library authoring, footprint/model authoring, and other schematic
-drawing forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
-hierarchy is executable through the same transaction. Native backend
+instances are executable through KiCad's native parser and transaction API. Free text, text boxes,
+native graphics, embedded images, and complete table grids/cells are executable through lossless
+reconciliation and KiCad's native schematic loader. Global installed symbol content, library
+authoring, footprint/model authoring, and the incomplete schematic facets named by the capability
+catalog remain non-executable until their own lossless backends and rollback tests land. Nested
+sheet hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

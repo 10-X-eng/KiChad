@@ -228,6 +228,10 @@ Schematic images remain portable by storing one bounded payload in KDS alongside
 description, declared media type, and SHA-256. Compilation strictly decodes and authenticates the
 payload before the planner chunks it into KiCad's native embedded-image expression; opaque bytes
 are never trusted as geometry or executable content.
+Schematic tables use one semantic grid in KDS: an anchor and orientation, ordered column widths and
+row heights, complete border/separator policy, and one fully styled cell for every 1-based grid
+address. Rectangular merge ranges are declared once. Native cell positions, extents, span markers,
+and stable UUIDs are derived, so the AI-facing source never duplicates or contradicts geometry.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

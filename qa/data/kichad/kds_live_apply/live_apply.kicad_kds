@@ -106,6 +106,37 @@
     (sha256 431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460)
     (description "AI-readable one-pixel system overview fixture")
     (data_base64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+  (table root-pin-summary
+    (sheet root) (at 180mm 170mm) (rotation 90deg)
+    (columns 18mm 27mm) (rows 7mm 7mm)
+    (border (external true) (header true) (stroke 0.3mm dash #10203080))
+    (separators (rows true) (columns false) (stroke default solid default))
+    (cells
+      (cell 1 1 "AI pin summary"
+        (margins 0.5mm 0.6mm 0.7mm 0.8mm) (exclude_from_sim true)
+        (fill color #40506099) (text_size 1.2mm 1.5mm) (font "DejaVu Sans")
+        (line_spacing 1.25) (thickness 0.2mm) (color #708090cc)
+        (justify left top) (mirror true) (bold true) (italic true)
+        (hyperlink "https://github.com/10-X-eng/KiChad"))
+      (cell 1 2 ""
+        (margins 0mm 0mm 0mm 0mm) (exclude_from_sim false)
+        (fill none default) (text_size 1.27mm 1.27mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify center center) (mirror false) (bold false) (italic false)
+        (hyperlink none))
+      (cell 2 1 "VCC"
+        (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+        (fill background default) (text_size 1mm 1mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify left center) (mirror false) (bold true) (italic false)
+        (hyperlink none))
+      (cell 2 2 "3V3 supply"
+        (margins 0.4mm 0.4mm 0.4mm 0.4mm) (exclude_from_sim false)
+        (fill none default) (text_size 1mm 1mm) (font stroke)
+        (line_spacing 1) (thickness auto) (color default)
+        (justify left center) (mirror false) (bold false) (italic false)
+        (hyperlink none)))
+    (merges (merge 1 1 1 2)))
   (bus root-bus (sheet root) (from 80mm 50mm) (to 90mm 50mm)
     (stroke 0.5mm dash))
   (bus_entry root-entry (sheet root) (from 85mm 48.73mm) (to 86.27mm 50mm)
