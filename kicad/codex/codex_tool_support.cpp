@@ -18,6 +18,10 @@
 #include "design_script_symbol_resolver.h"
 #include "fabrication_artifact_validator.h"
 #include "mechanical_artifact_validator.h"
+#include "schematic_dxf_artifact_validator.h"
+#include "schematic_pdf_artifact_validator.h"
+#include "schematic_ps_artifact_validator.h"
+#include "schematic_svg_artifact_validator.h"
 #include "stepz_artifact_validator.h"
 #include "three_d_pdf_artifact_validator.h"
 #include "u3d_artifact_validator.h"
@@ -1558,6 +1562,31 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
                           "--check-zones", "--no-property-popups",
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "schematic_pdf" )
+        {
+            arguments = { "sch", "export", "pdf", "--output", output.string(),
+                          "--black-and-white", "--no-background-color",
+                          "--exclude-pdf-property-popups",
+                          "--exclude-pdf-hierarchical-links",
+                          aSchematic.GetFullPath().ToStdString() };
+        }
+        else if( kind == "schematic_svg" )
+        {
+            arguments = { "sch", "export", "svg", "--output", output.string(),
+                          "--black-and-white", "--no-background-color",
+                          aSchematic.GetFullPath().ToStdString() };
+        }
+        else if( kind == "schematic_dxf" )
+        {
+            arguments = { "sch", "export", "dxf", "--output", output.string(),
+                          "--black-and-white", aSchematic.GetFullPath().ToStdString() };
+        }
+        else if( kind == "schematic_ps" )
+        {
+            arguments = { "sch", "export", "ps", "--output", output.string(),
+                          "--black-and-white", "--no-background-color",
+                          aSchematic.GetFullPath().ToStdString() };
+        }
         else if( kind == "assembly_svg" )
         {
             arguments = { "pcb", "export", "svg", "--output", output.string(),
@@ -1632,6 +1661,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
         "step", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf", "pdf",
+        "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
         "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
@@ -1722,6 +1752,27 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     std::set<std::string> placementReferences;
     std::set<std::string> netlistReferences;
     JSON expectedNetlistNets = JSON::array();
+    std::string expectedSchematicPdfTitle = aFileStem + ".pdf";
+
+    if( aIr.at( "project" ).contains( "titleBlock" ) )
+    {
+        const std::string title =
+                aIr.at( "project" ).at( "titleBlock" ).value( "title", "" );
+
+        if( !title.empty() )
+            expectedSchematicPdfTitle = title;
+    }
+    else
+    {
+        for( const JSON& sheet : aIr.at( "schematic" ).at( "sheets" ) )
+        {
+            if( sheet.at( "parent" ).is_null() )
+            {
+                expectedSchematicPdfTitle = sheet.at( "title" ).get<std::string>();
+                break;
+            }
+        }
+    }
 
     for( const JSON& component : aIr.at( "schematic" ).at( "components" ) )
     {
@@ -1822,6 +1873,17 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
             job["relativePath"] = "documentation/" + aFileStem + ".pdf";
             job["layers"] = layers;
         }
+        else if( std::string_view( kind ) == "schematic_pdf" )
+        {
+            job["relativePath"] = "documentation/schematic/" + aFileStem + ".pdf";
+        }
+        else if( std::string_view( kind ) == "schematic_svg"
+                 || std::string_view( kind ) == "schematic_dxf"
+                 || std::string_view( kind ) == "schematic_ps" )
+        {
+            job["relativePath"] = "documentation/" + std::string( kind );
+            job["directory"] = true;
+        }
         else if( std::string_view( kind ) == "assembly_svg" )
         {
             job["relativePath"] = "assembly/drawings-svg";
@@ -1854,7 +1916,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v8" },
+    return { { "profile", "kichad-production-10.0.4-v9" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -1863,6 +1925,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
              { "expectedPlacementReferences", placementReferences },
              { "expectedNetlistReferences", netlistReferences },
              { "expectedNetlistNets", std::move( expectedNetlistNets ) },
+             { "expectedSchematicPdfTitle", std::move( expectedSchematicPdfTitle ) },
              { "jobs", std::move( jobs ) } };
 }
 
@@ -3106,6 +3169,9 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
     std::set<std::string> jobGerberFiles;
     std::set<std::string> assemblySvgFiles;
     std::set<std::string> assemblyDxfFiles;
+    std::set<std::string> schematicSvgFiles;
+    std::set<std::string> schematicDxfFiles;
+    std::set<std::string> schematicPsFiles;
     std::set<std::string> bomReferences;
     std::set<std::string> placementReferences;
     std::set<std::string> allowedDirectories;
@@ -3498,6 +3564,66 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path == "documentation/schematic/" + fileStem + ".pdf" )
+        {
+            kind = "schematic_pdf";
+
+            if( !KICHAD::SCHEMATIC_PDF_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(),
+                        aPlan.at( "expectedSchematicPdfTitle" ).get<std::string>(),
+                        aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path.starts_with( "documentation/schematic_svg/" )
+                 && extension == ".svg" )
+        {
+            kind = "schematic_svg";
+            const std::string filename = iterator->path().filename().string();
+
+            if( !schematicSvgFiles.emplace( filename ).second
+                || !KICHAD::SCHEMATIC_SVG_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), fileStem, aError ) )
+            {
+                if( aError.empty() )
+                    aError = "schematic SVG export contains a duplicate filename";
+
+                return false;
+            }
+        }
+        else if( path.starts_with( "documentation/schematic_dxf/" )
+                 && extension == ".dxf" )
+        {
+            kind = "schematic_dxf";
+            const std::string filename = iterator->path().filename().string();
+
+            if( !schematicDxfFiles.emplace( filename ).second
+                || !KICHAD::SCHEMATIC_DXF_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), fileStem, aError ) )
+            {
+                if( aError.empty() )
+                    aError = "schematic DXF export contains a duplicate filename";
+
+                return false;
+            }
+        }
+        else if( path.starts_with( "documentation/schematic_ps/" )
+                 && extension == ".ps" )
+        {
+            kind = "schematic_ps";
+            const std::string filename = iterator->path().filename().string();
+
+            if( !schematicPsFiles.emplace( filename ).second
+                || !KICHAD::SCHEMATIC_PS_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), fileStem, aError ) )
+            {
+                if( aError.empty() )
+                    aError = "schematic PostScript export contains a duplicate filename";
+
+                return false;
+            }
+        }
         else if( path.starts_with( "documentation/" ) && extension == ".pdf" )
         {
             kind = "pdf";
@@ -3618,6 +3744,20 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "3D PDF export did not produce exactly one interactive model artifact";
         else if( kind == "pdf" && counts["pdf"] != 1 )
             aError = "documentation export did not produce exactly one PDF artifact";
+        else if( kind == "schematic_pdf" && counts["schematic_pdf"] != 1 )
+            aError = "schematic PDF export did not produce exactly one release drawing";
+        else if( kind == "schematic_svg"
+                 && ( counts["schematic_svg"] == 0
+                      || !schematicSvgFiles.contains( fileStem + ".svg" ) ) )
+            aError = "schematic SVG export is missing its root-sheet drawing";
+        else if( kind == "schematic_dxf"
+                 && ( counts["schematic_dxf"] == 0
+                      || !schematicDxfFiles.contains( fileStem + ".dxf" ) ) )
+            aError = "schematic DXF export is missing its root-sheet drawing";
+        else if( kind == "schematic_ps"
+                 && ( counts["schematic_ps"] == 0
+                      || !schematicPsFiles.contains( fileStem + ".ps" ) ) )
+            aError = "schematic PostScript export is missing its root-sheet drawing";
         else if( kind == "assembly_svg"
                  && ( counts["assembly_svg"] != 2
                       || assemblySvgFiles != expectedAssemblySvgFiles ) )

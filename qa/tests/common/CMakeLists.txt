@@ -45,6 +45,10 @@ set( QA_COMMON_SRCS
     test_codex_thread_store.cpp
     test_fabrication_artifact_validator.cpp
     test_mechanical_artifact_validator.cpp
+    test_schematic_dxf_artifact_validator.cpp
+    test_schematic_pdf_artifact_validator.cpp
+    test_schematic_ps_artifact_validator.cpp
+    test_schematic_svg_artifact_validator.cpp
     test_stepz_artifact_validator.cpp
     test_three_d_pdf_artifact_validator.cpp
     test_u3d_artifact_validator.cpp
@@ -126,6 +130,10 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/mechanical_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_dxf_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_pdf_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_ps_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_svg_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/stepz_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/three_d_pdf_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/u3d_artifact_validator.cpp

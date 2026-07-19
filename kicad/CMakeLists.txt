@@ -38,6 +38,10 @@ set( KICAD_SRCS
     codex/design_script_symbol_resolver.cpp
     codex/fabrication_artifact_validator.cpp
     codex/mechanical_artifact_validator.cpp
+    codex/schematic_dxf_artifact_validator.cpp
+    codex/schematic_pdf_artifact_validator.cpp
+    codex/schematic_ps_artifact_validator.cpp
+    codex/schematic_svg_artifact_validator.cpp
     codex/stepz_artifact_validator.cpp
     codex/three_d_pdf_artifact_validator.cpp
     codex/u3d_artifact_validator.cpp
