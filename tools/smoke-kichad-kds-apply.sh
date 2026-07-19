@@ -197,6 +197,15 @@ for attempt in $(seq 1 30); do
         grep -Fq '(locked yes)' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(group "AI power interface"' "${project_dir}/power.kicad_sch"
         grep -Fq '(locked yes)' "${project_dir}/power.kicad_sch"
+        grep -Fq '(property "Datasheet" "https://example.com/r1.pdf"' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(property private "Manufacturer Part" "RC0603FR-071KL"' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(at 43 42 12.5)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(show_name yes)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(do_not_autoplace yes)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(href "https://example.com/value")' \
+            "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(property "Description" "Derived GROUND power symbol"' \

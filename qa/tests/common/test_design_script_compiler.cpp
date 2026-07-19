@@ -1336,8 +1336,24 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
     (at 20mm 20mm) (size 30mm 20mm))
   (component U1
     (symbol "Local:DUAL") (value "DUAL") (footprint "LocalFp:DUAL")
+    (datasheet "https://example.com/dual.pdf")
+    (description "AI-selected precision dual amplifier")
+    (property "Manufacturer Part" "OPA2192")
     (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none))
-    (unit 2 (sheet analog) (at 50mm 40mm) (rotation 270deg) (mirror xy)))
+    (unit 2 (sheet analog) (at 50mm 40mm) (rotation 270deg) (mirror xy)
+      (fields_autoplaced false)
+      (field Value
+        (at 52mm 42mm) (rotation 12.5deg) (visible true)
+        (show_name true) (autoplace false) (size 1.2mm 1.5mm)
+        (font "DejaVu Sans") (line_spacing 1.25) (thickness 0.2mm)
+        (color #11223380) (justify right top) (bold true) (italic true)
+        (hyperlink "https://example.com/value") (private false))
+      (field "Manufacturer Part"
+        (at 52mm 44mm) (rotation 0deg) (visible false)
+        (show_name false) (autoplace true) (size 1mm 1mm)
+        (font stroke) (line_spacing 1) (thickness auto)
+        (color default) (justify center center) (bold false) (italic false)
+        (hyperlink none) (private true))))
   (net SIGNAL (pin U1 1 1) (pin U1 2 7))
   (no_connect U1 2 8)
   (label signal-local (sheet root) (scope local) (net SIGNAL) (at 45mm 40mm)
@@ -1357,6 +1373,15 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
     BOOST_CHECK_EQUAL( component["units"][1]["sheet"].get<std::string>(), "analog" );
     BOOST_CHECK_EQUAL( component["units"][1]["rotationDegrees"].get<int>(), 270 );
     BOOST_CHECK_EQUAL( component["units"][1]["mirror"].get<std::string>(), "xy" );
+    BOOST_CHECK( !component["units"][1]["fieldsAutoplaced"].get<bool>() );
+    BOOST_REQUIRE_EQUAL( component["units"][1]["fields"].size(), 2 );
+    BOOST_CHECK_EQUAL( component["units"][1]["fields"][0]["name"], "Value" );
+    BOOST_CHECK_EQUAL( component["units"][1]["fields"][0]["rotationDegrees"], 12.5 );
+    BOOST_CHECK_EQUAL( component["units"][1]["fields"][0]["color"]["a"], 128 );
+    BOOST_CHECK( component["units"][1]["fields"][1]["private"].get<bool>() );
+    BOOST_CHECK_EQUAL( component["datasheet"], "https://example.com/dual.pdf" );
+    BOOST_CHECK_EQUAL( component["description"],
+                       "AI-selected precision dual amplifier" );
     BOOST_CHECK_EQUAL( result.ir["schematic"]["nets"][0]["pins"][1]["unit"].get<int>(), 2 );
     BOOST_REQUIRE_EQUAL( result.ir["schematic"]["noConnects"].size(), 1 );
     BOOST_REQUIRE_EQUAL( result.ir["schematic"]["drawings"].size(), 2 );
@@ -1387,6 +1412,42 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
             "(no_connect R1 1 2))" );
     BOOST_CHECK( !result.ok );
     BOOST_CHECK_NE( result.diagnostics.dump().find( "no_connect_without_hierarchy" ),
+                    std::string::npos );
+
+    std::string invalidField = source;
+    const std::string declaredField = "(field \"Manufacturer Part\"";
+    const size_t fieldAt = invalidField.find( declaredField );
+    BOOST_REQUIRE_NE( fieldAt, std::string::npos );
+    invalidField.replace( fieldAt, declaredField.size(), "(field \"Missing Property\"" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalidField );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find(
+                            "unresolved_component_unit_field_layout" ),
+                    std::string::npos );
+
+    invalidField = source;
+    const std::string mandatoryPrivate = "(hyperlink \"https://example.com/value\") "
+                                         "(private false)";
+    const size_t privateAt = invalidField.find( mandatoryPrivate );
+    BOOST_REQUIRE_NE( privateAt, std::string::npos );
+    invalidField.replace( privateAt, mandatoryPrivate.size(),
+                          "(hyperlink \"https://example.com/value\") (private true)" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalidField );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find(
+                            "private_mandatory_component_unit_field" ),
+                    std::string::npos );
+
+    invalidField = source;
+    const std::string customProperty =
+            "(property \"Manufacturer Part\" \"OPA2192\")";
+    const size_t propertyAt = invalidField.find( customProperty );
+    BOOST_REQUIRE_NE( propertyAt, std::string::npos );
+    invalidField.replace( propertyAt, customProperty.size(),
+                          "(property \"reference\" \"BAD\")" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalidField );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "reserved_component_property" ),
                     std::string::npos );
 }
 
@@ -2117,6 +2178,7 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     bool foundQualifiedDirectives = false;
     bool foundQualifiedTextGraphics = false;
     bool foundQualifiedGroups = false;
+    bool foundQualifiedFields = false;
 
     for( const nlohmann::json& facet : coverage["facets"] )
     {
@@ -2164,12 +2226,20 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
                                    && facet["kdsForms"]
                                               == nlohmann::json::array( { "group" } );
         }
+
+        if( id == "schematic.fields" )
+        {
+            foundQualifiedFields = state == "qualified" && facet["gaps"].empty()
+                                   && facet["kdsForms"]
+                                              == nlohmann::json::array( { "component" } );
+        }
     }
 
     BOOST_CHECK( foundQualifiedTitleBlock );
     BOOST_CHECK( foundQualifiedDirectives );
     BOOST_CHECK( foundQualifiedTextGraphics );
     BOOST_CHECK( foundQualifiedGroups );
+    BOOST_CHECK( foundQualifiedFields );
     BOOST_CHECK( domains == expectedDomains );
 
     for( const std::string& state : allowedStates )

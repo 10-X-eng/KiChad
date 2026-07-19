@@ -380,6 +380,49 @@ state. Each physical schematic unit is an explicit nested placement:
   (unit 1 (sheet analog) (at 80mm 40mm) (rotation 0deg) (mirror none)))
 ```
 
+Required and custom field values remain part of that same component. `Datasheet` and `Description`
+inherit the resolved library-symbol values unless the component supplies `(datasheet TEXT)` or
+`(description TEXT)`. A custom `(property NAME VALUE)` is bounded to a 128-byte name and a
+4096-byte value. Because KiCad stores field geometry on each placed symbol unit, an optional
+`field` form belongs inside that unit and names the component field it renders:
+
+```scheme
+(component R1
+  (symbol "ProductSymbols:R")
+  (value "10k")
+  (footprint "ProductFootprints:R_0603")
+  (datasheet "https://example.com/r1.pdf")
+  (description "Precision sense resistor")
+  (property "Manufacturer Part" "RC0603FR-0710KL")
+  (unit 1
+    (sheet analog) (at 40mm 40mm) (rotation 0deg) (mirror none)
+    (fields_autoplaced false)
+    (field Value
+      (at 43mm 42mm) (rotation 12.5deg)
+      (visible true) (show_name true) (autoplace false)
+      (size 1.2mm 1.5mm) (font "DejaVu Sans") (line_spacing 1.25)
+      (thickness 0.2mm) (color #11223380) (justify right top)
+      (bold true) (italic true)
+      (hyperlink "https://example.com/value") (private false))
+    (field "Manufacturer Part"
+      (at 43mm 44mm) (rotation 0deg)
+      (visible false) (show_name false) (autoplace true)
+      (size 1mm 1mm) (font stroke) (line_spacing 1)
+      (thickness auto) (color default) (justify center center)
+      (bold false) (italic false) (hyperlink none) (private true))))
+```
+
+Field coordinates are absolute coordinates on the unit's schematic sheet. Every explicit field
+layout spells out the complete native formatting state; there is no second style object and no
+implicit partial merge. The name must be one of `Reference`, `Value`, `Footprint`, `Datasheet`, or
+`Description`, or exactly match a custom property on the component. Only custom fields may be
+private. `fields_autoplaced` records KiCad's symbol-level native state and defaults to `true` for
+components that do not opt into explicit layouts. A field that has no explicit layout retains
+KiChad's deterministic current-format default. Field mirroring is deliberately absent because the
+KiCad 10 schematic parser does not retain that token for fields; unit mirroring remains explicit
+and lossless. Project field-name templates and project text-variable ownership are separate
+capabilities and are not implied by instance-field formatting.
+
 The endpoint tuple is always `(pin REFERENCE UNIT PIN_NUMBER)`; there is no implicit-unit spelling.
 Every component in a declared hierarchy has at least one unit placement. Unit numbers are unique
 within the component, range from 1 through 256, resolve to the exact library symbol, and declare a
@@ -1278,8 +1321,8 @@ updated independently. The same fixture reconciles a root and child schematic, r
 screen UUID and unmanaged company field, creates stable native hierarchy identities, proves the
 repeat apply changes zero schematic files, injects a failed native validator and verifies exact
 root-file rollback, recovers from the retained journal, checks nested named/locked group membership
-on both native screens, and finally exports a non-empty netlist through KiCad's real schematic
-loader.
+on both native screens, verifies a private custom field plus complete visible Value-field rendering,
+and finally exports a non-empty netlist through KiCad's real schematic loader.
 
 Before applying the sidecar, the same smoke proof invokes KiChad's native `verify` tool against the
 current-format root schematic and board. This exercises the real sibling KiCad 10.0.4 CLI rather
@@ -1328,8 +1371,9 @@ native inclusion flags, connectivity, and no-connect state are executable with l
 reconciliation, stable identity, native netlist validation,
 journaling, rollback, and a disposable live integration proof. Confined project-local footprint
 instances are executable through KiCad's native parser and transaction API. Free text, text boxes,
-native graphics, embedded images, complete table grids/cells, and named/locked nested groups are
-executable through lossless reconciliation and KiCad's native schematic loader. Global installed symbol content, library
+native graphics, embedded images, complete table grids/cells, named/locked nested groups, and
+complete per-unit component field rendering are executable through lossless reconciliation and
+KiCad's native schematic loader. Global installed symbol content, library
 authoring, footprint/model authoring, and the incomplete schematic facets named by the capability
 catalog remain non-executable until their own lossless backends and rollback tests land. Nested
 sheet hierarchy is executable through the same transaction. Native backend

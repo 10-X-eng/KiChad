@@ -204,7 +204,23 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
   (library footprint LocalFp (table project) (uri "${KIPRJMOD}/Local.pretty"))
   (sheet root (parent none) (file "connected.kicad_sch") (title "Connected"))
   (component R1 (symbol "Local:R") (value "10k") (footprint "LocalFp:R")
-    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+    (datasheet "https://example.com/r1.pdf")
+    (description "AI-controlled resistor instance")
+    (property "Manufacturer Part" "RC0603FR-0710KL")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)
+      (fields_autoplaced false)
+      (field Value
+        (at 43mm 42mm) (rotation 12.5deg) (visible true)
+        (show_name true) (autoplace false) (size 1.2mm 1.5mm)
+        (font "DejaVu Sans") (line_spacing 1.25) (thickness 0.2mm)
+        (color #11223380) (justify right top) (bold true) (italic true)
+        (hyperlink "https://example.com/value") (private false))
+      (field "Manufacturer Part"
+        (at 43mm 44mm) (rotation 0deg) (visible false)
+        (show_name false) (autoplace true) (size 1mm 1mm)
+        (font stroke) (line_spacing 1) (thickness auto)
+        (color default) (justify center center) (bold false) (italic false)
+        (hyperlink none) (private true))))
   (component R2 (symbol "Local:R") (value "20k") (footprint "LocalFp:R")
     (unit 1 (sheet root) (at 60mm 40mm) (rotation 90deg) (mirror x)))
   (component R3 (symbol "Local:R") (value "30k") (footprint "LocalFp:R")
@@ -304,6 +320,20 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(in_bom no)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(on_board no)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(in_pos_files no)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property \"Datasheet\" \"https://example.com/r1.pdf\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property \"Description\" "
+                                 "\"AI-controlled resistor instance\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property private \"Manufacturer Part\" "
+                                 "\"RC0603FR-0710KL\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(at 43 42 12.5)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(show_name yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(do_not_autoplace yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(face \"DejaVu Sans\")" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(href \"https://example.com/value\")" ),
+                    std::string::npos );
     BOOST_CHECK_NE( native.find( "(global_label \"SIGNAL\"" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(no_connect" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(mirror x)" ), std::string::npos );
@@ -360,6 +390,14 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(href \"https://example.com/constraint-summary\")" ),
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
+                    std::string::npos );
+
+    nlohmann::json malformed = compiled.ir;
+    malformed["schematic"]["components"][0]["units"][0]["fields"][0]["private"] = true;
+    plan = KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+            malformed, nlohmann::json::object(), resolved );
+    BOOST_CHECK( !plan.fullyLowered );
+    BOOST_CHECK_NE( plan.diagnostics.dump().find( "malformed component placement" ),
                     std::string::npos );
 }
 

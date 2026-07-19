@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <iomanip>
@@ -319,21 +320,111 @@ std::pair<int64_t, int64_t> transformPoint( int64_t aX, int64_t aY, int aRotatio
 }
 
 
-std::string propertyExpression( const std::string& aName, const std::string& aValue,
-                                int64_t aX, int64_t aY, int aAngle, bool aHidden,
-                                const std::string& aJustify )
-{
-    std::ostringstream output;
-    output << "    (property " << quoted( aName ) << ' ' << quoted( aValue ) << "\n"
-           << "      (at " << millimetres( aX ) << ' ' << millimetres( aY ) << ' '
-           << aAngle << ")\n"
-           << "      (show_name no)\n"
-           << "      (do_not_autoplace no)\n";
+std::string alphaChannel( int aAlpha );
 
-    if( aHidden )
+
+JSON defaultComponentFieldLayout( const std::string& aName, int64_t aX, int64_t aY,
+                                  int aAngle, bool aHidden, const std::string& aHorizontal )
+{
+    return { { "name", aName },
+             { "position", { { "xNm", aX }, { "yNm", aY } } },
+             { "rotationDegrees", aAngle },
+             { "visible", !aHidden },
+             { "showName", false },
+             { "autoplace", true },
+             { "size", { { "xNm", 1'270'000 }, { "yNm", 1'270'000 } } },
+             { "font", "stroke" },
+             { "lineSpacing", 1.0 },
+             { "thicknessNm", 0 },
+             { "color", nullptr },
+             { "justify", { { "horizontal", aHorizontal }, { "vertical", "center" } } },
+             { "mirror", false },
+             { "bold", false },
+             { "italic", false },
+             { "hyperlink", "" },
+             { "private", false } };
+}
+
+
+std::string propertyExpression( const std::string& aName, const std::string& aValue,
+                                const JSON& aLayout )
+{
+    const JSON& position = aLayout.at( "position" );
+    const JSON& size = aLayout.at( "size" );
+    const JSON& justify = aLayout.at( "justify" );
+    const std::string horizontal = justify.at( "horizontal" ).get<std::string>();
+    const std::string vertical = justify.at( "vertical" ).get<std::string>();
+    const int64_t thickness = aLayout.at( "thicknessNm" ).get<int64_t>();
+    std::ostringstream output;
+    output << "    (property ";
+
+    if( aLayout.at( "private" ).get<bool>() )
+        output << "private ";
+
+    output << quoted( aName ) << ' ' << quoted( aValue ) << "\n"
+           << "      (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
+           << finiteDecimal( aLayout.at( "rotationDegrees" ).get<double>() ) << ")\n";
+
+    if( !aLayout.at( "visible" ).get<bool>() )
         output << "      (hide yes)\n";
 
-    output << effects( aJustify ) << "    )\n";
+    output << "      (show_name " << ( aLayout.at( "showName" ).get<bool>() ? "yes" : "no" )
+           << ")\n"
+           << "      (do_not_autoplace "
+           << ( aLayout.at( "autoplace" ).get<bool>() ? "no" : "yes" ) << ")\n"
+           << "      (effects\n"
+           << "        (font\n";
+
+    if( aLayout.at( "font" ).get<std::string>() != "stroke" )
+        output << "          (face " << quoted( aLayout.at( "font" ).get<std::string>() )
+               << ")\n";
+
+    output << "          (size " << millimetres( size.at( "yNm" ).get<int64_t>() ) << ' '
+           << millimetres( size.at( "xNm" ).get<int64_t>() ) << ")\n"
+           << "          (line_spacing "
+           << finiteDecimal( aLayout.at( "lineSpacing" ).get<double>() ) << ")\n";
+
+    if( thickness != 0 )
+        output << "          (thickness " << millimetres( thickness ) << ")\n";
+
+    if( aLayout.at( "bold" ).get<bool>() )
+        output << "          (bold yes)\n";
+
+    if( aLayout.at( "italic" ).get<bool>() )
+        output << "          (italic yes)\n";
+
+    if( !aLayout.at( "color" ).is_null() )
+    {
+        const JSON& color = aLayout.at( "color" );
+        output << "          (color " << color.at( "r" ).get<int>() << ' '
+               << color.at( "g" ).get<int>() << ' ' << color.at( "b" ).get<int>() << ' '
+               << alphaChannel( color.at( "a" ).get<int>() ) << ")\n";
+    }
+
+    output << "        )\n";
+
+    if( horizontal != "center" || vertical != "center" )
+    {
+        output << "        (justify";
+
+        if( horizontal != "center" )
+            output << ' ' << horizontal;
+
+        if( vertical != "center" )
+            output << ' ' << vertical;
+
+        output << ")\n";
+    }
+
+    if( !aLayout.at( "hyperlink" ).get<std::string>().empty() )
+    {
+        output << "        (href "
+               << quoted( aLayout.at( "hyperlink" ).get<std::string>() ) << ")\n";
+    }
+
+    output << "      )\n"
+           << "    )\n";
     return output.str();
 }
 
@@ -361,6 +452,24 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
             aComponent.at( "footprint" ).is_null()
                     ? std::string()
                     : aComponent.at( "footprint" ).get<std::string>();
+    std::map<std::string, JSON> fieldLayouts;
+
+    for( const JSON& layout : aUnit.at( "fields" ) )
+        fieldLayouts.emplace( layout.at( "name" ).get<std::string>(), layout );
+
+    const auto fieldLayout = [&]( const std::string& aName, int64_t aX, int64_t aY,
+                                  int aAngle, bool aHidden,
+                                  const std::string& aHorizontal ) -> JSON
+    {
+        auto layout = fieldLayouts.find( aName );
+
+        if( layout != fieldLayouts.end() )
+            return layout->second;
+
+        return defaultComponentFieldLayout(
+                aName, aX, aY, aAngle, aHidden, aHorizontal );
+    };
+
     std::ostringstream output;
     output << "(symbol\n"
            << "    (lib_id " << quoted( libraryId ) << ")\n"
@@ -390,19 +499,37 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
            << ( nativeFlags.at( "onBoard" ).get<bool>() ? "yes" : "no" ) << ")\n"
            << "    (in_pos_files "
            << ( nativeFlags.at( "inPosFiles" ).get<bool>() ? "yes" : "no" ) << ")\n"
-           << "    (dnp " << ( aComponent.value( "dnp", false ) ? "yes" : "no" ) << ")\n"
-           << "    (fields_autoplaced yes)\n"
-           << "    (uuid " << quoted( uuid ) << ")\n"
-           << propertyExpression( "Reference", reference, x + 2'540'000, y - 1'270'000,
-                                  nativeRotation, false, "left" )
-           << propertyExpression( "Value", aComponent.at( "value" ).get<std::string>(),
-                                  x + 2'540'000, y + 1'270'000, nativeRotation, false, "left" )
-           << propertyExpression( "Footprint", footprint,
-                                  x - 1'778'000, y, ( nativeRotation + 90 ) % 360, true, "" )
-           << propertyExpression( "Datasheet", nativeProperties.value( "Datasheet", "" ),
-                                  x, y, nativeRotation, true, "" )
-           << propertyExpression( "Description", nativeProperties.value( "Description", "" ),
-                                  x, y, nativeRotation, true, "" );
+           << "    (dnp " << ( aComponent.value( "dnp", false ) ? "yes" : "no" ) << ")\n";
+
+    if( aUnit.at( "fieldsAutoplaced" ).get<bool>() )
+        output << "    (fields_autoplaced yes)\n";
+
+    const std::string datasheet = aComponent.contains( "datasheet" )
+                                          ? aComponent.at( "datasheet" ).get<std::string>()
+                                          : nativeProperties.value( "Datasheet", "" );
+    const std::string description = aComponent.contains( "description" )
+                                            ? aComponent.at( "description" ).get<std::string>()
+                                            : nativeProperties.value( "Description", "" );
+
+    output << "    (uuid " << quoted( uuid ) << ")\n"
+           << propertyExpression(
+                      "Reference", reference,
+                      fieldLayout( "Reference", x + 2'540'000, y - 1'270'000,
+                                   nativeRotation, false, "left" ) )
+           << propertyExpression(
+                      "Value", aComponent.at( "value" ).get<std::string>(),
+                      fieldLayout( "Value", x + 2'540'000, y + 1'270'000,
+                                   nativeRotation, false, "left" ) )
+           << propertyExpression(
+                      "Footprint", footprint,
+                      fieldLayout( "Footprint", x - 1'778'000, y,
+                                   ( nativeRotation + 90 ) % 360, true, "center" ) )
+           << propertyExpression(
+                      "Datasheet", datasheet,
+                      fieldLayout( "Datasheet", x, y, nativeRotation, true, "center" ) )
+           << propertyExpression(
+                      "Description", description,
+                      fieldLayout( "Description", x, y, nativeRotation, true, "center" ) );
 
     std::vector<std::pair<std::string, std::string>> customProperties;
 
@@ -415,7 +542,11 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
     std::sort( customProperties.begin(), customProperties.end() );
 
     for( const auto& [ name, value ] : customProperties )
-        output << propertyExpression( name, value, x, y, nativeRotation, true, "" );
+    {
+        output << propertyExpression(
+                name, value,
+                fieldLayout( name, x, y, nativeRotation, true, "center" ) );
+    }
 
     for( size_t pinIndex = 0; pinIndex < pins.size(); ++pinIndex )
     {
@@ -2011,11 +2142,38 @@ bool validComponentShape( const JSON& aComponent )
         || !aComponent["value"].is_string() || !aComponent.contains( "footprint" )
         || ( !aComponent["footprint"].is_string() && !aComponent["footprint"].is_null() )
         || !aComponent.contains( "properties" )
-        || !aComponent["properties"].is_object() || !aComponent.contains( "units" )
-        || !aComponent["units"].is_array() || aComponent["units"].empty() )
+        || !aComponent["properties"].is_object() || aComponent["properties"].size() > 1024
+        || !aComponent.contains( "units" )
+        || !aComponent["units"].is_array() || aComponent["units"].empty()
+        || ( aComponent.contains( "datasheet" ) && !aComponent["datasheet"].is_string() )
+        || ( aComponent.contains( "description" )
+             && !aComponent["description"].is_string() )
+        || ( aComponent.contains( "datasheet" )
+             && aComponent["datasheet"].get<std::string>().size() > 4096 )
+        || ( aComponent.contains( "description" )
+             && aComponent["description"].get<std::string>().size() > 4096 ) )
     {
         return false;
     }
+
+    std::set<std::string> propertyNames;
+
+    for( auto property = aComponent["properties"].begin();
+         property != aComponent["properties"].end(); ++property )
+    {
+        if( property.key().empty() || property.key().size() > 128
+            || !property.value().is_string()
+            || property.value().get<std::string>().size() > 4096 )
+        {
+            return false;
+        }
+
+        propertyNames.emplace( property.key() );
+    }
+
+    static const std::set<std::string> MANDATORY_FIELD_NAMES = {
+        "Reference", "Value", "Footprint", "Datasheet", "Description"
+    };
 
     for( const JSON& unit : aComponent["units"] )
     {
@@ -2028,9 +2186,68 @@ bool validComponentShape( const JSON& aComponent )
             || !unit["position"]["yNm"].is_number_integer()
             || !unit.contains( "rotationDegrees" )
             || !unit["rotationDegrees"].is_number_integer() || !unit.contains( "mirror" )
-            || !unit["mirror"].is_string() )
+            || !unit["mirror"].is_string() || !unit.contains( "fieldsAutoplaced" )
+            || !unit["fieldsAutoplaced"].is_boolean() || !unit.contains( "fields" )
+            || !unit["fields"].is_array() || unit["fields"].size() > 1024 )
         {
             return false;
+        }
+
+        std::set<std::string> fieldNames;
+
+        for( const JSON& field : unit["fields"] )
+        {
+            if( !field.is_object() || !field.contains( "name" ) || !field["name"].is_string()
+                || field["name"].get<std::string>().empty()
+                || field["name"].get<std::string>().size() > 128
+                || !field.contains( "position" )
+                || !validSchematicPointShape( field["position"] )
+                || !field.contains( "rotationDegrees" )
+                || !field["rotationDegrees"].is_number()
+                || field["rotationDegrees"].get<double>() < 0.0
+                || field["rotationDegrees"].get<double>() >= 360.0
+                || !field.contains( "visible" ) || !field["visible"].is_boolean()
+                || !field.contains( "showName" ) || !field["showName"].is_boolean()
+                || !field.contains( "autoplace" ) || !field["autoplace"].is_boolean()
+                || !field.contains( "private" ) || !field["private"].is_boolean()
+                || !validSchematicTextEffectsShape( field )
+                || field["mirror"].get<bool>() )
+            {
+                return false;
+            }
+
+            const std::string name = field["name"].get<std::string>();
+            const int64_t fieldX = field["position"]["xNm"].get<int64_t>();
+            const int64_t fieldY = field["position"]["yNm"].get<int64_t>();
+            const int64_t width = field["size"]["xNm"].get<int64_t>();
+            const int64_t height = field["size"]["yNm"].get<int64_t>();
+            const int64_t thickness = field["thicknessNm"].get<int64_t>();
+            const double lineSpacing = field["lineSpacing"].get<double>();
+            const std::string font = field["font"].get<std::string>();
+            const std::string horizontal = field["justify"]["horizontal"].get<std::string>();
+            const std::string vertical = field["justify"]["vertical"].get<std::string>();
+            const std::string hyperlink = field["hyperlink"].get<std::string>();
+
+            if( !fieldNames.emplace( name ).second
+                || ( !MANDATORY_FIELD_NAMES.contains( name )
+                     && !propertyNames.contains( name ) )
+                || ( MANDATORY_FIELD_NAMES.contains( name )
+                     && field["private"].get<bool>() )
+                || fieldX < 0 || fieldY < 0 || fieldX > 2'000'000'000
+                || fieldY > 2'000'000'000 || width < 100'000 || height < 100'000
+                || width > 50'000'000 || height > 50'000'000 || font.empty()
+                || font.size() > 256 || !std::isfinite( lineSpacing )
+                || lineSpacing < 0.5 || lineSpacing > 5.0 || thickness < 0
+                || thickness > 10'000'000
+                || ( horizontal != "left" && horizontal != "center"
+                     && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" )
+                || hyperlink.size() > 2048 || hyperlink.find_first_of( "\r\n" )
+                                                   != std::string::npos
+                || hyperlink.find( '\0' ) != std::string::npos )
+            {
+                return false;
+            }
         }
     }
 

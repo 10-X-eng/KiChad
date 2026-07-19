@@ -117,7 +117,9 @@ border/fill, typography, and hyperlink state, and all native schematic polyline,
 circle, arc, and cubic-Bézier geometries, plus digest-verified self-contained images with semantic
 descriptions, AI-native schematic table grids with explicit dimensions, complete per-cell
 typography/fill, rectangular merges, stable identities, and native rotation, plus named locked
-schematic groups with typed membership and safe nested containment. It also applies and
+schematic groups with typed membership and safe nested containment, and complete per-unit
+component-field placement, typography, visibility, privacy, autoplace policy, color, and
+hyperlinks. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

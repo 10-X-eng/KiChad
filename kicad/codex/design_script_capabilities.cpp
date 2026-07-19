@@ -85,6 +85,11 @@ nlohmann::json DesignScriptCapabilities()
                     capability( "project.text_variables", "project", "unrepresented", {},
                                 "Project and document text variables and expansion policy.",
                                 { "No KDS form owns text variables." } ),
+                    capability( "project.field_templates", "project", "unrepresented", {},
+                                "Project schematic field-name templates, default visibility, "
+                                "and URL intent.",
+                                { "No KDS form owns the schematic.drawing.field_names project "
+                                  "setting." } ),
                     capability( "project.variants", "project", "unrepresented", {},
                                 "Assembly/design variants, fitted state, and variant field overrides.",
                                 { "Only component DNP state exists; named variants are absent." } ),
@@ -123,9 +128,10 @@ nlohmann::json DesignScriptCapabilities()
                                 "Stable named groups, native locking, typed direct membership, "
                                 "nested containment, screen ownership, and repeated-pin occurrence "
                                 "selection." ),
-                    capability( "schematic.fields", "schematic", "partial", { "component" },
-                                "Component required fields and bounded custom string properties.",
-                                { "Field position, visibility, typography, hyperlinking, text variables, and project field templates are absent." } ),
+                    capability( "schematic.fields", "schematic", "qualified", { "component" },
+                                "Bounded required and custom field values, Datasheet/Description "
+                                "overrides, per-unit absolute placement, visibility, name display, "
+                                "autoplace state, privacy, typography, color, and hyperlinks." ),
                     capability( "schematic.annotation", "schematic", "partial", { "component" },
                                 "Explicit stable references, including power references.",
                                 { "Automatic annotation, reset, scope, ordering, and back-annotation policy are absent." } ),

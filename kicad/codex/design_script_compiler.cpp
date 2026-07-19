@@ -524,6 +524,282 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileComponentField( const DOCUMENT& aDocument, size_t aNode,
+                            KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
+                            const std::string& aReference, int64_t aUnit )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string name;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], name )
+        || name.empty() || name.size() > MAX_IDENTIFIER_BYTES
+        || name.find( '\0' ) != std::string::npos )
+    {
+        diagnostic( aResult, "error", "invalid_component_unit_field_layout",
+                    "component unit field requires a name from 1 through 128 UTF-8 bytes" );
+        return JSON::object();
+    }
+
+    JSON layout = { { "name", name }, { "mirror", false } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_component_unit_field_layout_field",
+                        "component " + aReference + " unit " + std::to_string( aUnit )
+                                + " field " + name + " setting '" + head
+                                + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "at" || head == "size" )
+        {
+            const DOCUMENT::NODE& point = aDocument.Nodes()[child];
+            std::string xText;
+            std::string yText;
+            int64_t x = 0;
+            int64_t y = 0;
+            const bool isPosition = head == "at";
+            const bool valid = point.children.size() == 3
+                               && scalarText( aDocument, point.children[1], xText )
+                               && scalarText( aDocument, point.children[2], yText )
+                               && parseDistance( xText, x ) && parseDistance( yText, y )
+                               && ( isPosition
+                                            ? x >= 0 && y >= 0 && x <= 2'000'000'000
+                                                      && y <= 2'000'000'000
+                                            : x >= 100'000 && y >= 100'000
+                                                      && x <= 50'000'000 && y <= 50'000'000 );
+
+            if( !valid )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit_field_layout_" + head,
+                            isPosition
+                                    ? "component unit field at requires two distances from 0 to 2 m"
+                                    : "component unit field size requires two dimensions from "
+                                      "0.1 mm through 50 mm" );
+            }
+            else
+            {
+                layout[isPosition ? "position" : "size"] = {
+                    { "xNm", x }, { "yNm", y }
+                };
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string value;
+            double degrees = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || !parseFiniteDecimal( value, degrees, "deg" )
+                || degrees < 0.0 || degrees >= 360.0 )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit_field_layout_rotation",
+                            "component unit field rotation requires an angle from 0deg through "
+                            "less than 360deg" );
+            }
+            else
+            {
+                layout["rotationDegrees"] = degrees;
+            }
+
+            continue;
+        }
+
+        if( head == "font" )
+        {
+            std::string font;
+
+            if( !parseSingleValueForm( aDocument, child, font ) || font.empty()
+                || font.size() > MAX_FONT_NAME_BYTES
+                || font.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit_field_layout_font",
+                            "component unit field font requires stroke or a name up to 256 "
+                            "UTF-8 bytes" );
+            }
+            else
+            {
+                layout["font"] = font;
+            }
+
+            continue;
+        }
+
+        if( head == "line_spacing" )
+        {
+            std::string value;
+            double spacing = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || !parseFiniteDecimal( value, spacing, "" )
+                || spacing < 0.5 || spacing > 5.0 )
+            {
+                diagnostic( aResult, "error",
+                            "invalid_component_unit_field_layout_line_spacing",
+                            "component unit field line_spacing requires a finite value from "
+                            "0.5 through 5" );
+            }
+            else
+            {
+                layout["lineSpacing"] = spacing;
+            }
+
+            continue;
+        }
+
+        if( head == "thickness" )
+        {
+            std::string value;
+            int64_t thickness = 0;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "auto"
+                     && ( !parseDistance( value, thickness ) || thickness < 10'000
+                          || thickness > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error",
+                            "invalid_component_unit_field_layout_thickness",
+                            "component unit field thickness requires auto or 0.01 mm through "
+                            "10 mm" );
+            }
+            else
+            {
+                layout["thicknessNm"] = value == "auto" ? 0 : thickness;
+            }
+
+            continue;
+        }
+
+        if( head == "color" )
+        {
+            std::string value;
+            JSON color;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "default" && !parseHexColor( value, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit_field_layout_color",
+                            "component unit field color requires default or #RRGGBB[AA]" );
+            }
+            else if( value == "default" )
+            {
+                layout["color"] = nullptr;
+            }
+            else
+            {
+                layout["color"] = {
+                    { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                    { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                    { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                    { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                };
+            }
+
+            continue;
+        }
+
+        if( head == "justify" )
+        {
+            const DOCUMENT::NODE& justify = aDocument.Nodes()[child];
+            std::string horizontal;
+            std::string vertical;
+
+            if( justify.children.size() != 3
+                || !scalarText( aDocument, justify.children[1], horizontal )
+                || !scalarText( aDocument, justify.children[2], vertical )
+                || ( horizontal != "left" && horizontal != "center"
+                     && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit_field_layout_justify",
+                            "component unit field justify requires left|center|right and "
+                            "top|center|bottom" );
+            }
+            else
+            {
+                layout["justify"] = {
+                    { "horizontal", horizontal }, { "vertical", vertical }
+                };
+            }
+
+            continue;
+        }
+
+        if( head == "hyperlink" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || value.size() > MAX_HYPERLINK_BYTES
+                || value.find( '\0' ) != std::string::npos
+                || value.find( '\r' ) != std::string::npos
+                || value.find( '\n' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_component_unit_field_layout_hyperlink",
+                            "component unit field hyperlink requires none or one line up to "
+                            "2048 UTF-8 bytes" );
+            }
+            else
+            {
+                layout["hyperlink"] = value == "none" ? "" : value;
+            }
+
+            continue;
+        }
+
+        if( head == "visible" || head == "show_name" || head == "autoplace"
+            || head == "bold" || head == "italic" || head == "private" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "true" && value != "false" ) )
+            {
+                diagnostic( aResult, "error",
+                            "invalid_component_unit_field_layout_" + head,
+                            "component unit field " + head + " must be true or false" );
+            }
+            else
+            {
+                const std::string key = head == "show_name" ? "showName" : head;
+                layout[key] = value == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_component_unit_field_layout_field",
+                    "component unit field supports at, rotation, visible, show_name, autoplace, "
+                    "size, font, line_spacing, thickness, color, justify, bold, italic, "
+                    "hyperlink, and private" );
+    }
+
+    for( const char* required : { "position", "rotationDegrees", "visible", "showName",
+                                  "autoplace", "size", "font", "lineSpacing", "thicknessNm",
+                                  "color", "justify", "bold", "italic", "hyperlink",
+                                  "private" } )
+    {
+        if( !layout.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_component_unit_field_layout_field",
+                        "component " + aReference + " unit " + std::to_string( aUnit )
+                                + " field " + name + " is missing " + required );
+        }
+    }
+
+    return layout;
+}
+
+
 JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
                        KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -573,19 +849,57 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
                 continue;
             }
 
-            JSON unit = { { "number", number } };
+            JSON unit = { { "number", number }, { "fieldsAutoplaced", true },
+                          { "fields", JSON::array() } };
             std::set<std::string> unitFields;
+            std::set<std::string> unitFieldNames;
 
             for( size_t unitIndex = 2; unitIndex < field.children.size(); ++unitIndex )
             {
                 const size_t unitChild = field.children[unitIndex];
                 const std::string unitHead = aDocument.ListHead( unitChild );
 
+                if( unitHead == "field" )
+                {
+                    JSON layout = compileComponentField( aDocument, unitChild, aResult,
+                                                         reference, number );
+                    const std::string name = layout.value( "name", "" );
+
+                    if( !name.empty() && !unitFieldNames.emplace( name ).second )
+                    {
+                        diagnostic( aResult, "error", "duplicate_component_unit_field_layout",
+                                    "component " + reference + " unit " + numberText
+                                            + " field " + name + " occurs more than once" );
+                    }
+
+                    unit["fields"].emplace_back( std::move( layout ) );
+                    continue;
+                }
+
                 if( !unitFields.emplace( unitHead ).second )
                 {
                     diagnostic( aResult, "error", "duplicate_component_unit_field",
                                 "component unit field '" + unitHead
                                         + "' occurs more than once" );
+                    continue;
+                }
+
+                if( unitHead == "fields_autoplaced" )
+                {
+                    std::string value;
+
+                    if( !parseSingleValueForm( aDocument, unitChild, value )
+                        || ( value != "true" && value != "false" ) )
+                    {
+                        diagnostic( aResult, "error",
+                                    "invalid_component_unit_fields_autoplaced",
+                                    "component unit fields_autoplaced must be true or false" );
+                    }
+                    else
+                    {
+                        unit["fieldsAutoplaced"] = value == "true";
+                    }
+
                     continue;
                 }
 
@@ -659,7 +973,8 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
                 }
 
                 diagnostic( aResult, "error", "unknown_component_unit_field",
-                            "component unit supports sheet, at, rotation, and mirror" );
+                            "component unit supports sheet, at, rotation, mirror, "
+                            "fields_autoplaced, and field" );
             }
 
             for( const char* required : { "sheet", "position", "rotationDegrees", "mirror" } )
@@ -683,10 +998,15 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
 
             if( field.children.size() != 3
                 || !scalarText( aDocument, field.children[1], key )
-                || !scalarText( aDocument, field.children[2], value ) || key.empty() )
+                || !scalarText( aDocument, field.children[2], value ) || key.empty()
+                || key.size() > MAX_IDENTIFIER_BYTES
+                || value.size() > MAX_SCHEMATIC_PROPERTY_BYTES
+                || key.find( '\0' ) != std::string::npos
+                || value.find( '\0' ) != std::string::npos )
             {
                 diagnostic( aResult, "error", "invalid_component_property",
-                            "component property requires a name and value" );
+                            "component property requires a 1..128-byte name and a value up to "
+                            "4096 UTF-8 bytes" );
                 continue;
             }
 
@@ -697,8 +1017,17 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
                 continue;
             }
 
-            if( key == "Reference" || key == "Value" || key == "Footprint"
-                || key == "Datasheet" || key == "Description" )
+            std::string foldedKey = key;
+            std::transform( foldedKey.begin(), foldedKey.end(), foldedKey.begin(),
+                            []( unsigned char aCharacter )
+                            {
+                                return static_cast<char>( std::tolower( aCharacter ) );
+                            } );
+            static const std::set<std::string> RESERVED_PROPERTIES = {
+                "reference", "value", "footprint", "datasheet", "description"
+            };
+
+            if( RESERVED_PROPERTIES.contains( foldedKey ) )
             {
                 diagnostic( aResult, "error", "reserved_component_property",
                             "component property '" + key
@@ -733,10 +1062,35 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
             continue;
         }
 
+        if( head == "datasheet" || head == "description" )
+        {
+            std::string value;
+
+            if( !singletonFields.emplace( head ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_component_field",
+                            "component field '" + head + "' occurs more than once" );
+            }
+            else if( !parseSingleValueForm( aDocument, child, value )
+                     || value.size() > MAX_SCHEMATIC_PROPERTY_BYTES
+                     || value.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_component_field",
+                            "component " + head + " requires one value up to 4096 UTF-8 bytes" );
+            }
+            else
+            {
+                component[head] = value;
+            }
+
+            continue;
+        }
+
         if( head != "symbol" && head != "value" && head != "footprint" )
         {
             diagnostic( aResult, "error", "unknown_component_field",
-                        "component supports symbol, value, footprint, property, dnp, and unit" );
+                        "component supports symbol, value, footprint, datasheet, description, "
+                        "property, dnp, and unit" );
             continue;
         }
 
@@ -783,6 +1137,53 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
         {
             diagnostic( aResult, "error", "missing_component_field",
                         "component " + reference + " is missing " + required );
+        }
+    }
+
+    if( component["properties"].size() > 1024 )
+    {
+        diagnostic( aResult, "error", "too_many_component_properties",
+                    "component " + reference + " may declare at most 1024 custom properties" );
+    }
+
+    static const std::set<std::string> MANDATORY_FIELD_NAMES = {
+        "Reference", "Value", "Footprint", "Datasheet", "Description"
+    };
+
+    for( const JSON& unit : component["units"] )
+    {
+        if( !unit.is_object() || !unit.contains( "fields" ) || !unit["fields"].is_array() )
+            continue;
+
+        if( unit["fields"].size() > 1024 )
+        {
+            diagnostic( aResult, "error", "too_many_component_unit_field_layouts",
+                        "component " + reference + " unit "
+                                + std::to_string( unit.value( "number", 0 ) )
+                                + " may declare at most 1024 field layouts" );
+        }
+
+        for( const JSON& layout : unit["fields"] )
+        {
+            const std::string name = layout.value( "name", "" );
+
+            if( name.empty() )
+                continue;
+
+            const bool mandatory = MANDATORY_FIELD_NAMES.contains( name );
+
+            if( !mandatory && !component["properties"].contains( name ) )
+            {
+                diagnostic( aResult, "error", "unresolved_component_unit_field_layout",
+                            "component " + reference + " unit field " + name
+                                    + " has no matching component property" );
+            }
+
+            if( mandatory && layout.value( "private", false ) )
+            {
+                diagnostic( aResult, "error", "private_mandatory_component_unit_field",
+                            "component mandatory field " + name + " cannot be private" );
+            }
         }
     }
 
@@ -6049,9 +6450,18 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form",
                       "(component REF (symbol LIB:ID) (value VALUE) "
                       "(footprint LIB:ID|none) "
-                      "(property NAME VALUE) (dnp true|false) "
+                      "(datasheet TEXT) (description TEXT) (property NAME VALUE) "
+                      "(dnp true|false) "
                       "(unit NUMBER (sheet ID) (at X Y) "
-                      "(rotation 0deg|90deg|180deg|270deg) (mirror none|x|y|xy)) ...)" } },
+                      "(rotation 0deg|90deg|180deg|270deg) (mirror none|x|y|xy) "
+                      "(fields_autoplaced BOOL) "
+                      "(field NAME (at X Y) (rotation ANGLE) (visible BOOL) "
+                      "(show_name BOOL) (autoplace BOOL) (size W H) "
+                      "(font stroke|NAME) (line_spacing NUMBER) "
+                      "(thickness auto|SIZE) (color default|#RRGGBB[AA]) "
+                      "(justify left|center|right top|center|bottom) "
+                      "(bold BOOL) (italic BOOL) (hyperlink none|TEXT) "
+                      "(private BOOL)) ...)) ...)" } },
                   { { "form", "(net NAME (pin REF UNIT NUMBER) (pin REF UNIT NUMBER) ...)" } },
                   { { "form", "(no_connect REF UNIT NUMBER)" } },
                   { { "form",
