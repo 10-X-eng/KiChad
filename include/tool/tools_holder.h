@@ -152,6 +152,8 @@ public:
 #define ENVVARS_CHANGED  0x0001
 #define TEXTVARS_CHANGED 0x0002
 #define HOTKEYS_CHANGED  0x0004
+#define FIELD_TEMPLATES_CHANGED 0x0008
+#define NETCLASSES_CHANGED 0x0010
 
     /**
      * Notification event that some of the common (suite-wide) settings have changed.

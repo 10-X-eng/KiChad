@@ -6,7 +6,13 @@
     (revision "KDS-1")
     (company "KiChad QA")
     (comment 1 "Controlled by the KDS sidecar")
-    (comment 9 "Complete indexed title-block proof"))
+    (comment 9 "Complete indexed title-block proof")
+    (text_variables
+      (variable PRODUCT_NAME "KiChad Live Apply")
+      (variable DESIGN_OWNER "Codex"))
+    (field_templates
+      (field "Manufacturer Part" (visible true) (url false))
+      (field "Compliance URL" (visible false) (url true))))
   (sheet root
     (parent none)
     (file "live_apply.kicad_sch")

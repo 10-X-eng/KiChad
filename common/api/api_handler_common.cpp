@@ -20,11 +20,13 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <ranges>
 #include <set>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -56,6 +58,11 @@ constexpr size_t MAX_NETCLASS_COUNT = 256;
 constexpr size_t MAX_NETCLASS_ASSIGNMENTS = 1024;
 constexpr size_t MAX_EXPANDED_NETCLASS_ASSIGNMENTS = 4096;
 constexpr size_t MAX_NETCLASS_TEXT_BYTES = 256;
+constexpr size_t MAX_SCHEMATIC_FIELD_TEMPLATES = 1024;
+constexpr size_t MAX_SCHEMATIC_FIELD_TEMPLATE_NAME_BYTES = 128;
+constexpr size_t MAX_PROJECT_TEXT_VARIABLES = 1024;
+constexpr size_t MAX_PROJECT_TEXT_VARIABLE_NAME_BYTES = 128;
+constexpr size_t MAX_PROJECT_TEXT_VARIABLE_VALUE_BYTES = 4096;
 
 
 struct DECODED_NETCLASS_SETTINGS
@@ -64,6 +71,142 @@ struct DECODED_NETCLASS_SETTINGS
     std::map<wxString, std::shared_ptr<NETCLASS>>         classes;
     std::vector<std::pair<wxString, wxString>>            assignments;
 };
+
+
+std::string asciiLower( std::string aValue )
+{
+    std::transform( aValue.begin(), aValue.end(), aValue.begin(),
+                    []( unsigned char aCharacter )
+                    {
+                        return static_cast<char>( std::tolower( aCharacter ) );
+                    } );
+    return aValue;
+}
+
+
+bool validTextVariableName( const std::string& aName )
+{
+    static constexpr std::string_view excluded = "{}[]()%~<>\"='`;:.,&?/\\|$";
+
+    if( aName.empty() || aName.size() > MAX_PROJECT_TEXT_VARIABLE_NAME_BYTES
+        || std::isspace( static_cast<unsigned char>( aName.front() ) )
+        || std::isspace( static_cast<unsigned char>( aName.back() ) )
+        || wxString::FromUTF8( aName ).empty() )
+    {
+        return false;
+    }
+
+    return std::none_of( aName.begin(), aName.end(),
+                         []( unsigned char aCharacter )
+                         {
+                             return aCharacter == '\0' || std::iscntrl( aCharacter )
+                                    || excluded.find( static_cast<char>( aCharacter ) )
+                                               != std::string_view::npos;
+                         } );
+}
+
+
+bool saveProjectSettings( PROJECT& aProject )
+{
+    return aProject.GetProjectFile().SaveToFile( aProject.GetProjectPath(), true );
+}
+
+
+bool decodeSchematicFieldTemplates( const project::SchematicFieldTemplates& aTemplates,
+                                    nlohmann::json& aDecoded, std::string& aError )
+{
+    if( aTemplates.fields_size() > static_cast<int>( MAX_SCHEMATIC_FIELD_TEMPLATES ) )
+    {
+        aError = "schematic field templates exceed the 1024-entry limit";
+        return false;
+    }
+
+    static const std::set<std::string> mandatory = {
+        "reference", "value", "footprint", "datasheet", "description"
+    };
+    std::set<std::string> names;
+    aDecoded = nlohmann::json::array();
+
+    for( const project::SchematicFieldTemplate& field : aTemplates.fields() )
+    {
+        const std::string& name = field.name();
+        const std::string folded = asciiLower( name );
+
+        if( name.empty() || name.size() > MAX_SCHEMATIC_FIELD_TEMPLATE_NAME_BYTES
+            || name.find( '\0' ) != std::string::npos
+            || wxString::FromUTF8( name ).empty()
+            || std::isspace( static_cast<unsigned char>( name.front() ) )
+            || std::isspace( static_cast<unsigned char>( name.back() ) )
+            || std::any_of( name.begin(), name.end(),
+                            []( unsigned char aCharacter )
+                            {
+                                return std::iscntrl( aCharacter );
+                            } )
+            || mandatory.contains( folded ) )
+        {
+            aError = "schematic field template names must be bounded, trimmed, and must not "
+                     "conflict with mandatory fields";
+            return false;
+        }
+
+        if( !names.emplace( folded ).second )
+        {
+            aError = "schematic field template names must be unique";
+            return false;
+        }
+
+        aDecoded.push_back( { { "name", name },
+                              { "visible", field.visible() },
+                              { "url", field.url() } } );
+    }
+
+    return true;
+}
+
+
+bool encodeSchematicFieldTemplates( const PROJECT_FILE& aProjectFile,
+                                    project::SchematicFieldTemplates& aTemplates,
+                                    std::string& aError )
+{
+    const std::optional<nlohmann::json> stored =
+            aProjectFile.GetJson( "schematic.drawing.field_names" );
+
+    if( !stored )
+        return true;
+
+    if( !stored->is_array() || stored->size() > MAX_SCHEMATIC_FIELD_TEMPLATES )
+    {
+        aError = "project contains invalid schematic field templates";
+        return false;
+    }
+
+    for( const nlohmann::json& entry : *stored )
+    {
+        if( !entry.is_object() || entry.size() != 3 || !entry.contains( "name" )
+            || !entry["name"].is_string() || !entry.contains( "visible" )
+            || !entry["visible"].is_boolean() || !entry.contains( "url" )
+            || !entry["url"].is_boolean() )
+        {
+            aError = "project contains invalid schematic field templates";
+            return false;
+        }
+
+        project::SchematicFieldTemplate* field = aTemplates.add_fields();
+        field->set_name( entry["name"].get<std::string>() );
+        field->set_visible( entry["visible"].get<bool>() );
+        field->set_url( entry["url"].get<bool>() );
+    }
+
+    nlohmann::json validated;
+
+    if( !decodeSchematicFieldTemplates( aTemplates, validated, aError ) )
+    {
+        aTemplates.Clear();
+        return false;
+    }
+
+    return true;
+}
 
 
 bool validColor( const kiapi::common::types::Color& aColor )
@@ -506,9 +649,9 @@ kiapi::common::commands::NetClassSettingsResponse encodeNetClassSettings( NET_SE
 } // namespace
 
 
-API_HANDLER_COMMON::API_HANDLER_COMMON( std::function<void()> aOnNetClassSettingsChanged ) :
+API_HANDLER_COMMON::API_HANDLER_COMMON( std::function<void( int )> aOnProjectSettingsChanged ) :
         API_HANDLER(),
-        m_onNetClassSettingsChanged( std::move( aOnNetClassSettingsChanged ) )
+        m_onProjectSettingsChanged( std::move( aOnProjectSettingsChanged ) )
 {
     registerHandler<commands::GetVersion, GetVersionResponse>( &API_HANDLER_COMMON::handleGetVersion );
     registerHandler<GetKiCadBinaryPath, PathResponse>(
@@ -531,6 +674,10 @@ API_HANDLER_COMMON::API_HANDLER_COMMON( std::function<void()> aOnNetClassSetting
             &API_HANDLER_COMMON::handleGetTextVariables );
     registerHandler<SetTextVariables, Empty>(
             &API_HANDLER_COMMON::handleSetTextVariables );
+    registerHandler<GetSchematicFieldTemplates, project::SchematicFieldTemplates>(
+            &API_HANDLER_COMMON::handleGetSchematicFieldTemplates );
+    registerHandler<SetSchematicFieldTemplates, project::SchematicFieldTemplates>(
+            &API_HANDLER_COMMON::handleSetSchematicFieldTemplates );
 
 }
 
@@ -625,8 +772,8 @@ HANDLER_RESULT<Empty> API_HANDLER_COMMON::handleSetNetClasses(
 
     netSettings->SetNetclasses( netClasses );
 
-    if( m_onNetClassSettingsChanged )
-        m_onNetClassSettingsChanged();
+    if( m_onProjectSettingsChanged )
+        m_onProjectSettingsChanged( APIPSC_NETCLASSES );
 
     return Empty();
 }
@@ -688,8 +835,8 @@ HANDLER_RESULT<NetClassSettingsResponse> API_HANDLER_COMMON::handleUpdateNetClas
     for( const auto& [pattern, netClass] : decoded.assignments )
         settings.SetNetclassPatternAssignment( pattern, netClass );
 
-    if( m_onNetClassSettingsChanged )
-        m_onNetClassSettingsChanged();
+    if( m_onProjectSettingsChanged )
+        m_onProjectSettingsChanged( APIPSC_NETCLASSES );
 
     Pgm().GetSettingsManager().SaveProject();
     return encodeNetClassSettings( settings );
@@ -928,13 +1075,169 @@ HANDLER_RESULT<Empty> API_HANDLER_COMMON::handleSetTextVariables(
     const project::TextVariables& newVars = aCtx.Request.variables();
     std::map<wxString, wxString>& vars = project.GetTextVars();
 
+    if( newVars.variables_size() > static_cast<int>( MAX_PROJECT_TEXT_VARIABLES )
+        || ( aCtx.Request.merge_mode() != MapMergeMode::MMM_MERGE
+             && aCtx.Request.merge_mode() != MapMergeMode::MMM_REPLACE ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( "text variables require merge or replace mode and at most "
+                                 "1024 entries" );
+        return tl::unexpected( error );
+    }
+
+    for( const auto& [key, value] : newVars.variables() )
+    {
+        if( !validTextVariableName( key )
+            || value.size() > MAX_PROJECT_TEXT_VARIABLE_VALUE_BYTES
+            || value.find( '\0' ) != std::string::npos
+            || ( !value.empty() && wxString::FromUTF8( value ).empty() ) )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "text-variable names or values are invalid" );
+            return tl::unexpected( error );
+        }
+    }
+
+    const std::map<wxString, wxString> previousVars = vars;
+
     if( aCtx.Request.merge_mode() == MapMergeMode::MMM_REPLACE )
         vars.clear();
 
     for( const auto& [key, value] : newVars.variables() )
         vars[wxString::FromUTF8( key )] = wxString::FromUTF8( value );
 
-    Pgm().GetSettingsManager().SaveProject();
+    if( m_onProjectSettingsChanged )
+        m_onProjectSettingsChanged( APIPSC_TEXT_VARIABLES );
+
+    if( !saveProjectSettings( project ) )
+    {
+        vars = previousVars;
+
+        if( m_onProjectSettingsChanged )
+            m_onProjectSettingsChanged( APIPSC_TEXT_VARIABLES );
+
+        const bool rollbackSaved = saveProjectSettings( project );
+
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message(
+                rollbackSaved ? "could not save project text variables"
+                              : "could not save project text variables or persist rollback" );
+        return tl::unexpected( error );
+    }
 
     return Empty();
+}
+
+
+HANDLER_RESULT<project::SchematicFieldTemplates>
+API_HANDLER_COMMON::handleGetSchematicFieldTemplates(
+        const HANDLER_CONTEXT<GetSchematicFieldTemplates>& aCtx )
+{
+    if( !aCtx.Request.has_document() || aCtx.Request.document().type() != DOCTYPE_PROJECT )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        return tl::unexpected( error );
+    }
+
+    PROJECT& project = Pgm().GetSettingsManager().Prj();
+
+    if( project.IsNullProject() )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message( "no valid project is loaded, cannot get field templates" );
+        return tl::unexpected( error );
+    }
+
+    project::SchematicFieldTemplates reply;
+    std::string                      encodeError;
+
+    if( !encodeSchematicFieldTemplates( project.GetProjectFile(), reply, encodeError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( encodeError );
+        return tl::unexpected( error );
+    }
+
+    return reply;
+}
+
+
+HANDLER_RESULT<project::SchematicFieldTemplates>
+API_HANDLER_COMMON::handleSetSchematicFieldTemplates(
+        const HANDLER_CONTEXT<SetSchematicFieldTemplates>& aCtx )
+{
+    if( !aCtx.Request.has_document() || aCtx.Request.document().type() != DOCTYPE_PROJECT )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        return tl::unexpected( error );
+    }
+
+    PROJECT& project = Pgm().GetSettingsManager().Prj();
+
+    if( project.IsNullProject() )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message( "no valid project is loaded, cannot set field templates" );
+        return tl::unexpected( error );
+    }
+
+    nlohmann::json decoded;
+    std::string    decodeError;
+
+    if( !aCtx.Request.has_templates()
+        || !decodeSchematicFieldTemplates( aCtx.Request.templates(), decoded, decodeError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( decodeError.empty() ? "schematic field templates are required"
+                                                      : decodeError );
+        return tl::unexpected( error );
+    }
+
+    PROJECT_FILE& projectFile = project.GetProjectFile();
+    const nlohmann::json previous =
+            projectFile.GetJson( "schematic.drawing.field_names" )
+                    .value_or( nlohmann::json::array() );
+    projectFile.Set<nlohmann::json>( "schematic.drawing.field_names", std::move( decoded ) );
+
+    if( m_onProjectSettingsChanged )
+        m_onProjectSettingsChanged( APIPSC_FIELD_TEMPLATES );
+
+    if( !saveProjectSettings( project ) )
+    {
+        projectFile.Set<nlohmann::json>( "schematic.drawing.field_names", previous );
+
+        if( m_onProjectSettingsChanged )
+            m_onProjectSettingsChanged( APIPSC_FIELD_TEMPLATES );
+
+        const bool rollbackSaved = saveProjectSettings( project );
+
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message(
+                rollbackSaved ? "could not save schematic field templates"
+                              : "could not save schematic field templates or persist rollback" );
+        return tl::unexpected( error );
+    }
+
+    project::SchematicFieldTemplates reply;
+    std::string                      encodeError;
+
+    if( !encodeSchematicFieldTemplates( projectFile, reply, encodeError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( encodeError );
+        return tl::unexpected( error );
+    }
+
+    return reply;
 }

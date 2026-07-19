@@ -14,6 +14,7 @@
 #include <kicad/codex/codex_tool_registry.h>
 #include <kicad/codex/design_script_pcb_planner.h>
 #include <kicad/codex/kicad_ipc_client.h>
+#include <kicad/codex/project_settings_ipc.h>
 
 #include <atomic>
 #include <build_version.h>
@@ -2434,12 +2435,174 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
     BOOST_CHECK( firstData["rulesApplied"].get<bool>() );
     BOOST_CHECK( firstData["netClassesApplied"].get<bool>() );
+    BOOST_CHECK( firstData["textVariablesApplied"].get<bool>() );
+    BOOST_CHECK( firstData["fieldTemplatesApplied"].get<bool>() );
     BOOST_CHECK( firstData["customRulesApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( firstData["libraryTablesApplied"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( firstData["schematicFilesApplied"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesCreated"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesUpdated"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["itemsUpserted"].get<int>(), 36 );
+    const wxFileName projectFile( project.GetFullPath(), wxS( "live_apply.kicad_pro" ) );
+    const JSON projectSettings = JSON::parse( readExactTextFile( projectFile ) );
+    BOOST_CHECK_EQUAL( projectSettings["text_variables"]["PRODUCT_NAME"],
+                       "KiChad Live Apply" );
+    BOOST_CHECK_EQUAL( projectSettings["text_variables"]["DESIGN_OWNER"], "Codex" );
+    BOOST_REQUIRE_EQUAL(
+            projectSettings["schematic"]["drawing"]["field_names"].size(), 2 );
+    BOOST_CHECK_EQUAL(
+            projectSettings["schematic"]["drawing"]["field_names"][0]["name"],
+            "Manufacturer Part" );
+    BOOST_CHECK(
+            projectSettings["schematic"]["drawing"]["field_names"][0]["visible"]
+                    .get<bool>() );
+    BOOST_CHECK_EQUAL(
+            projectSettings["schematic"]["drawing"]["field_names"][1]["name"],
+            "Compliance URL" );
+    BOOST_CHECK(
+            projectSettings["schematic"]["drawing"]["field_names"][1]["url"]
+                    .get<bool>() );
+
+    KICHAD_IPC_CLIENT projectSettingsClient(
+            "org.kichad.codex.qa.project-settings-validation", socketDirectory );
+    KICHAD_IPC_TARGET projectSettingsTarget;
+    std::string projectSettingsError;
+    BOOST_REQUIRE_MESSAGE(
+            projectSettingsClient.FindOpenPcb( project.GetFullPath(), board.GetFullPath(),
+                                               projectSettingsTarget,
+                                               projectSettingsError ),
+            projectSettingsError );
+
+    kiapi::common::commands::SetTextVariables invalidTextVariables;
+    invalidTextVariables.mutable_document()->set_type(
+            kiapi::common::types::DOCTYPE_PROJECT );
+    invalidTextVariables.mutable_document()->mutable_project()->CopyFrom(
+            projectSettingsTarget.document.project() );
+    ( *invalidTextVariables.mutable_variables()->mutable_variables() )["BAD.NAME"] =
+            "must be rejected";
+    invalidTextVariables.set_merge_mode( kiapi::common::types::MMM_REPLACE );
+    kiapi::common::ApiResponse invalidTextVariablesResponse;
+    BOOST_CHECK( !projectSettingsClient.Call(
+            projectSettingsTarget, invalidTextVariables, invalidTextVariablesResponse,
+            projectSettingsError ) );
+    BOOST_CHECK( !projectSettingsError.empty() );
+
+    kiapi::common::project::TextVariables unchangedTextVariables;
+    projectSettingsError.clear();
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QueryTextVariables(
+                    projectSettingsClient, projectSettingsTarget, unchangedTextVariables,
+                    projectSettingsError ),
+            projectSettingsError );
+    BOOST_REQUIRE_EQUAL( unchangedTextVariables.variables_size(), 2 );
+    BOOST_CHECK_EQUAL( unchangedTextVariables.variables().at( "PRODUCT_NAME" ),
+                       "KiChad Live Apply" );
+
+    kiapi::common::commands::SetSchematicFieldTemplates invalidFieldTemplates;
+    invalidFieldTemplates.mutable_document()->set_type(
+            kiapi::common::types::DOCTYPE_PROJECT );
+    invalidFieldTemplates.mutable_document()->mutable_project()->CopyFrom(
+            projectSettingsTarget.document.project() );
+    auto* duplicateTemplate =
+            invalidFieldTemplates.mutable_templates()->add_fields();
+    duplicateTemplate->set_name( "MPN" );
+    duplicateTemplate->set_visible( true );
+    duplicateTemplate = invalidFieldTemplates.mutable_templates()->add_fields();
+    duplicateTemplate->set_name( "mpn" );
+    duplicateTemplate->set_url( true );
+    kiapi::common::ApiResponse invalidFieldTemplatesResponse;
+    projectSettingsError.clear();
+    BOOST_CHECK( !projectSettingsClient.Call(
+            projectSettingsTarget, invalidFieldTemplates, invalidFieldTemplatesResponse,
+            projectSettingsError ) );
+    BOOST_CHECK( !projectSettingsError.empty() );
+
+    kiapi::common::project::SchematicFieldTemplates unchangedFieldTemplates;
+    projectSettingsError.clear();
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QuerySchematicFieldTemplates(
+                    projectSettingsClient, projectSettingsTarget, unchangedFieldTemplates,
+                    projectSettingsError ),
+            projectSettingsError );
+    BOOST_REQUIRE_EQUAL( unchangedFieldTemplates.fields_size(), 2 );
+    BOOST_CHECK_EQUAL( unchangedFieldTemplates.fields( 0 ).name(),
+                       "Manufacturer Part" );
+    BOOST_CHECK_EQUAL( unchangedFieldTemplates.fields( 1 ).name(),
+                       "Compliance URL" );
+
+    const std::string projectBeforeRejectedSave = readExactTextFile( projectFile );
+    const std::filesystem::path projectSettingsPath(
+            projectFile.GetFullPath().ToStdString() );
+    std::error_code permissionError;
+    const std::filesystem::perms originalPermissions =
+            std::filesystem::status( projectSettingsPath, permissionError ).permissions();
+    BOOST_REQUIRE( !permissionError );
+    std::filesystem::permissions(
+            projectSettingsPath,
+            std::filesystem::perms::owner_read | std::filesystem::perms::group_read
+                    | std::filesystem::perms::others_read,
+            std::filesystem::perm_options::replace, permissionError );
+    BOOST_REQUIRE( !permissionError );
+
+    kiapi::common::project::TextVariables rejectedSaveVariables =
+            unchangedTextVariables;
+    ( *rejectedSaveVariables.mutable_variables() )["PRODUCT_NAME"] =
+            "must not survive a rejected save";
+    projectSettingsError.clear();
+    const bool rejectedSaveAccepted =
+            KICHAD::PROJECT_SETTINGS_IPC::ReplaceTextVariables(
+                    projectSettingsClient, projectSettingsTarget,
+                    rejectedSaveVariables, projectSettingsError );
+    std::error_code restorePermissionError;
+    std::filesystem::permissions(
+            projectSettingsPath, originalPermissions,
+            std::filesystem::perm_options::replace, restorePermissionError );
+    BOOST_REQUIRE( !restorePermissionError );
+    BOOST_CHECK( !rejectedSaveAccepted );
+    BOOST_CHECK( !projectSettingsError.empty() );
+    BOOST_CHECK_EQUAL( readExactTextFile( projectFile ),
+                       projectBeforeRejectedSave );
+
+    kiapi::common::project::TextVariables rolledBackAfterSaveFailure;
+    projectSettingsError.clear();
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QueryTextVariables(
+                    projectSettingsClient, projectSettingsTarget,
+                    rolledBackAfterSaveFailure, projectSettingsError ),
+            projectSettingsError );
+    BOOST_CHECK_EQUAL(
+            rolledBackAfterSaveFailure.variables().at( "PRODUCT_NAME" ),
+            "KiChad Live Apply" );
+
+    kiapi::common::project::TextVariables noTextVariables;
+    projectSettingsError.clear();
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::ReplaceTextVariables(
+                    projectSettingsClient, projectSettingsTarget, noTextVariables,
+                    projectSettingsError ),
+            projectSettingsError );
+    kiapi::common::project::TextVariables clearedTextVariables;
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QueryTextVariables(
+                    projectSettingsClient, projectSettingsTarget, clearedTextVariables,
+                    projectSettingsError ),
+            projectSettingsError );
+    BOOST_CHECK( clearedTextVariables.variables().empty() );
+
+    kiapi::common::project::SchematicFieldTemplates noFieldTemplates;
+    projectSettingsError.clear();
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicFieldTemplates(
+                    projectSettingsClient, projectSettingsTarget, noFieldTemplates,
+                    projectSettingsError ),
+            projectSettingsError );
+    kiapi::common::project::SchematicFieldTemplates clearedFieldTemplates;
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QuerySchematicFieldTemplates(
+                    projectSettingsClient, projectSettingsTarget, clearedFieldTemplates,
+                    projectSettingsError ),
+            projectSettingsError );
+    BOOST_CHECK( clearedFieldTemplates.fields().empty() );
     BOOST_CHECK( wxFileExists( wxFileName( project.GetFullPath(),
                                            wxS( "power.kicad_sch" ) ).GetFullPath() ) );
     BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),
@@ -2475,6 +2638,8 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( repeatedData["titleBlockApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
+    BOOST_CHECK( repeatedData["textVariablesApplied"].get<bool>() );
+    BOOST_CHECK( repeatedData["fieldTemplatesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["customRulesApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( repeatedData["libraryTablesApplied"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( repeatedData["schematicFilesApplied"].get<int>(), 0 );
@@ -2482,12 +2647,23 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
 
     const wxFileName rootSchematic( project.GetFullPath(), wxS( "live_apply.kicad_sch" ) );
     const std::string rootBeforeRejectedApply = readExactTextFile( rootSchematic );
+    const std::string projectBeforeRejectedApply = readExactTextFile( projectFile );
     const std::string originalSource = readExactTextFile( source );
     std::string rejectedSource = originalSource;
     const std::string originalTitle = "KiChad AI-native release";
     const size_t titlePosition = rejectedSource.find( originalTitle );
     BOOST_REQUIRE_NE( titlePosition, std::string::npos );
     rejectedSource.replace( titlePosition, originalTitle.size(), "Rejected native title" );
+    const std::string originalTextVariable = "KiChad Live Apply";
+    const size_t textVariablePosition = rejectedSource.find( originalTextVariable );
+    BOOST_REQUIRE_NE( textVariablePosition, std::string::npos );
+    rejectedSource.replace( textVariablePosition, originalTextVariable.size(),
+                            "Rejected Project Variable" );
+    const std::string originalTemplate = "Compliance URL";
+    const size_t templatePosition = rejectedSource.find( originalTemplate );
+    BOOST_REQUIRE_NE( templatePosition, std::string::npos );
+    rejectedSource.replace( templatePosition, originalTemplate.size(),
+                            "Rejected URL Template" );
     JSON rejectedSaved = registry.Handle(
             "design", { { "operation", "save" },
                          { "path", sourceName },
@@ -2513,6 +2689,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( envelope( rejectedApply )["error"]["code"].get<std::string>(),
                        "schematic_validation_failed" );
     BOOST_CHECK_EQUAL( readExactTextFile( rootSchematic ), rootBeforeRejectedApply );
+    BOOST_CHECK_EQUAL( readExactTextFile( projectFile ), projectBeforeRejectedApply );
     KICHAD_IPC_CLIENT rollbackClient( "org.kichad.codex.qa.title-rollback",
                                       socketDirectory );
     KICHAD_IPC_TARGET rollbackTarget;
@@ -2531,6 +2708,22 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     kiapi::common::types::TitleBlockInfo rolledBackTitleBlock;
     BOOST_REQUIRE( rollbackTitleEnvelope.message().UnpackTo( &rolledBackTitleBlock ) );
     BOOST_CHECK_EQUAL( rolledBackTitleBlock.title(), "KiChad AI-native release" );
+    kiapi::common::project::TextVariables rolledBackTextVariables;
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QueryTextVariables(
+                    rollbackClient, rollbackTarget, rolledBackTextVariables, rollbackIpcError ),
+            rollbackIpcError );
+    BOOST_CHECK_EQUAL( rolledBackTextVariables.variables().at( "PRODUCT_NAME" ),
+                       "KiChad Live Apply" );
+    kiapi::common::project::SchematicFieldTemplates rolledBackFieldTemplates;
+    BOOST_REQUIRE_MESSAGE(
+            KICHAD::PROJECT_SETTINGS_IPC::QuerySchematicFieldTemplates(
+                    rollbackClient, rollbackTarget, rolledBackFieldTemplates,
+                    rollbackIpcError ),
+            rollbackIpcError );
+    BOOST_REQUIRE_EQUAL( rolledBackFieldTemplates.fields_size(), 2 );
+    BOOST_CHECK_EQUAL( rolledBackFieldTemplates.fields( 1 ).name(), "Compliance URL" );
+    BOOST_CHECK( rolledBackFieldTemplates.fields( 1 ).url() );
 
     JSON restoredSaved = registry.Handle(
             "design", { { "operation", "save" },

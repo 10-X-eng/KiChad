@@ -38,6 +38,7 @@ set( KICAD_SRCS
     codex/design_script_symbol_resolver.cpp
     codex/kicad_ipc_client.cpp
     codex/kicad_ipc_transaction.cpp
+    codex/project_settings_ipc.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp
     codex/codex_thread_store.cpp

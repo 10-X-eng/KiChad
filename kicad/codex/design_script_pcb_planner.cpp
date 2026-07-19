@@ -186,6 +186,20 @@ JSON planTitleBlock( const JSON& aTitleBlock )
 }
 
 
+JSON planTextVariables( const JSON& aTextVariables )
+{
+    return { { "action", "update_text_variables" },
+             { "textVariables", { { "variables", aTextVariables } } } };
+}
+
+
+JSON planFieldTemplates( const JSON& aFieldTemplates )
+{
+    return { { "action", "update_schematic_field_templates" },
+             { "fieldTemplates", { { "fields", aFieldTemplates } } } };
+}
+
+
 JSON planRules( const JSON& aRules )
 {
     const auto distance = [&]( const char* aName )
@@ -1162,6 +1176,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                       { "customRules", 0 }, { "symbolLibraries", 0 },
                       { "footprintLibraries", 0 }, { "modelLibraries", 0 },
                       { "libraryTables", 0 }, { "stackups", 0 }, { "titleBlocks", 0 },
+                      { "textVariables", 0 }, { "fieldTemplates", 0 },
                       { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -1185,6 +1200,22 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             result.operations.emplace_back(
                     planTitleBlock( aCompilerIr["project"]["titleBlock"] ) );
             result.counts["titleBlocks"] = 1;
+        }
+
+        if( aCompilerIr["project"].contains( "textVariables" ) )
+        {
+            result.operations.emplace_back(
+                    planTextVariables( aCompilerIr["project"]["textVariables"] ) );
+            result.counts["textVariables"] =
+                    aCompilerIr["project"]["textVariables"].size();
+        }
+
+        if( aCompilerIr["project"].contains( "fieldTemplates" ) )
+        {
+            result.operations.emplace_back(
+                    planFieldTemplates( aCompilerIr["project"]["fieldTemplates"] ) );
+            result.counts["fieldTemplates"] =
+                    aCompilerIr["project"]["fieldTemplates"].size();
         }
 
         if( aCompilerIr.contains( "libraries" ) && aCompilerIr["libraries"].is_array()
@@ -1318,6 +1349,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                           { "customRules", 0 }, { "symbolLibraries", 0 },
                           { "footprintLibraries", 0 }, { "modelLibraries", 0 },
                           { "libraryTables", 0 }, { "stackups", 0 }, { "titleBlocks", 0 },
+                          { "textVariables", 0 }, { "fieldTemplates", 0 },
                           { "unsupported", 0 } };
         return result;
     }

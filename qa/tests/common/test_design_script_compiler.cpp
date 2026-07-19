@@ -30,7 +30,13 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
     (revision "A")
     (date "2026-07-19")
     (comment 1 "Production release")
-    (comment 9 "AI-authored KDS"))
+    (comment 9 "AI-authored KDS")
+    (text_variables
+      (variable PRODUCT_NAME "Sensor Node")
+      (variable RELEASE_CHANNEL "production"))
+    (field_templates
+      (field "Manufacturer Part Number" (visible true) (url false))
+      (field "Datasheet URL" (visible false) (url true))))
   (units mm)
   (library symbol Device (table global))
   (library footprint Resistor_SMD (table global))
@@ -145,6 +151,14 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
                        "Production release" );
     BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["comments"][8],
                        "AI-authored KDS" );
+    BOOST_CHECK_EQUAL( first.ir["project"]["textVariables"]["PRODUCT_NAME"],
+                       "Sensor Node" );
+    BOOST_CHECK_EQUAL( first.ir["project"]["textVariables"].size(), 2 );
+    BOOST_REQUIRE_EQUAL( first.ir["project"]["fieldTemplates"].size(), 2 );
+    BOOST_CHECK_EQUAL( first.ir["project"]["fieldTemplates"][0]["name"],
+                       "Manufacturer Part Number" );
+    BOOST_CHECK( first.ir["project"]["fieldTemplates"][0]["visible"].get<bool>() );
+    BOOST_CHECK( first.ir["project"]["fieldTemplates"][1]["url"].get<bool>() );
     BOOST_CHECK_EQUAL( first.ir["schematic"]["components"].size(), 2 );
     BOOST_CHECK_EQUAL( first.ir["schematic"]["nets"].size(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["pinConnections"].get<size_t>(), 2 );
@@ -179,6 +193,51 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
     BOOST_CHECK_EQUAL( first.plan["counts"]["checks"].get<size_t>(), 3 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["outputs"].get<size_t>(), 3 );
     BOOST_CHECK( first.plan["transactional"].get<bool>() );
+}
+
+
+BOOST_AUTO_TEST_CASE( ProjectSettingsHaveOneExplicitReplaceableRepresentation )
+{
+    const std::string empty = R"KDS((kichad_design
+  (version 1)
+  (project clear_project_settings
+    (text_variables)
+    (field_templates))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT cleared =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( empty );
+    BOOST_REQUIRE_MESSAGE( cleared.ok, cleared.diagnostics.dump() );
+    BOOST_CHECK( cleared.ir["project"]["textVariables"].empty() );
+    BOOST_CHECK( cleared.ir["project"]["fieldTemplates"].empty() );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project invalid_project_settings
+    (text_variables
+      (variable "BAD.NAME" value)
+      (variable VALID first)
+      (variable VALID second))
+    (text_variables)
+    (field_templates
+      (field Value (visible true) (url false))
+      (field MPN (visible true) (url false))
+      (field mpn (visible false) (url true))
+      (field MissingUrl (visible true) (visible false))))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT rejected =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !rejected.ok );
+    const std::string diagnostics = rejected.diagnostics.dump();
+
+    for( const char* code : { "invalid_project_text_variable",
+                              "duplicate_project_text_variable",
+                              "duplicate_project_text_variables",
+                              "invalid_project_field_template",
+                              "duplicate_project_field_template",
+                              "incomplete_project_field_template" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
 }
 
 
@@ -2179,6 +2238,8 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     bool foundQualifiedTextGraphics = false;
     bool foundQualifiedGroups = false;
     bool foundQualifiedFields = false;
+    bool foundQualifiedTextVariables = false;
+    bool foundQualifiedFieldTemplates = false;
 
     for( const nlohmann::json& facet : coverage["facets"] )
     {
@@ -2233,6 +2294,22 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
                                    && facet["kdsForms"]
                                               == nlohmann::json::array( { "component" } );
         }
+
+        if( id == "project.text_variables" )
+        {
+            foundQualifiedTextVariables = state == "qualified" && facet["gaps"].empty()
+                                          && facet["kdsForms"]
+                                                     == nlohmann::json::array(
+                                                             { "text_variables" } );
+        }
+
+        if( id == "project.field_templates" )
+        {
+            foundQualifiedFieldTemplates = state == "qualified" && facet["gaps"].empty()
+                                           && facet["kdsForms"]
+                                                      == nlohmann::json::array(
+                                                              { "field_templates" } );
+        }
     }
 
     BOOST_CHECK( foundQualifiedTitleBlock );
@@ -2240,6 +2317,8 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     BOOST_CHECK( foundQualifiedTextGraphics );
     BOOST_CHECK( foundQualifiedGroups );
     BOOST_CHECK( foundQualifiedFields );
+    BOOST_CHECK( foundQualifiedTextVariables );
+    BOOST_CHECK( foundQualifiedFieldTemplates );
     BOOST_CHECK( domains == expectedDomains );
 
     for( const std::string& state : allowedStates )

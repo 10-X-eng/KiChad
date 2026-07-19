@@ -32,17 +32,24 @@
 using namespace kiapi::common;
 using google::protobuf::Empty;
 
+enum API_PROJECT_SETTINGS_CHANGE : int
+{
+    APIPSC_NETCLASSES = 0x01,
+    APIPSC_TEXT_VARIABLES = 0x02,
+    APIPSC_FIELD_TEMPLATES = 0x04
+};
+
 class API_HANDLER_COMMON : public API_HANDLER
 {
 public:
     // Editors that cache project settings must refresh them synchronously in this callback.  The
     // handler retains replaced NETCLASS objects until the callback returns.
-    explicit API_HANDLER_COMMON( std::function<void()> aOnNetClassSettingsChanged = {} );
+    explicit API_HANDLER_COMMON( std::function<void( int )> aOnProjectSettingsChanged = {} );
 
     ~API_HANDLER_COMMON() override {}
 
 private:
-    std::function<void()> m_onNetClassSettingsChanged;
+    std::function<void( int )> m_onProjectSettingsChanged;
 
     HANDLER_RESULT<commands::GetVersionResponse> handleGetVersion(
         const HANDLER_CONTEXT<commands::GetVersion>& aCtx );
@@ -81,6 +88,12 @@ private:
 
     HANDLER_RESULT<Empty> handleSetTextVariables(
         const HANDLER_CONTEXT<commands::SetTextVariables>& aCtx );
+
+    HANDLER_RESULT<project::SchematicFieldTemplates> handleGetSchematicFieldTemplates(
+        const HANDLER_CONTEXT<commands::GetSchematicFieldTemplates>& aCtx );
+
+    HANDLER_RESULT<project::SchematicFieldTemplates> handleSetSchematicFieldTemplates(
+        const HANDLER_CONTEXT<commands::SetSchematicFieldTemplates>& aCtx );
 };
 
 #endif //KICAD_API_HANDLER_COMMON_H

@@ -120,6 +120,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/kicad_ipc_transaction.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/project_settings_ipc.cpp
 
     libeval/test_numeric_evaluator.cpp
 

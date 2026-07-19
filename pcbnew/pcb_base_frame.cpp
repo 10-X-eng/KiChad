@@ -939,7 +939,7 @@ void PCB_BASE_FRAME::CommonSettingsChanged( int aFlags )
     settings->LoadDisplayOptions( GetDisplayOptions() );
     settings->m_ForceShowFieldsWhenFPSelected = GetPcbNewSettings()->m_Display.m_ForceShowFieldsWhenFPSelected;
 
-    if( aFlags & TEXTVARS_CHANGED )
+    if( aFlags & ( TEXTVARS_CHANGED | NETCLASSES_CHANGED ) )
         GetBoard()->SynchronizeProperties();
 
     // Note: KIGFX::REPAINT isn't enough for things that go from invisible to visible as

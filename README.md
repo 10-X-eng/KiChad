@@ -127,10 +127,14 @@ Setup constraint set through a typed native rules endpoint, including physical v
 the semantic legacy copper-edge mode. It also applies and reads back the one canonical KDS net-class
 table—including explicit priority order, inherited fields, via and microvia geometry, schematic
 styles, colors, tuning profiles, and pattern assignments—then proves an invalid native replacement
-is rejected without mutation. It compiles the canonical KDS custom-rule set into one internal native
-rule document, loads all rule semantics through KiCad's real DRC engine, reads the exact document
-back, and proves malformed replacement input cannot change the active rules. It also generates the
-complete native project symbol and footprint tables from the same KDS declarations, validates them
+is rejected without mutation. The same transaction completely replaces project text variables and
+ordered schematic field-name templates through typed native APIs, verifies exact live and on-disk
+readback, keeps editor caches synchronized with setting-specific notifications, repeats without
+drift, and restores both sets after an injected downstream failure. It compiles the canonical KDS
+custom-rule set into one internal native rule document, loads all rule semantics through KiCad's
+real DRC engine, reads the exact document back, and proves malformed replacement input cannot change
+the active rules. It also generates the complete native project symbol and footprint tables from the
+same KDS declarations, validates them
 with KiCad's parser, repeats them byte-for-byte, and covers exact rollback. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic

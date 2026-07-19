@@ -97,3 +97,19 @@ message SetTextVariables
   // Whether to merge or replace the existing text variables map with the contents of this message
   kiapi.common.types.MapMergeMode merge_mode = 3;
 }
+
+
+// Returns kiapi.common.project.SchematicFieldTemplates.
+message GetSchematicFieldTemplates
+{
+  kiapi.common.types.DocumentSpecifier document = 1;
+}
+
+
+// Atomically validates and replaces the complete project-scoped template set.
+// Returns kiapi.common.project.SchematicFieldTemplates with the active normalized set.
+message SetSchematicFieldTemplates
+{
+  kiapi.common.types.DocumentSpecifier document = 1;
+  kiapi.common.project.SchematicFieldTemplates templates = 2;
+}

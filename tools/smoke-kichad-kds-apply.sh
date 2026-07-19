@@ -129,6 +129,14 @@ for attempt in $(seq 1 30); do
             "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(comment 9 "Complete indexed title-block proof")' \
             "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '"PRODUCT_NAME": "KiChad Live Apply"' \
+            "${project_dir}/live_apply.kicad_pro"
+        grep -Fq '"DESIGN_OWNER": "Codex"' \
+            "${project_dir}/live_apply.kicad_pro"
+        grep -Fq '"name": "Manufacturer Part"' \
+            "${project_dir}/live_apply.kicad_pro"
+        grep -Fq '"name": "Compliance URL"' \
+            "${project_dir}/live_apply.kicad_pro"
         grep -Fq '(uuid "11111111-2222-4333-8444-555555555555")' \
             "${project_dir}/live_apply.kicad_sch"
         for expected in '(wire' '(junction' '(bus' '(bus_entry'; do

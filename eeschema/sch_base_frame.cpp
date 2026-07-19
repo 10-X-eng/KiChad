@@ -601,6 +601,37 @@ void SCH_BASE_FRAME::CommonSettingsChanged( int aFlags )
 {
     EDA_DRAW_FRAME::CommonSettingsChanged( aFlags );
 
+    if( aFlags & FIELD_TEMPLATES_CHANGED )
+    {
+        PROJECT_FILE& projectFile = Prj().GetProjectFile();
+        SCHEMATIC_SETTINGS* settings = projectFile.m_SchematicSettings;
+        const std::optional<nlohmann::json> stored =
+                projectFile.GetJson( "schematic.drawing.field_names" );
+
+        if( settings && stored && stored->is_array() )
+        {
+            TEMPLATES& templates = settings->m_TemplateFieldNames;
+            templates.DeleteAllFieldNameTemplates( false );
+
+            for( const nlohmann::json& entry : *stored )
+            {
+                if( !entry.is_object() || !entry.contains( "name" )
+                    || !entry["name"].is_string() || !entry.contains( "visible" )
+                    || !entry["visible"].is_boolean() || !entry.contains( "url" )
+                    || !entry["url"].is_boolean() )
+                {
+                    continue;
+                }
+
+                TEMPLATE_FIELDNAME field(
+                        wxString::FromUTF8( entry["name"].get<std::string>() ) );
+                field.m_Visible = entry["visible"].get<bool>();
+                field.m_URL = entry["url"].get<bool>();
+                templates.AddTemplateFieldName( field, false );
+            }
+        }
+    }
+
     COLOR_SETTINGS* colorSettings = GetColorSettings( true );
 
     GetCanvas()->GetView()->GetPainter()->GetSettings()->LoadColors( colorSettings );

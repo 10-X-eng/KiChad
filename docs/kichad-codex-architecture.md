@@ -122,7 +122,12 @@ It starts only its own build-tree PCB Editor, uses isolated settings and a tempo
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
 duplicate-free convergence. It applies the single complete KDS net-class table through the typed
 native project API, reads every class and assignment back, rejects an invalid atomic replacement,
-and verifies the prior table did not change. It also lowers the single KDS custom-rule
+and verifies the prior table did not change. Project text variables and ordered schematic field-name
+templates use dedicated typed IPC messages and one focused client module; apply inventories,
+journals, replaces, reads back, and reverse-rolls back each complete set. Setting-specific editor
+notifications synchronize only the affected caches, and a serializer failure restores the prior
+in-memory state while preserving the existing project file. It also lowers the single KDS
+custom-rule
 representation to one internal native document, installs it through a bounded board endpoint,
 reloads KiCad's DRC engine, verifies exact readback, and proves invalid input cannot mutate the
 active rules. It generates and repeats exact KiCad-parsed project symbol and footprint tables from

@@ -120,6 +120,42 @@ BOOST_AUTO_TEST_CASE( LowersOneCompleteProjectTitleBlockToNativePcbSettings )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersProjectTextVariablesAndFieldTemplatesToTypedNativeSettings )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project project_settings
+    (text_variables
+      (variable PRODUCT_NAME "AI Controller")
+      (variable AUTHOR "KiChad"))
+    (field_templates
+      (field MPN (visible true) (url false))
+      (field "Compliance URL" (visible false) (url true))))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 2 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"], "update_text_variables" );
+    BOOST_CHECK_EQUAL( plan.operations[1]["action"],
+                       "update_schematic_field_templates" );
+    checkProtobufJson<kiapi::common::project::TextVariables>(
+            plan.operations[0]["textVariables"] );
+    checkProtobufJson<kiapi::common::project::SchematicFieldTemplates>(
+            plan.operations[1]["fieldTemplates"] );
+    BOOST_CHECK_EQUAL(
+            plan.operations[0]["textVariables"]["variables"]["PRODUCT_NAME"],
+            "AI Controller" );
+    BOOST_CHECK_EQUAL( plan.operations[1]["fieldTemplates"]["fields"][1]["name"],
+                       "Compliance URL" );
+    BOOST_CHECK_EQUAL( plan.counts["textVariables"], 2 );
+    BOOST_CHECK_EQUAL( plan.counts["fieldTemplates"], 2 );
+}
+
+
 BOOST_AUTO_TEST_CASE( LowersCanonicalLibrariesIntoExactNativeProjectTables )
 {
     const std::string source = R"KDS((kichad_design

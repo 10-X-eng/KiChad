@@ -45,6 +45,36 @@ the complete block in the root schematic, updates the open board through KiCad's
 verifies native readback, and restores both targets after any later apply failure. Omitting every
 metadata field preserves compatibility behavior and does not claim title-block ownership.
 
+Project text variables and schematic field-name templates also have exactly one representation,
+nested in `project`:
+
+```scheme
+(project sensor_node
+  (text_variables
+    (variable PRODUCT_NAME "Production Sensor Node")
+    (variable DOCUMENT_OWNER "Example Engineering"))
+  (field_templates
+    (field "Manufacturer Part Number" (visible true) (url false))
+    (field "Compliance URL" (visible false) (url true))))
+```
+
+Each container may occur once. Its presence means KDS owns and replaces the complete corresponding
+project set; an empty `(text_variables)` or `(field_templates)` explicitly clears that set. Omitting
+a container leaves the existing project setting unmanaged. Text-variable names follow KiCad's
+native character policy and are unique; each value is bounded to 4096 bytes. Template names are
+trimmed, case-insensitively unique, and cannot conflict with mandatory symbol fields. Every template
+states both its default visibility and URL/browse intent, so there are no implicit per-template
+defaults.
+
+Apply inventories both native sets through the typed project API before mutation, journals them,
+performs a complete replacement, and requires exact readback. A field-template API added by KiChad
+updates the project setting through KiCad's native project serializer and synchronizes an open
+Schematic Editor's cached template manager before save. The API checks the serializer's real result
+and restores both memory and disk state after a rejected save. Text-variable, field-template, and
+net-class change notifications are independent, preventing an unrelated settings update from
+rewriting another cached set. Any later apply failure restores the exact prior values in reverse
+transaction order.
+
 ## Version 1 source model
 
 ```scheme
@@ -56,7 +86,13 @@ metadata field preserves compatibility behavior and does not claim title-block o
     (revision "A")
     (date "2026-07-19")
     (comment 1 "Production release")
-    (comment 9 "AI-authored KDS"))
+    (comment 9 "AI-authored KDS")
+    (text_variables
+      (variable PRODUCT_NAME "Production Sensor Node")
+      (variable DOCUMENT_OWNER "Example Engineering"))
+    (field_templates
+      (field "Manufacturer Part Number" (visible true) (url false))
+      (field "Compliance URL" (visible false) (url true))))
   (units mm)
 
   (sheet root

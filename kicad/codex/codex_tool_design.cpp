@@ -20,6 +20,7 @@
 #include "design_script_symbol_resolver.h"
 #include "kicad_ipc_client.h"
 #include "kicad_ipc_transaction.h"
+#include "project_settings_ipc.h"
 
 #include <kiid.h>
 
@@ -485,6 +486,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         std::unique_ptr<kiapi::common::types::TitleBlockInfo> desiredTitleBlock;
         std::unique_ptr<kiapi::board::BoardDesignRules> desiredRules;
         std::unique_ptr<kiapi::common::project::NetClassSettings> desiredNetClasses;
+        std::unique_ptr<kiapi::common::project::TextVariables> desiredTextVariables;
+        std::unique_ptr<kiapi::common::project::SchematicFieldTemplates>
+                desiredFieldTemplates;
         JSON desiredLibraryTables = JSON::array();
         std::set<std::string> desiredLibraryTableKinds;
         bool        hasDesiredCustomRules = false;
@@ -498,6 +502,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( plannedAction != "update_stackup" && plannedAction != "update_title_block"
                 && plannedAction != "update_rules"
                 && plannedAction != "update_net_classes"
+                && plannedAction != "update_text_variables"
+                && plannedAction != "update_schematic_field_templates"
                 && plannedAction != "update_custom_rules"
                 && plannedAction != "update_project_library_table" )
                 continue;
@@ -601,7 +607,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "rules" ).dump(), desiredRules.get(), options );
             }
-            else
+            else if( plannedAction == "update_net_classes" )
             {
                 if( desiredNetClasses )
                     return failure( "invalid_plan", "KDS planned more than one netclass table" );
@@ -610,6 +616,26 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                         std::make_unique<kiapi::common::project::NetClassSettings>();
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "settings" ).dump(), desiredNetClasses.get(), options );
+            }
+            else if( plannedAction == "update_text_variables" )
+            {
+                if( desiredTextVariables )
+                    return failure( "invalid_plan", "KDS planned text variables more than once" );
+
+                desiredTextVariables =
+                        std::make_unique<kiapi::common::project::TextVariables>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "textVariables" ).dump(), desiredTextVariables.get(), options );
+            }
+            else
+            {
+                if( desiredFieldTemplates )
+                    return failure( "invalid_plan", "KDS planned field templates more than once" );
+
+                desiredFieldTemplates =
+                        std::make_unique<kiapi::common::project::SchematicFieldTemplates>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "fieldTemplates" ).dump(), desiredFieldTemplates.get(), options );
             }
 
             if( !status.ok() )
@@ -869,6 +895,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         kiapi::common::types::TitleBlockInfo previousTitleBlock;
         kiapi::board::BoardDesignRules previousRules;
         kiapi::common::project::NetClassSettings previousNetClasses;
+        kiapi::common::project::TextVariables previousTextVariables;
+        kiapi::common::project::SchematicFieldTemplates previousFieldTemplates;
         bool        previousCustomRulesPresent = false;
         std::string previousCustomRulesSource;
 
@@ -889,6 +917,20 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             && !KICHAD::CODEX_TOOLS::QueryNetClassSettings( client, target, previousNetClasses, pathError ) )
         {
             return failure( "netclass_inventory_failed", pathError );
+        }
+
+        if( desiredTextVariables
+            && !KICHAD::PROJECT_SETTINGS_IPC::QueryTextVariables(
+                    client, target, previousTextVariables, pathError ) )
+        {
+            return failure( "text_variable_inventory_failed", pathError );
+        }
+
+        if( desiredFieldTemplates
+            && !KICHAD::PROJECT_SETTINGS_IPC::QuerySchematicFieldTemplates(
+                    client, target, previousFieldTemplates, pathError ) )
+        {
+            return failure( "field_template_inventory_failed", pathError );
         }
 
         if( hasDesiredCustomRules
@@ -1016,6 +1058,45 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             }
 
             applyJournal["previousNetClassSettings"] = JSON::parse( serializedPrevious );
+        }
+
+        if( desiredTextVariables )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousTextVariables, &serializedPrevious, options );
+
+            if( !status.ok() )
+            {
+                return failure( "journal_failed",
+                                "could not serialize the prior project text variables" );
+            }
+
+            applyJournal["previousTextVariables"] = JSON::parse( serializedPrevious );
+        }
+
+        if( desiredFieldTemplates )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousFieldTemplates, &serializedPrevious, options );
+
+            if( !status.ok() )
+            {
+                return failure( "journal_failed",
+                                "could not serialize the prior schematic field templates" );
+            }
+
+            applyJournal["previousSchematicFieldTemplates"] =
+                    JSON::parse( serializedPrevious );
         }
 
         if( hasDesiredCustomRules )
@@ -1188,7 +1269,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             netClassesApplied = true;
         }
 
-        auto rollbackSettings = [&]( std::string& aMessage )
+        auto rollbackNetClasses = [&]( std::string& aMessage )
         {
             if( netClassesApplied )
             {
@@ -1202,6 +1283,86 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             }
 
             rollbackBoardSettings( aMessage );
+        };
+
+        bool textVariablesApplied = false;
+
+        if( desiredTextVariables )
+        {
+            if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceTextVariables(
+                        client, target, *desiredTextVariables, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceTextVariables(
+                            client, target, previousTextVariables, rollbackError ) )
+                {
+                    message += "; text-variable rollback also failed: " + rollbackError;
+                }
+
+                rollbackNetClasses( message );
+                return failure( "text_variable_apply_failed", message );
+            }
+
+            textVariablesApplied = true;
+        }
+
+        auto rollbackTextVariables = [&]( std::string& aMessage )
+        {
+            if( textVariablesApplied )
+            {
+                std::string rollbackError;
+
+                if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceTextVariables(
+                            client, target, previousTextVariables, rollbackError ) )
+                {
+                    aMessage += "; text-variable rollback also failed: " + rollbackError;
+                }
+            }
+
+            rollbackNetClasses( aMessage );
+        };
+
+        bool fieldTemplatesApplied = false;
+
+        if( desiredFieldTemplates )
+        {
+            if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicFieldTemplates(
+                        client, target, *desiredFieldTemplates, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicFieldTemplates(
+                            client, target, previousFieldTemplates, rollbackError ) )
+                {
+                    message += "; field-template rollback also failed: " + rollbackError;
+                }
+
+                rollbackTextVariables( message );
+                return failure( "field_template_apply_failed", message );
+            }
+
+            fieldTemplatesApplied = true;
+        }
+
+        auto rollbackProjectSettings = [&]( std::string& aMessage )
+        {
+            if( fieldTemplatesApplied )
+            {
+                std::string rollbackError;
+
+                if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicFieldTemplates(
+                            client, target, previousFieldTemplates, rollbackError ) )
+                {
+                    aMessage += "; field-template rollback also failed: " + rollbackError;
+                }
+            }
+
+            rollbackTextVariables( aMessage );
         };
 
         bool customRulesApplied = false;
@@ -1221,7 +1382,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     message += "; custom-rules rollback also failed: " + rollbackError;
                 }
 
-                rollbackSettings( message );
+                rollbackProjectSettings( message );
                 return failure( "custom_rules_apply_failed", message );
             }
 
@@ -1241,7 +1402,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 }
             }
 
-            rollbackSettings( aMessage );
+            rollbackProjectSettings( aMessage );
         };
 
         size_t libraryTablesApplied = 0;
@@ -1443,6 +1604,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "transaction",
                                titleBlockApplied || stackupApplied || rulesApplied
                                                || netClassesApplied
+                                               || textVariablesApplied
+                                               || fieldTemplatesApplied
                                                || customRulesApplied || libraryTablesApplied > 0
                                                || schematicFilesApplied > 0
                                        ? "design settings applied"
@@ -1451,6 +1614,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "stackupApplied", stackupApplied },
                              { "rulesApplied", rulesApplied },
                              { "netClassesApplied", netClassesApplied },
+                             { "textVariablesApplied", textVariablesApplied },
+                             { "fieldTemplatesApplied", fieldTemplatesApplied },
                              { "customRulesApplied", customRulesApplied },
                              { "libraryTablesApplied", libraryTablesApplied },
                              { "schematicFilesApplied", schematicFilesApplied },
@@ -1525,6 +1690,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "stackupApplied", stackupApplied },
                          { "rulesApplied", rulesApplied },
                          { "netClassesApplied", netClassesApplied },
+                         { "textVariablesApplied", textVariablesApplied },
+                         { "fieldTemplatesApplied", fieldTemplatesApplied },
                          { "customRulesApplied", customRulesApplied },
                          { "libraryTablesApplied", libraryTablesApplied },
                          { "schematicFilesApplied", schematicFilesApplied },

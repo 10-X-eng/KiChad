@@ -308,10 +308,26 @@ bool PGM_KICAD::OnPgmInit()
 #ifdef KICAD_IPC_API
     m_api_server = std::make_unique<KICAD_API_SERVER>();
     m_api_common_handler = std::make_unique<API_HANDLER_COMMON>(
-            []()
+            []( int aChange )
             {
-                Prj().IncrementNetclassesTicker();
-                Kiway.CommonSettingsChanged( TEXTVARS_CHANGED );
+                int flags = 0;
+
+                if( aChange & APIPSC_NETCLASSES )
+                {
+                    Prj().IncrementNetclassesTicker();
+                    flags |= NETCLASSES_CHANGED;
+                }
+
+                if( aChange & APIPSC_TEXT_VARIABLES )
+                {
+                    Prj().IncrementTextVarsTicker();
+                    flags |= TEXTVARS_CHANGED;
+                }
+
+                if( aChange & APIPSC_FIELD_TEMPLATES )
+                    flags |= FIELD_TEMPLATES_CHANGED;
+
+                Kiway.CommonSettingsChanged( flags );
             } );
     m_api_server->RegisterHandler( m_api_common_handler.get() );
 #endif

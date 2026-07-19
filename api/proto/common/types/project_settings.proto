@@ -106,3 +106,17 @@ message TextVariables
 {
   map<string, string> variables = 1;
 }
+
+// One project-scoped schematic field-name template.
+message SchematicFieldTemplate
+{
+  string name = 1;
+  bool visible = 2;
+  bool url = 3;
+}
+
+// The complete ordered set of project-scoped schematic field-name templates.
+message SchematicFieldTemplates
+{
+  repeated SchematicFieldTemplate fields = 1;
+}

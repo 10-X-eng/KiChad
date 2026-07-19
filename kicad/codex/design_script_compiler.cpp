@@ -56,6 +56,8 @@ constexpr size_t MAX_SCHEMATIC_TABLE_CELLS = 65536;
 constexpr size_t MAX_SCHEMATIC_GROUP_MEMBERS = 4096;
 constexpr size_t MAX_LIBRARIES = 512;
 constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
+constexpr size_t MAX_PROJECT_TEXT_VARIABLES = 1024;
+constexpr size_t MAX_PROJECT_FIELD_TEMPLATES = 1024;
 
 
 void diagnostic( KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult, const std::string& aSeverity,
@@ -97,6 +99,38 @@ bool validIdentifier( const std::string& aValue )
                                    || aCharacter == '.' || aCharacter == '/'
                                    || aCharacter == '#';
                         } );
+}
+
+
+bool validTextVariableName( const std::string& aValue )
+{
+    static constexpr std::string_view excluded = "{}[]()%~<>\"='`;:.,&?/\\|$";
+
+    if( aValue.empty() || aValue.size() > MAX_IDENTIFIER_BYTES
+        || std::isspace( static_cast<unsigned char>( aValue.front() ) )
+        || std::isspace( static_cast<unsigned char>( aValue.back() ) ) )
+    {
+        return false;
+    }
+
+    return std::none_of( aValue.begin(), aValue.end(),
+                         []( unsigned char aCharacter )
+                         {
+                             return aCharacter == '\0' || std::iscntrl( aCharacter )
+                                    || excluded.find( static_cast<char>( aCharacter ) )
+                                               != std::string_view::npos;
+                         } );
+}
+
+
+std::string asciiLower( std::string aValue )
+{
+    std::transform( aValue.begin(), aValue.end(), aValue.begin(),
+                    []( unsigned char aCharacter )
+                    {
+                        return static_cast<char>( std::tolower( aCharacter ) );
+                    } );
+    return aValue;
 }
 
 
@@ -363,12 +397,172 @@ JSON compileProject( const DOCUMENT& aDocument, size_t aNode,
     std::set<std::string>       fields;
     std::set<int>               comments;
     bool                        hasTitleBlock = false;
+    bool                        hasTextVariables = false;
+    bool                        hasFieldTemplates = false;
 
     for( size_t i = 2; i < node.children.size(); ++i )
     {
         const size_t      child = node.children[i];
         const std::string head = aDocument.ListHead( child );
         std::string       value;
+
+        if( head == "text_variables" )
+        {
+            const DOCUMENT::NODE& variables = aDocument.Nodes()[child];
+
+            if( hasTextVariables )
+            {
+                diagnostic( aResult, "error", "duplicate_project_text_variables",
+                            "project text_variables occurs more than once" );
+                continue;
+            }
+
+            hasTextVariables = true;
+            JSON desired = JSON::object();
+
+            if( variables.children.size() - 1 > MAX_PROJECT_TEXT_VARIABLES )
+            {
+                diagnostic( aResult, "error", "too_many_project_text_variables",
+                            "project text_variables supports at most 1024 variables" );
+            }
+
+            for( size_t variableIndex = 1; variableIndex < variables.children.size();
+                 ++variableIndex )
+            {
+                const size_t variableNode = variables.children[variableIndex];
+                const DOCUMENT::NODE& variable = aDocument.Nodes()[variableNode];
+                std::string variableName;
+                std::string variableValue;
+
+                if( aDocument.ListHead( variableNode ) != "variable"
+                    || variable.children.size() != 3
+                    || !scalarText( aDocument, variable.children[1], variableName )
+                    || !scalarText( aDocument, variable.children[2], variableValue )
+                    || !validTextVariableName( variableName )
+                    || variableValue.size() > MAX_TITLE_BLOCK_TEXT_BYTES
+                    || variableValue.find( '\0' ) != std::string::npos )
+                {
+                    diagnostic( aResult, "error", "invalid_project_text_variable",
+                                "text_variables entries require (variable NAME VALUE); names "
+                                "must be bounded native KiCad text-variable names and values at "
+                                "most 4096 bytes" );
+                    continue;
+                }
+
+                if( desired.contains( variableName ) )
+                {
+                    diagnostic( aResult, "error", "duplicate_project_text_variable",
+                                "project text variable '" + variableName
+                                        + "' occurs more than once" );
+                    continue;
+                }
+
+                desired[variableName] = variableValue;
+            }
+
+            project["textVariables"] = std::move( desired );
+            continue;
+        }
+
+        if( head == "field_templates" )
+        {
+            const DOCUMENT::NODE& templates = aDocument.Nodes()[child];
+
+            if( hasFieldTemplates )
+            {
+                diagnostic( aResult, "error", "duplicate_project_field_templates",
+                            "project field_templates occurs more than once" );
+                continue;
+            }
+
+            hasFieldTemplates = true;
+            JSON desired = JSON::array();
+            std::set<std::string> names;
+            const std::set<std::string> mandatory = {
+                "reference", "value", "footprint", "datasheet", "description"
+            };
+
+            if( templates.children.size() - 1 > MAX_PROJECT_FIELD_TEMPLATES )
+            {
+                diagnostic( aResult, "error", "too_many_project_field_templates",
+                            "project field_templates supports at most 1024 templates" );
+            }
+
+            for( size_t templateIndex = 1; templateIndex < templates.children.size();
+                 ++templateIndex )
+            {
+                const size_t templateNode = templates.children[templateIndex];
+                const DOCUMENT::NODE& field = aDocument.Nodes()[templateNode];
+                std::string fieldName;
+
+                if( aDocument.ListHead( templateNode ) != "field"
+                    || field.children.size() != 4
+                    || !scalarText( aDocument, field.children[1], fieldName )
+                    || fieldName.empty() || fieldName.size() > MAX_IDENTIFIER_BYTES
+                    || fieldName.find( '\0' ) != std::string::npos
+                    || std::any_of( fieldName.begin(), fieldName.end(),
+                                    []( unsigned char aCharacter )
+                                    {
+                                        return std::iscntrl( aCharacter );
+                                    } )
+                    || std::isspace( static_cast<unsigned char>( fieldName.front() ) )
+                    || std::isspace( static_cast<unsigned char>( fieldName.back() ) )
+                    || mandatory.contains( asciiLower( fieldName ) ) )
+                {
+                    diagnostic( aResult, "error", "invalid_project_field_template",
+                                "field_templates entries require a non-mandatory bounded name "
+                                "and exactly one visible and url boolean" );
+                    continue;
+                }
+
+                JSON parsed = { { "name", fieldName } };
+                std::set<std::string> attributes;
+
+                for( size_t attributeIndex = 2; attributeIndex < field.children.size();
+                     ++attributeIndex )
+                {
+                    const size_t attributeNode = field.children[attributeIndex];
+                    const std::string attribute = aDocument.ListHead( attributeNode );
+                    std::string boolean;
+
+                    if( ( attribute != "visible" && attribute != "url" )
+                        || !parseSingleValueForm( aDocument, attributeNode, boolean )
+                        || ( boolean != "true" && boolean != "false" )
+                        || !attributes.emplace( attribute ).second )
+                    {
+                        diagnostic( aResult, "error", "invalid_project_field_template",
+                                    "field template attributes must be unique visible and url "
+                                    "booleans" );
+                        continue;
+                    }
+
+                    parsed[attribute] = boolean == "true";
+                }
+
+                const std::string foldedName = asciiLower( fieldName );
+
+                if( attributes != std::set<std::string>{ "url", "visible" }
+                    || parsed.size() != 3 )
+                {
+                    diagnostic( aResult, "error", "incomplete_project_field_template",
+                                "each project field template requires visible and url" );
+                    continue;
+                }
+
+                if( !names.emplace( foldedName ).second )
+                {
+                    diagnostic( aResult, "error", "duplicate_project_field_template",
+                                "project field template '" + fieldName
+                                        + "' conflicts with another template name" );
+                    continue;
+                }
+
+                desired.emplace_back( std::move( parsed ) );
+            }
+
+            project["fieldTemplates"] = std::move( desired );
+            continue;
+        }
 
         if( head == "comment" )
         {
@@ -6440,7 +6634,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form", "(version 1)" }, { "required", true } },
                   { { "form",
                       "(project NAME (title TEXT) (company TEXT) (revision TEXT) (date TEXT) "
-                      "(comment 1..9 TEXT) ...)" },
+                      "(comment 1..9 TEXT) "
+                      "(text_variables (variable NAME VALUE) ...) "
+                      "(field_templates "
+                      "(field NAME (visible BOOL) (url BOOL)) ...) ...)" },
                     { "required", true } },
                   { { "form", "(units mm|mil)" }, { "default", "mm" } },
                   { { "form",
@@ -7906,6 +8103,12 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( !result.ir["libraries"].empty() )
         passes.emplace_back( "libraries" );
 
+    if( result.ir["project"].contains( "textVariables" )
+        || result.ir["project"].contains( "fieldTemplates" ) )
+    {
+        passes.emplace_back( "project_settings" );
+    }
+
     if( !result.ir["schematic"]["components"].empty()
         || !result.ir["schematic"]["nets"].empty()
         || !result.ir["schematic"]["noConnects"].empty()
@@ -7943,6 +8146,12 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "drawings", result.ir["schematic"]["drawings"].size() },
             { "busAliases", result.ir["schematic"]["busAliases"].size() },
             { "groups", result.ir["schematic"]["groups"].size() },
+            { "textVariables", result.ir["project"].contains( "textVariables" )
+                                       ? result.ir["project"]["textVariables"].size()
+                                       : 0 },
+            { "fieldTemplates", result.ir["project"].contains( "fieldTemplates" )
+                                       ? result.ir["project"]["fieldTemplates"].size()
+                                       : 0 },
             { "pinConnections", pinConnections },
             { "boardStatements", result.ir["pcb"].size() },
             { "rules", result.ir["rules"].is_object() ? 1 : 0 },

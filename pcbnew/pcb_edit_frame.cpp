@@ -539,10 +539,26 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     if( Kiface().IsSingle() )
     {
         m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>(
-                [this]()
+                [this]( int aChange )
                 {
-                    Prj().IncrementNetclassesTicker();
-                    CommonSettingsChanged( TEXTVARS_CHANGED );
+                    int flags = 0;
+
+                    if( aChange & APIPSC_NETCLASSES )
+                    {
+                        Prj().IncrementNetclassesTicker();
+                        flags |= NETCLASSES_CHANGED;
+                    }
+
+                    if( aChange & APIPSC_TEXT_VARIABLES )
+                    {
+                        Prj().IncrementTextVarsTicker();
+                        flags |= TEXTVARS_CHANGED;
+                    }
+
+                    if( aChange & APIPSC_FIELD_TEMPLATES )
+                        flags |= FIELD_TEMPLATES_CHANGED;
+
+                    CommonSettingsChanged( flags );
                 } );
         Pgm().GetApiServer().RegisterHandler( m_apiHandlerCommon.get() );
     }

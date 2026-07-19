@@ -82,14 +82,16 @@ nlohmann::json DesignScriptCapabilities()
                                 { "The current planner rejects shared-screen aliases." } ),
                     capability( "project.library_dependencies", "project", "qualified", { "library" },
                                 "Complete project symbol/footprint tables plus global dependency declarations and model roots." ),
-                    capability( "project.text_variables", "project", "unrepresented", {},
-                                "Project and document text variables and expansion policy.",
-                                { "No KDS form owns text variables." } ),
-                    capability( "project.field_templates", "project", "unrepresented", {},
-                                "Project schematic field-name templates, default visibility, "
-                                "and URL intent.",
-                                { "No KDS form owns the schematic.drawing.field_names project "
-                                  "setting." } ),
+                    capability( "project.text_variables", "project", "qualified",
+                                { "text_variables" },
+                                "Complete bounded project text-variable replacement through "
+                                "KiCad's typed API, with exact readback, editor refresh, "
+                                "journaling, and rollback." ),
+                    capability( "project.field_templates", "project", "qualified",
+                                { "field_templates" },
+                                "Complete ordered project schematic field-name templates with "
+                                "default visibility and URL intent, typed native readback, "
+                                "editor-cache synchronization, journaling, and rollback." ),
                     capability( "project.variants", "project", "unrepresented", {},
                                 "Assembly/design variants, fitted state, and variant field overrides.",
                                 { "Only component DNP state exists; named variants are absent." } ),
