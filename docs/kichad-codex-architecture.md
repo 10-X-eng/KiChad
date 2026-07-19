@@ -39,13 +39,13 @@ footprint s-expressions in-process and returns structural summaries or bounded m
 It accepts only existing project-relative paths, resolves symlinks before enforcing the project
 root, checks the file extension against the document root, caps input/output sizes, and never writes.
 `design` is the compiler front end for reusable `.kicad_kds` KiChad Design Script sidecars.  It
-describes the versioned language, compiles either inline source or a project-confined sidecar into a
-private deterministic validated IR and pass plan, previews typed physical board statements through
-their KDS logical and stable UUIDv8 identities, atomically saves only valid programs, and applies
-the currently supported physical subset behind the pre-turn snapshot gate. Preview is bounded and
-read-only. Compiler IR and protobuf payloads are deliberately not exposed as a second design
-representation. Existing sidecars require a
-matching SHA-256 revision before replacement. KDS has
+describes the versioned language, reads the exact bounded source as model context, compiles either
+inline source or a project-confined sidecar into a private deterministic validated IR and pass plan,
+previews typed physical board statements through their KDS logical and stable UUIDv8 identities,
+atomically saves only valid programs, and applies the currently supported physical subset behind the
+pre-turn snapshot gate. Read and preview are bounded and read-only. Compiler IR and protobuf
+payloads are deliberately not exposed as a second design representation. Existing sidecars require
+a matching SHA-256 revision before replacement. KDS has
 no host-language or shell escape; it declares project metadata, libraries, schematic hierarchy,
 components, connectivity, board intent, design rules, sourcing, verification, and outputs.  See
 `kichad-design-script.md` for the file contract and support policy.

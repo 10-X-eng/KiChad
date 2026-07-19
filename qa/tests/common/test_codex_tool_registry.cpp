@@ -118,9 +118,10 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( specs[3]["name"].get<std::string>(), "pcb" );
     const JSON& designOperations =
             specs[2]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( designOperations.size(), 5 );
-    BOOST_CHECK_EQUAL( designOperations[2].get<std::string>(), "preview" );
-    BOOST_CHECK_EQUAL( designOperations[4].get<std::string>(), "apply" );
+    BOOST_REQUIRE_EQUAL( designOperations.size(), 6 );
+    BOOST_CHECK_EQUAL( designOperations[1].get<std::string>(), "read" );
+    BOOST_CHECK_EQUAL( designOperations[3].get<std::string>(), "preview" );
+    BOOST_CHECK_EQUAL( designOperations[5].get<std::string>(), "apply" );
 }
 
 
@@ -224,6 +225,17 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     BOOST_CHECK_EQUAL( envelope( saved )["data"]["sourceSha256"].get<std::string>(),
                        firstHash );
 
+    JSON read = registry.Handle( "design", { { "operation", "read" },
+                                               { "path", "reusable.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( read.at( "success" ).get<bool>(), read.dump() );
+    JSON readData = envelope( read )["data"];
+    BOOST_CHECK_EQUAL( readData["source"].get<std::string>(), source );
+    BOOST_CHECK_EQUAL( readData["bytes"].get<size_t>(), source.size() );
+    BOOST_CHECK_EQUAL( readData["sourceSha256"].get<std::string>(), firstHash );
+    BOOST_CHECK( readData["valid"].get<bool>() );
+    BOOST_CHECK( !readData.contains( "ir" ) );
+    BOOST_CHECK( !readData.contains( "plan" ) );
+
     JSON loaded = registry.Handle( "design", { { "operation", "compile" },
                                                 { "path", "reusable.kicad_kds" } } );
     BOOST_REQUIRE_MESSAGE( loaded.at( "success" ).get<bool>(), loaded.dump() );
@@ -259,6 +271,11 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     BOOST_REQUIRE_EQUAL( installed.Read( installedSource.data(), installedSource.size() ),
                          installedSource.size() );
     BOOST_CHECK_EQUAL( installedSource, updated );
+
+    JSON reread = registry.Handle( "design", { { "operation", "read" },
+                                                 { "path", "reusable.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( reread.at( "success" ).get<bool>(), reread.dump() );
+    BOOST_CHECK_EQUAL( envelope( reread )["data"]["source"].get<std::string>(), updated );
 
     JSON escaped = registry.Handle( "design", { { "operation", "save" },
                                                  { "path", "../escape.kicad_kds" },
@@ -356,6 +373,42 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedArgumentsAndDocuments )
     BOOST_CHECK( !result.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
                        "format_mismatch" );
+
+    result = registry.Handle( "design", { { "operation", "read" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "invalid_arguments" );
+
+    const std::string malformedSource = "(kichad_design";
+    wxFFile malformedFile( wxFileName( fixture.Root(), wxS( "malformed.kicad_kds" ) )
+                                   .GetFullPath(),
+                           wxS( "wb" ) );
+    BOOST_REQUIRE( malformedFile.IsOpened() );
+    BOOST_REQUIRE_EQUAL( malformedFile.Write( malformedSource.data(), malformedSource.size() ),
+                         malformedSource.size() );
+    malformedFile.Close();
+
+    result = registry.Handle( "design", { { "operation", "read" },
+                                            { "path", "malformed.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( result.at( "success" ).get<bool>(), result.dump() );
+    BOOST_CHECK_EQUAL( envelope( result )["data"]["source"].get<std::string>(),
+                       malformedSource );
+    BOOST_CHECK( !envelope( result )["data"]["valid"].get<bool>() );
+
+    const std::string invalidUtf8 = "(kichad_design \xFF)";
+    wxFFile invalidFile( wxFileName( fixture.Root(), wxS( "invalid-utf8.kicad_kds" ) )
+                                 .GetFullPath(),
+                         wxS( "wb" ) );
+    BOOST_REQUIRE( invalidFile.IsOpened() );
+    BOOST_REQUIRE_EQUAL( invalidFile.Write( invalidUtf8.data(), invalidUtf8.size() ),
+                         invalidUtf8.size() );
+    invalidFile.Close();
+
+    result = registry.Handle( "design", { { "operation", "read" },
+                                            { "path", "invalid-utf8.kicad_kds" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "invalid_source" );
 
     result = registry.Handle( "pcb", { { "operation", "status" },
                                         { "path", "design.kicad_pro" } } );

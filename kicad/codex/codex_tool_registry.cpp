@@ -1101,7 +1101,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                           { "required", JSON::array( { "operation" } ) } };
     designSchema["properties"]["operation"] =
             { { "type", "string" },
-              { "enum", JSON::array( { "describe", "compile", "preview", "save", "apply" } ) } };
+              { "enum",
+                JSON::array( { "describe", "read", "compile", "preview", "save", "apply" } ) } };
     designSchema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative reusable .kicad_kds sidecar path." } };
@@ -1118,8 +1119,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
     specs.push_back( { { "type", "function" },
                        { "name", "design" },
                        { "description",
-                         "Describe, compile, preview, atomically save, or transactionally apply a "
-                         "reusable KiChad Design "
+                         "Describe, read, compile, preview, atomically save, or transactionally "
+                         "apply a reusable KiChad Design "
                          "Script sidecar. KDS programs declare the complete project—schematic, "
                          "libraries, PCB intent, sourcing, verification, and fabrication outputs—"
                          "for deterministic execution by KiChad compiler backends." },
@@ -1227,11 +1228,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     const std::string operation = aArguments["operation"].get<std::string>();
 
-    if( operation != "describe" && operation != "compile" && operation != "preview"
-        && operation != "save" && operation != "apply" )
+    if( operation != "describe" && operation != "read" && operation != "compile"
+        && operation != "preview" && operation != "save" && operation != "apply" )
     {
         return failure( "invalid_arguments",
-                        "design.operation must be 'describe', 'compile', 'preview', 'save', or 'apply'" );
+                        "design.operation must be 'describe', 'read', 'compile', 'preview', "
+                        "'save', or 'apply'" );
     }
 
     if( operation == "describe" )
@@ -1242,14 +1244,18 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     if( ( ( operation == "compile" || operation == "preview" ) && hasSource == hasPath )
         || ( operation == "save" && ( !hasSource || !hasPath ) )
-        || ( operation == "apply" && ( hasSource || !hasPath ) ) )
+        || ( ( operation == "read" || operation == "apply" ) && ( hasSource || !hasPath ) ) )
     {
-        return failure( "invalid_arguments",
-                        operation == "apply"
-                                ? "design.apply requires path and does not accept inline source"
-                        : operation != "save"
-                                ? "design.compile and design.preview require exactly one of source or path"
-                                : "design.save requires source and path" );
+        std::string message;
+
+        if( operation == "read" || operation == "apply" )
+            message = "design." + operation + " requires path and does not accept inline source";
+        else if( operation == "save" )
+            message = "design.save requires source and path";
+        else
+            message = "design.compile and design.preview require exactly one of source or path";
+
+        return failure( "invalid_arguments", message );
     }
 
     if( ( aArguments.contains( "source" ) && !aArguments["source"].is_string() )
@@ -1302,7 +1308,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !resolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
             return failure( "invalid_path", pathError );
 
-        if( ( operation == "compile" || operation == "preview" || operation == "apply" )
+        if( ( operation == "read" || operation == "compile" || operation == "preview"
+              || operation == "apply" )
             && !sidecar.FileExists() )
             return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
     }
@@ -1321,6 +1328,27 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    if( operation == "read" )
+    {
+        const bool invalidUtf8 = std::any_of(
+                compiled.diagnostics.begin(), compiled.diagnostics.end(),
+                []( const JSON& aDiagnostic )
+                {
+                    return aDiagnostic.value( "code", "" ) == "invalid_encoding";
+                } );
+
+        if( invalidUtf8 )
+            return failure( "invalid_source", "KiChad Design Script source must be valid UTF-8" );
+
+        return success( { { "operation", "read" },
+                          { "path", aArguments["path"] },
+                          { "source", source },
+                          { "bytes", source.size() },
+                          { "sourceSha256", compiled.sourceSha256 },
+                          { "valid", compiled.ok },
+                          { "diagnostics", compiled.diagnostics } } );
+    }
 
     if( operation == "compile" )
     {

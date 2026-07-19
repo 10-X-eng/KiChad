@@ -24,12 +24,13 @@ saved or dispatched to a KiChad compiler pass.
 - Compatibility: unknown top-level forms are errors; newer syntax requires a new language version
 
 The project manager recognizes the extension, displays sidecars in the project tree, and opens them
-as text. The native `design` tool supports `describe`, inline or file-backed `compile`, read-only
-`preview`, `save`, and snapshot-gated `apply`. Loading a sidecar never rewrites it. Saving preserves
-the supplied source byte-for-byte after the compiler accepts it. Preview reports KDS logical IDs,
-deterministic target UUIDs, counts, and unsupported-backend diagnostics without connecting to or
-changing the PCB Editor. Internal compiler IR and KiCad protobuf payloads are not exposed as a
-second design representation.
+as text. The native `design` tool supports `describe`, exact `read`, inline or file-backed `compile`,
+read-only `preview`, `save`, and snapshot-gated `apply`. Read returns the original bounded UTF-8
+source plus its revision metadata, never a generated context projection. Loading a sidecar never
+rewrites it. Saving preserves the supplied source byte-for-byte after the compiler accepts it.
+Preview reports KDS logical IDs, deterministic target UUIDs, counts, and unsupported-backend
+diagnostics without connecting to or changing the PCB Editor. Internal compiler IR and KiCad
+protobuf payloads are not exposed as a second design representation.
 
 KDS itself is the AI context and the only external design representation. Its names are explicit,
 physical values retain readable engineering units, references resolve locally, and every generated

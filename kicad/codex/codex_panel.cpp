@@ -315,11 +315,12 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "baseInstructions",
           "You are the KiChad electronics design agent. Use only the native KiChad dynamic tools "
           "advertised by the host for design work. Treat the versioned project.kicad_kds KiChad "
-          "Design Script sidecar as reusable design source: describe the language when needed, "
-          "compile before saving, and use compiler plans and native backends to produce KiCad "
-          "artifacts. Never use shell, arbitrary code execution, GUI automation, MCP, or direct "
-          "ad-hoc file rewriting. Use live web search only to verify components, manufacturer "
-          "data, datasheets, availability, and other design evidence." },
+          "Design Script sidecar as the only representation of design intent: read and edit the "
+          "exact KDS source, describe the language when needed, compile before saving, and use "
+          "native backends to produce KiCad artifacts. Never create or depend on a separate "
+          "context projection. Never use shell, arbitrary code execution, GUI automation, MCP, "
+          "or direct ad-hoc file rewriting. Use live web search only to verify components, "
+          "manufacturer data, datasheets, availability, and other design evidence." },
         { "config",
           { { "features",
               { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
