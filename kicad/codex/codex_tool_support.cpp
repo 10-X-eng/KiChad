@@ -16,6 +16,7 @@
 #include "design_script_schematic_planner.h"
 #include "design_script_schematic_reconciler.h"
 #include "design_script_symbol_resolver.h"
+#include "fabrication_artifact_validator.h"
 #include "kicad_ipc_client.h"
 #include "kicad_ipc_transaction.h"
 #include "lossless_sexpr_document.h"
@@ -1538,6 +1539,48 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
                           "--check-zones", "--no-property-popups",
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "assembly_svg" )
+        {
+            arguments = { "pcb", "export", "svg", "--output", output.string(),
+                          "--layers", joinCommaSeparated( job.at( "layers" ) ),
+                          "--common-layers",
+                          joinCommaSeparated( job.at( "commonLayers" ) ), "--mode-multi",
+                          "--black-and-white", "--sketch-pads-on-fab-layers",
+                          "--hide-DNP-footprints-on-fab-layers", "--page-size-mode", "2",
+                          "--fit-page-to-board", "--exclude-drawing-sheet",
+                          "--drill-shape-opt", "2", "--scale", "1", "--check-zones",
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "assembly_dxf" )
+        {
+            arguments = { "pcb", "export", "dxf", "--output", output.string(),
+                          "--layers", joinCommaSeparated( job.at( "layers" ) ),
+                          "--common-layers",
+                          joinCommaSeparated( job.at( "commonLayers" ) ), "--mode-multi",
+                          "--exclude-value", "--sketch-pads-on-fab-layers",
+                          "--hide-DNP-footprints-on-fab-layers", "--use-contours",
+                          "--output-units", "mm", "--drill-shape-opt", "2", "--scale", "1",
+                          "--check-zones", aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "gencad" )
+        {
+            arguments = { "pcb", "export", "gencad", "--output", output.string(),
+                          "--unique-pins", "--unique-footprints", "--store-origin-coord",
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "vrml" )
+        {
+            arguments = { "pcb", "export", "vrml", "--output", output.string(),
+                          "--force", "--no-dnp", "--no-unspecified", "--units", "mm",
+                          aBoard.GetFullPath().ToStdString() };
+        }
+        else if( kind == "board_stats" )
+        {
+            arguments = { "pcb", "export", "stats", "--output", output.string(),
+                          "--format", "json", "--units", "mm",
+                          "--exclude-footprints-without-pads", "--subtract-holes-from-board",
+                          "--subtract-holes-from-copper", aBoard.GetFullPath().ToStdString() };
+        }
         else
         {
             aError = "fabrication plan contains an unsupported native job";
@@ -1563,7 +1606,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     };
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "ipc2581", "odbpp", "pick_place", "bom", "step",
-        "pdf"
+        "pdf", "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
         "gerbers", "drill", "ipcd356", "pick_place", "bom"
@@ -1711,11 +1754,39 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
             job["relativePath"] = "documentation/" + aFileStem + ".pdf";
             job["layers"] = layers;
         }
+        else if( std::string_view( kind ) == "assembly_svg" )
+        {
+            job["relativePath"] = "assembly/drawings-svg";
+            job["directory"] = true;
+            job["layers"] = JSON::array( { "F.Fab", "B.Fab" } );
+            job["commonLayers"] = JSON::array( { "Edge.Cuts" } );
+            job["layersRequireExplicitEnable"] = false;
+        }
+        else if( std::string_view( kind ) == "assembly_dxf" )
+        {
+            job["relativePath"] = "assembly/drawings-dxf";
+            job["directory"] = true;
+            job["layers"] = JSON::array( { "F.Fab", "B.Fab" } );
+            job["commonLayers"] = JSON::array( { "Edge.Cuts" } );
+            job["layersRequireExplicitEnable"] = false;
+        }
+        else if( std::string_view( kind ) == "gencad" )
+        {
+            job["relativePath"] = "interchange/" + aFileStem + ".cad";
+        }
+        else if( std::string_view( kind ) == "vrml" )
+        {
+            job["relativePath"] = "model/" + aFileStem + ".wrl";
+        }
+        else if( std::string_view( kind ) == "board_stats" )
+        {
+            job["relativePath"] = "reports/" + aFileStem + "-board-stats.json";
+        }
 
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v4" },
+    return { { "profile", "kichad-production-10.0.4-v5" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -2746,7 +2817,8 @@ bool validateBoardFabricationIntent( const wxFileName& aBoard, const JSON& aIr,
 
     for( const JSON& job : aPlan.at( "jobs" ) )
     {
-        if( !job.contains( "layers" ) )
+        if( !job.contains( "layers" )
+            || !job.value( "layersRequireExplicitEnable", true ) )
             continue;
 
         for( const JSON& layer : job.at( "layers" ) )
@@ -2962,12 +3034,21 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
     std::map<std::string, size_t> counts;
     std::set<std::string> actualGerberFiles;
     std::set<std::string> jobGerberFiles;
+    std::set<std::string> assemblySvgFiles;
+    std::set<std::string> assemblyDxfFiles;
     std::set<std::string> bomReferences;
     std::set<std::string> placementReferences;
     std::set<std::string> allowedDirectories;
     size_t files = 0;
     uintmax_t totalBytes = 0;
     std::error_code filesystemError;
+    const std::string fileStem = aPlan.at( "fileStem" ).get<std::string>();
+    const std::set<std::string> expectedAssemblySvgFiles = {
+        fileStem + "-F_Fab.svg", fileStem + "-B_Fab.svg"
+    };
+    const std::set<std::string> expectedAssemblyDxfFiles = {
+        fileStem + "-F_Fab.dxf", fileStem + "-B_Fab.dxf"
+    };
     aArtifacts = JSON::array();
 
     for( const JSON& job : aPlan.at( "jobs" ) )
@@ -3204,6 +3285,48 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             if( !readCsvReferences( iterator->path(), bomReferences, aError ) )
                 return false;
         }
+        else if( path.starts_with( "assembly/drawings-svg/" ) && extension == ".svg" )
+        {
+            kind = "assembly_svg";
+            const std::string filename = iterator->path().filename().string();
+
+            if( !expectedAssemblySvgFiles.contains( filename )
+                || !assemblySvgFiles.emplace( filename ).second
+                || !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateAssemblySvg(
+                        iterator->path(), aError ) )
+            {
+                if( aError.empty() )
+                    aError = "assembly SVG has an unexpected or duplicate filename";
+
+                return false;
+            }
+        }
+        else if( path.starts_with( "assembly/drawings-dxf/" ) && extension == ".dxf" )
+        {
+            kind = "assembly_dxf";
+            const std::string filename = iterator->path().filename().string();
+
+            if( !expectedAssemblyDxfFiles.contains( filename )
+                || !assemblyDxfFiles.emplace( filename ).second
+                || !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateAssemblyDxf(
+                        iterator->path(), aError ) )
+            {
+                if( aError.empty() )
+                    aError = "assembly DXF has an unexpected or duplicate filename";
+
+                return false;
+            }
+        }
+        else if( path == "interchange/" + fileStem + ".cad" )
+        {
+            kind = "gencad";
+
+            if( !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateGenCad(
+                        iterator->path(), aError ) )
+            {
+                return false;
+            }
+        }
         else if( path.starts_with( "model/" ) && extension == ".step" )
         {
             kind = "step";
@@ -3215,6 +3338,16 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path == "model/" + fileStem + ".wrl" )
+        {
+            kind = "vrml";
+
+            if( !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateVrml(
+                        iterator->path(), aError ) )
+            {
+                return false;
+            }
+        }
         else if( path.starts_with( "documentation/" ) && extension == ".pdf" )
         {
             kind = "pdf";
@@ -3222,6 +3355,16 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             if( !prefix.starts_with( "%PDF-" ) || suffix.find( "%%EOF" ) == std::string::npos )
             {
                 aError = "documentation artifact failed PDF signature validation";
+                return false;
+            }
+        }
+        else if( path == "reports/" + fileStem + "-board-stats.json" )
+        {
+            kind = "board_stats";
+
+            if( !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateBoardStatistics(
+                        iterator->path(), fileStem, aError ) )
+            {
                 return false;
             }
         }
@@ -3309,6 +3452,20 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "STEP export did not produce exactly one model artifact";
         else if( kind == "pdf" && counts["pdf"] != 1 )
             aError = "documentation export did not produce exactly one PDF artifact";
+        else if( kind == "assembly_svg"
+                 && ( counts["assembly_svg"] != 2
+                      || assemblySvgFiles != expectedAssemblySvgFiles ) )
+            aError = "assembly SVG export did not produce exact front and back drawings";
+        else if( kind == "assembly_dxf"
+                 && ( counts["assembly_dxf"] != 2
+                      || assemblyDxfFiles != expectedAssemblyDxfFiles ) )
+            aError = "assembly DXF export did not produce exact front and back drawings";
+        else if( kind == "gencad" && counts["gencad"] != 1 )
+            aError = "GenCAD export did not produce exactly one interchange artifact";
+        else if( kind == "vrml" && counts["vrml"] != 1 )
+            aError = "VRML export did not produce exactly one model artifact";
+        else if( kind == "board_stats" && counts["board_stats"] != 1 )
+            aError = "board statistics export did not produce exactly one JSON report";
 
         if( !aError.empty() )
             return false;

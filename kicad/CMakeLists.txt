@@ -36,6 +36,7 @@ set( KICAD_SRCS
     codex/design_script_schematic_planner.cpp
     codex/design_script_schematic_reconciler.cpp
     codex/design_script_symbol_resolver.cpp
+    codex/fabrication_artifact_validator.cpp
     codex/kicad_ipc_client.cpp
     codex/kicad_ipc_transaction.cpp
     codex/project_settings_ipc.cpp

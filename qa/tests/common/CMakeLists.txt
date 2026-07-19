@@ -43,6 +43,7 @@ set( QA_COMMON_SRCS
     test_codex_tool_fabricate.cpp
     test_codex_tool_registry.cpp
     test_codex_thread_store.cpp
+    test_fabrication_artifact_validator.cpp
     test_design_script_compiler.cpp
     test_design_script_pcb_planner.cpp
     test_design_script_pcb_reconciler.cpp
@@ -119,6 +120,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_resolver.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/kicad_ipc_transaction.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/project_settings_ipc.cpp
 

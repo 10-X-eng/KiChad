@@ -299,7 +299,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v4`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v5`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -316,6 +316,11 @@ production-ready plan requires all of the following declarations in the same sid
 ; optional: (output pdf)
 ; optional: (output ipc2581)
 ; optional: (output odbpp)
+; optional: (output assembly_svg)
+; optional: (output assembly_dxf)
+; optional: (output gencad)
+; optional: (output vrml)
+; optional: (output board_stats)
 ```
 
 The KDS project name, root schematic stem, and board stem must match, and the explicit KDS stackup
@@ -338,9 +343,17 @@ the manifest then records release status `waived` rather than `clean`.
 The output is one project-side `fabrication/` directory containing Gerber layer files and a Gerber
 job, Excellon drill files plus PDF maps and report, an IPC-D-356 electrical-test netlist, placement
 CSV, a BOM derived directly from KDS sourcing forms, optional STEP/PDF files, optional inspectable
-IPC-2581C manufacturing XML, an optional validated ODB++ ZIP, and `manifest.json`. KiChad bounds and
-signature-validates every artifact. The BOM reference set must equal all footprint-bearing KDS
-components, while the
+IPC-2581C manufacturing XML, an optional validated ODB++ ZIP, and `manifest.json`. Optional
+`assembly_svg` and `assembly_dxf` jobs emit separate front/back `F.Fab` and `B.Fab` drawings with
+`Edge.Cuts` common to both; their fixed profile sketches pads, hides DNP footprints, uses board-area
+page sizing, millimetre DXF units, and verifies exact filenames plus bounded XML/DXF structure.
+`gencad` emits unique pin and footprint definitions with stored origin coordinates, `vrml` emits a
+millimetre model excluding DNP and unspecified parts, and `board_stats` emits typed millimetre JSON
+with board identity, outline, pad/via/component counts, and drill inventory. Each passes a dedicated
+format-aware parser before installation.
+
+KiChad bounds and validates every artifact. The BOM reference set must equal all footprint-bearing
+KDS components, while the
 native placement reference set must equal all non-DNP footprint-bearing KDS components; empty,
 duplicate, missing, or extra references reject the package. KiChad records exact byte counts and
 SHA-256 values and installs the complete directory atomically. A gate, exporter, validation,

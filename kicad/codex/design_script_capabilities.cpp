@@ -267,9 +267,15 @@ nlohmann::json DesignScriptCapabilities()
                     capability( "manufacturing.presets", "manufacturing", "partial", { "output", "check fabrication" },
                                 "One immutable KiChad 10.0.4 production profile and explicit output intent.",
                                 { "User-defined plot/drill/position/BOM presets, panelization, stencil policy, and fab-house profiles are absent." } ),
-                    capability( "manufacturing.additional_exports", "manufacturing", "unrepresented", {},
-                                "Assembly drawings, DXF/SVG layers, GenCAD, VRML, IDF, component netlists, reports, and custom BOM schemas.",
-                                { "No KDS output forms or validators exist for these exports." } ),
+                    capability( "manufacturing.additional_exports", "manufacturing", "partial",
+                                { "output assembly_svg", "output assembly_dxf",
+                                  "output gencad", "output vrml", "output board_stats" },
+                                "Validated front/back SVG and DXF assembly drawings, GenCAD, "
+                                "VRML, and typed JSON board statistics from deterministic "
+                                "KiCad 10 native jobs.",
+                                { "IDF, component netlists, custom BOM schemas, and the "
+                                  "remaining native graphics, mechanical, and legacy exports "
+                                  "are not represented yet." } ),
 
                     capability( "interchange.native_current", "interchange", "qualified", {},
                                 "Exact KiCad 10.0.4 current schematic/board fixtures, native save, readback, and legacy-format rejection at release." ),
@@ -277,8 +283,10 @@ nlohmann::json DesignScriptCapabilities()
                                 "Altium, Cadence, Eagle, EasyEDA, CADSTAR, EAGLE, LTspice, and other supported import workflows.",
                                 { "No KDS import declaration, conversion plan, or round-trip qualification exists." } ),
                     capability( "interchange.exporters", "interchange", "partial", { "output" },
-                                "Production Gerber/drill/IPC/ODB/BOM/placement/STEP/PDF exports.",
-                                { "Non-production netlist, graphics, mechanical, legacy, and report exporters remain absent." } ),
+                                "Production Gerber/drill/IPC/ODB/BOM/placement/STEP/PDF plus "
+                                "assembly SVG/DXF, GenCAD, VRML, and JSON board-statistics exports.",
+                                { "Component netlist, remaining graphics/mechanical, legacy, "
+                                  "and configurable report exporters remain absent." } ),
                     capability( "interchange.migration", "interchange", "unrepresented", {},
                                 "Legacy KiCad rescue, remap, migration, and third-party conversion provenance.",
                                 { "KDS rejects unsupported native versions instead of migrating them." } ),

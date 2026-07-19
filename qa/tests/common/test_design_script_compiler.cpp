@@ -12,6 +12,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <map>
 #include <set>
@@ -1284,6 +1285,31 @@ BOOST_AUTO_TEST_CASE( CompilesOdbppProductionOutput )
     BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
     BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 1 );
     BOOST_CHECK_EQUAL( result.ir["outputs"][0]["kind"].get<std::string>(), "odbpp" );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project auxiliary_manufacturing)
+  (output assembly_svg)
+  (output assembly_dxf)
+  (output gencad)
+  (output vrml)
+  (output board_stats)
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 5 );
+
+    const std::array<const char*, 5> expected = {
+        "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
+    };
+
+    for( size_t index = 0; index < expected.size(); ++index )
+        BOOST_CHECK_EQUAL( result.ir["outputs"][index]["kind"], expected[index] );
 }
 
 
