@@ -1294,6 +1294,10 @@ BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
   (version 1)
   (project auxiliary_manufacturing)
   (output netlist)
+  (output brep)
+  (output glb)
+  (output stl)
+  (output xao)
   (output assembly_svg)
   (output assembly_dxf)
   (output gencad)
@@ -1303,10 +1307,11 @@ BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
     BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
-    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 6 );
+    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 10 );
 
-    const std::array<const char*, 6> expected = {
-        "netlist", "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
+    const std::array<const char*, 10> expected = {
+        "netlist", "brep", "glb", "stl", "xao", "assembly_svg", "assembly_dxf",
+        "gencad", "vrml", "board_stats"
     };
 
     for( size_t index = 0; index < expected.size(); ++index )

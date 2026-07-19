@@ -92,4 +92,8 @@
   (output pick_place)
   (output bom)
   (output step)
+  (output brep)
+  (output glb)
+  (output stl)
+  (output xao)
   (output pdf))

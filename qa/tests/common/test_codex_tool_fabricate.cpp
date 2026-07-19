@@ -15,6 +15,7 @@
 #include <kicad/codex/kicad_ipc_client.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <api/common/commands/editor_commands.pb.h>
 #include <api/common/envelope.pb.h>
 #include <build_version.h>
@@ -49,6 +50,49 @@ std::string readText( const wxFileName& aPath )
     wxString text;
     BOOST_REQUIRE( input.ReadAll( &text, wxConvUTF8 ) );
     return text.ToStdString();
+}
+
+
+void appendLittleEndian32( std::string& aOutput, uint32_t aValue )
+{
+    for( size_t byte = 0; byte < 4; ++byte )
+        aOutput.push_back( static_cast<char>( aValue >> ( byte * 8 ) ) );
+}
+
+
+std::string mockGlb( const std::string& aStem )
+{
+    JSON scene = {
+        { "asset",
+          { { "version", "2.0" },
+            { "extras", { { "generator", "KiCad 10.0.4-KiChad" },
+                            { "pcb_name", aStem } } } } },
+        { "scene", 0 },
+        { "scenes", JSON::array( { { { "nodes", JSON::array( { 0 } ) } } } ) },
+        { "nodes", JSON::array( { { { "mesh", 0 } } } ) },
+        { "meshes", JSON::array( { { { "primitives", JSON::array(
+                { { { "attributes", { { "POSITION", 0 } } } } } ) } } } ) },
+        { "bufferViews", JSON::array( { { { "buffer", 0 }, { "byteLength", 12 } } } ) },
+        { "accessors", JSON::array( { { { "bufferView", 0 }, { "componentType", 5126 },
+                                         { "count", 1 }, { "type", "VEC3" } } } ) },
+        { "buffers", JSON::array( { { { "byteLength", 12 } } } ) }
+    };
+    std::string json = scene.dump();
+
+    while( json.size() % 4 != 0 )
+        json.push_back( ' ' );
+
+    std::string result;
+    appendLittleEndian32( result, 0x46546C67 );
+    appendLittleEndian32( result, 2 );
+    appendLittleEndian32( result, static_cast<uint32_t>( 12 + 8 + json.size() + 8 + 12 ) );
+    appendLittleEndian32( result, static_cast<uint32_t>( json.size() ) );
+    appendLittleEndian32( result, 0x4E4F534A );
+    result += json;
+    appendLittleEndian32( result, 12 );
+    appendLittleEndian32( result, 0x004E4942 );
+    result.append( 12, '\0' );
+    return result;
 }
 
 
@@ -204,6 +248,10 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output pick_place)
   (output bom)
   (output step)
+  (output brep)
+  (output glb)
+  (output stl)
+  (output xao)
   (output pdf)
   (output assembly_svg)
   (output assembly_dxf)
@@ -533,6 +581,66 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 return false;
             }
         }
+        else if( kind == "brep" )
+        {
+            const std::string source =
+                    "\nCASCADE Topology V1, (c) Matra-Datavision\n"
+                    "Locations 1\nCurve2ds 0\nCurves 3\nPolygon3D 0\n"
+                    "PolygonOnTriangulations 0\nSurfaces 1\nTriangulations 0\n"
+                    "TShapes 1\n1100000\n+1 0 \n";
+
+            if( !write( output, source ) )
+            {
+                aError = "could not write fake BREP output";
+                return false;
+            }
+        }
+        else if( kind == "glb" )
+        {
+            if( !write( output, mockGlb( aPlan.at( "fileStem" ).get<std::string>() ) ) )
+            {
+                aError = "could not write fake GLB output";
+                return false;
+            }
+        }
+        else if( kind == "stl" )
+        {
+            const std::string source =
+                    "solid design\n facet normal 0 0 1\n  outer loop\n"
+                    "   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 1 0\n"
+                    "  endloop\n endfacet\nendsolid design\n";
+
+            if( !write( output, source ) )
+            {
+                aError = "could not write fake STL output";
+                return false;
+            }
+        }
+        else if( kind == "xao" )
+        {
+            const std::string stem = aPlan.at( "fileStem" ).get<std::string>();
+            const std::string source =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<XAO version=\"1.0\" author=\"KiCad\"><geometry name=\"" + stem
+                    + "\"><shape format=\"BREP\"><![CDATA[\n"
+                      "CASCADE Topology V1, (c) Matra-Datavision\n"
+                      "Locations 1\nCurve2ds 0\nCurves 3\nPolygon3D 0\n"
+                      "PolygonOnTriangulations 0\nSurfaces 1\nTriangulations 0\n"
+                      "TShapes 1\n+1 0\n"
+                      "]]></shape><topology><vertices count=\"1\">"
+                      "<vertex index=\"0\" reference=\"1\"/></vertices>"
+                      "<edges count=\"0\"/><faces count=\"1\">"
+                      "<face index=\"0\" reference=\"1\"/></faces>"
+                      "<solids count=\"1\"><solid index=\"0\" reference=\"1\"/>"
+                      "</solids></topology></geometry><groups count=\"0\"/>"
+                      "<fields count=\"0\"/></XAO>\n";
+
+            if( !write( output, source ) )
+            {
+                aError = "could not write fake XAO output";
+                return false;
+            }
+        }
         else if( kind == "pdf" )
         {
             if( !write( output, "%PDF-1.4\n%%EOF\n" ) )
@@ -702,10 +810,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v6" );
+                       "kichad-production-10.0.4-v7" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 15 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 19 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
@@ -1049,7 +1157,7 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "waived" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 24 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 28 );
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
@@ -1079,6 +1187,14 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
                                       "fabrication_clean-bom.csv" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/model/fabrication_clean.step" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.brep" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.glb" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.stl" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.xao" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/documentation/"
                                       "fabrication_clean.pdf" ) ) );
@@ -1211,7 +1327,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 17 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 21 );
 
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
@@ -1232,6 +1348,18 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName odbPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/manufacturing/fabrication_component.odb.zip" ) );
+    wxFileName brepPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.brep" ) );
+    wxFileName glbPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.glb" ) );
+    wxFileName stlPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.stl" ) );
+    wxFileName xaoPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.xao" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
@@ -1239,6 +1367,10 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE( netlistPath.FileExists() );
     BOOST_REQUIRE( ipc2581Path.FileExists() );
     BOOST_REQUIRE( odbPath.FileExists() );
+    BOOST_REQUIRE( brepPath.FileExists() );
+    BOOST_REQUIRE( glbPath.FileExists() );
+    BOOST_REQUIRE( stlPath.FileExists() );
+    BOOST_REQUIRE( xaoPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );

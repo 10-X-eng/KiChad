@@ -17,6 +17,7 @@
 #include "design_script_schematic_reconciler.h"
 #include "design_script_symbol_resolver.h"
 #include "fabrication_artifact_validator.h"
+#include "mechanical_artifact_validator.h"
 #include "kicad_ipc_client.h"
 #include "kicad_ipc_transaction.h"
 #include "lossless_sexpr_document.h"
@@ -1533,6 +1534,15 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
                           "--include-silkscreen", "--include-soldermask",
                           aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "brep" || kind == "glb" || kind == "stl"
+                 || kind == "xao" )
+        {
+            arguments = { "pcb", "export", kind, "--output", output.string(),
+                          "--force", "--no-dnp", "--no-unspecified", "--subst-models",
+                          "--include-tracks", "--include-pads", "--include-zones",
+                          "--include-inner-copper", "--include-silkscreen",
+                          "--include-soldermask", aBoard.GetFullPath().ToStdString() };
+        }
         else if( kind == "pdf" )
         {
             arguments = { "pcb", "export", "pdf", "--output", output.string(),
@@ -1614,7 +1624,8 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     };
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
-        "step", "pdf", "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
+        "step", "brep", "glb", "stl", "xao", "pdf", "assembly_svg", "assembly_dxf",
+        "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
         "gerbers", "drill", "ipcd356", "pick_place", "bom"
@@ -1783,6 +1794,13 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         {
             job["relativePath"] = "model/" + aFileStem + ".step";
         }
+        else if( std::string_view( kind ) == "brep"
+                 || std::string_view( kind ) == "glb"
+                 || std::string_view( kind ) == "stl"
+                 || std::string_view( kind ) == "xao" )
+        {
+            job["relativePath"] = "model/" + aFileStem + "." + kind;
+        }
         else if( std::string_view( kind ) == "pdf" )
         {
             job["relativePath"] = "documentation/" + aFileStem + ".pdf";
@@ -1820,7 +1838,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v6" },
+    return { { "profile", "kichad-production-10.0.4-v7" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -3384,6 +3402,46 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path == "model/" + fileStem + ".brep" )
+        {
+            kind = "brep";
+
+            if( !KICHAD::MECHANICAL_ARTIFACT_VALIDATOR::ValidateBrep(
+                        iterator->path(), aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path == "model/" + fileStem + ".glb" )
+        {
+            kind = "glb";
+
+            if( !KICHAD::MECHANICAL_ARTIFACT_VALIDATOR::ValidateGlb(
+                        iterator->path(), fileStem, aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path == "model/" + fileStem + ".stl" )
+        {
+            kind = "stl";
+
+            if( !KICHAD::MECHANICAL_ARTIFACT_VALIDATOR::ValidateStl(
+                        iterator->path(), aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path == "model/" + fileStem + ".xao" )
+        {
+            kind = "xao";
+
+            if( !KICHAD::MECHANICAL_ARTIFACT_VALIDATOR::ValidateXao(
+                        iterator->path(), fileStem, aError ) )
+            {
+                return false;
+            }
+        }
         else if( path == "model/" + fileStem + ".wrl" )
         {
             kind = "vrml";
@@ -3498,6 +3556,14 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "BOM export did not produce exactly one CSV artifact";
         else if( kind == "step" && counts["step"] != 1 )
             aError = "STEP export did not produce exactly one model artifact";
+        else if( kind == "brep" && counts["brep"] != 1 )
+            aError = "BREP export did not produce exactly one model artifact";
+        else if( kind == "glb" && counts["glb"] != 1 )
+            aError = "GLB export did not produce exactly one model artifact";
+        else if( kind == "stl" && counts["stl"] != 1 )
+            aError = "STL export did not produce exactly one model artifact";
+        else if( kind == "xao" && counts["xao"] != 1 )
+            aError = "XAO export did not produce exactly one model artifact";
         else if( kind == "pdf" && counts["pdf"] != 1 )
             aError = "documentation export did not produce exactly one PDF artifact";
         else if( kind == "assembly_svg"
