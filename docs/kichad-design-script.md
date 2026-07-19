@@ -37,6 +37,14 @@ physical values retain readable engineering units, references resolve locally, a
 object has a stable authored logical ID. A model reads, reviews, edits, imports, and exports this
 same source; it never needs to reconstruct design intent from KiCad serialization or backend JSON.
 
+Project title-block metadata has one canonical representation inside `project`. `title`, `company`,
+`revision`, and `date` may occur once; KiCad's nine comment slots use the indexed
+`(comment 1..9 TEXT)` form and each index may occur once. Declaring any of these fields makes the
+normalized block explicit: missing fields and comment slots are empty. Apply losslessly installs
+the complete block in the root schematic, updates the open board through KiCad's typed API,
+verifies native readback, and restores both targets after any later apply failure. Omitting every
+metadata field preserves compatibility behavior and does not claim title-block ownership.
+
 ## Version 1 source model
 
 ```scheme
@@ -45,7 +53,10 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
   (project sensor_node
     (title "Production Sensor Node")
     (company "Example Engineering")
-    (revision "A"))
+    (revision "A")
+    (date "2026-07-19")
+    (comment 1 "Production release")
+    (comment 9 "AI-authored KDS"))
   (units mm)
 
   (sheet root

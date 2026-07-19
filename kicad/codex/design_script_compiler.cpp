@@ -43,6 +43,7 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 constexpr size_t MAX_SCRIPT_BYTES = 1024 * 1024;
 constexpr size_t MAX_TOP_LEVEL_FORMS = 20000;
 constexpr size_t MAX_IDENTIFIER_BYTES = 128;
+constexpr size_t MAX_TITLE_BLOCK_TEXT_BYTES = 4096;
 constexpr size_t MAX_LIBRARIES = 512;
 constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
 
@@ -341,9 +342,17 @@ JSON compileProject( const DOCUMENT& aDocument, size_t aNode,
         return JSON::object();
     }
 
-    JSON project = { { "name", name }, { "properties", JSON::object() } };
-    const std::set<std::string> allowed = { "title", "company", "revision", "date", "comment" };
+    JSON project = { { "name", name } };
+    JSON titleBlock = { { "title", "" }, { "company", "" }, { "revision", "" },
+                        { "date", "" }, { "comments", JSON::array() } };
+
+    for( int i = 0; i < 9; ++i )
+        titleBlock["comments"].emplace_back( "" );
+
+    const std::set<std::string> allowed = { "title", "company", "revision", "date" };
     std::set<std::string>       fields;
+    std::set<int>               comments;
+    bool                        hasTitleBlock = false;
 
     for( size_t i = 2; i < node.children.size(); ++i )
     {
@@ -351,11 +360,54 @@ JSON compileProject( const DOCUMENT& aDocument, size_t aNode,
         const std::string head = aDocument.ListHead( child );
         std::string       value;
 
-        if( !allowed.contains( head ) || !parseSingleValueForm( aDocument, child, value ) )
+        if( head == "comment" )
+        {
+            const DOCUMENT::NODE& comment = aDocument.Nodes()[child];
+            std::string indexText;
+            int         index = 0;
+
+            if( comment.children.size() != 3
+                || !scalarText( aDocument, comment.children[1], indexText )
+                || !scalarText( aDocument, comment.children[2], value ) )
+            {
+                diagnostic( aResult, "error", "invalid_project_comment",
+                            "project comment requires an index from 1 through 9 and one scalar "
+                            "value" );
+                continue;
+            }
+
+            const char* begin = indexText.data();
+            const char* end = begin + indexText.size();
+            std::from_chars_result converted = std::from_chars( begin, end, index );
+
+            if( converted.ec != std::errc() || converted.ptr != end || index < 1 || index > 9
+                || value.size() > MAX_TITLE_BLOCK_TEXT_BYTES )
+            {
+                diagnostic( aResult, "error", "invalid_project_comment",
+                            "project comment index must be 1 through 9 and its value at most "
+                            "4096 bytes" );
+                continue;
+            }
+
+            if( !comments.emplace( index ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_project_comment",
+                            "project comment index " + std::to_string( index )
+                                    + " occurs more than once" );
+                continue;
+            }
+
+            titleBlock["comments"][index - 1] = value;
+            hasTitleBlock = true;
+            continue;
+        }
+
+        if( !allowed.contains( head ) || !parseSingleValueForm( aDocument, child, value )
+            || value.size() > MAX_TITLE_BLOCK_TEXT_BYTES )
         {
             diagnostic( aResult, "error", "invalid_project_field",
-                        "project fields must be title, company, revision, date, or comment with "
-                        "one scalar value" );
+                        "project fields must be title, company, revision, or date with one "
+                        "scalar value of at most 4096 bytes; comments use (comment INDEX VALUE)" );
             continue;
         }
 
@@ -366,8 +418,12 @@ JSON compileProject( const DOCUMENT& aDocument, size_t aNode,
             continue;
         }
 
-        project["properties"][head] = value;
+        titleBlock[head] = value;
+        hasTitleBlock = true;
     }
+
+    if( hasTitleBlock )
+        project["titleBlock"] = std::move( titleBlock );
 
     return project;
 }
@@ -2976,7 +3032,9 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
         { "topLevelForms",
           JSON::array( {
                   { { "form", "(version 1)" }, { "required", true } },
-                  { { "form", "(project NAME (title TEXT) (company TEXT) (revision TEXT))" },
+                  { { "form",
+                      "(project NAME (title TEXT) (company TEXT) (revision TEXT) (date TEXT) "
+                      "(comment 1..9 TEXT) ...)" },
                     { "required", true } },
                   { { "form", "(units mm|mil)" }, { "default", "mm" } },
                   { { "form",

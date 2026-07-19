@@ -105,6 +105,40 @@ BOOST_AUTO_TEST_CASE( LowersHierarchyIntoStableNativeExpressionsAndPaths )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersOneCompleteProjectTitleBlockToCurrentNativeSchematic )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project titled
+    (title "Production Controller")
+    (date "2026-07-19")
+    (revision "C")
+    (company "KiChad QA")
+    (comment 1 "Release candidate")
+    (comment 9 "Generated from KDS"))
+  (sheet root (parent none) (file "titled.kicad_sch") (title "Root sheet"))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    const nlohmann::json& file = plan.operations[0]["files"][0];
+    BOOST_CHECK( file["rootTitleBlockOwned"].get<bool>() );
+    const std::string source = file["newDocumentSource"];
+    BOOST_CHECK_NE( source.find( "(title \"Production Controller\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(date \"2026-07-19\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(rev \"C\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(company \"KiChad QA\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(comment 1 \"Release candidate\")" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( source.find( "(comment 9 \"Generated from KDS\")" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( source.find( "(title \"Root sheet\")" ), std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( RejectsMalformedOrAliasedScreenIrWithoutPartialOperations )
 {
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =

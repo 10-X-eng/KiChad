@@ -121,7 +121,13 @@ for attempt in $(seq 1 30); do
             sed -n '1,260p' "${project_dir}/live_apply.net" >&2
             exit 1
         fi
-        grep -Fq '(company "KiChad lossless fixture")' \
+        grep -Fq '(title "KiChad AI-native release")' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(company "KiChad QA")' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(comment 1 "Controlled by the KDS sidecar")' \
+            "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(comment 9 "Complete indexed title-block proof")' \
             "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(uuid "11111111-2222-4333-8444-555555555555")' \
             "${project_dir}/live_apply.kicad_sch"

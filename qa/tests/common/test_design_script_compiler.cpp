@@ -26,7 +26,10 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
   (project sensor_node
     (title "Production Sensor Node")
     (company "KiChad QA")
-    (revision "A"))
+    (revision "A")
+    (date "2026-07-19")
+    (comment 1 "Production release")
+    (comment 9 "AI-authored KDS"))
   (units mm)
   (library symbol Device (table global))
   (library footprint Resistor_SMD (table global))
@@ -130,6 +133,17 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
     BOOST_CHECK_EQUAL( first.sourceSha256, second.sourceSha256 );
     BOOST_CHECK_EQUAL( first.ir.dump(), second.ir.dump() );
     BOOST_CHECK_EQUAL( first.ir["project"]["name"].get<std::string>(), "sensor_node" );
+    BOOST_REQUIRE( first.ir["project"].contains( "titleBlock" ) );
+    BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["title"],
+                       "Production Sensor Node" );
+    BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["company"], "KiChad QA" );
+    BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["revision"], "A" );
+    BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["date"], "2026-07-19" );
+    BOOST_REQUIRE_EQUAL( first.ir["project"]["titleBlock"]["comments"].size(), 9 );
+    BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["comments"][0],
+                       "Production release" );
+    BOOST_CHECK_EQUAL( first.ir["project"]["titleBlock"]["comments"][8],
+                       "AI-authored KDS" );
     BOOST_CHECK_EQUAL( first.ir["schematic"]["components"].size(), 2 );
     BOOST_CHECK_EQUAL( first.ir["schematic"]["nets"].size(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["pinConnections"].get<size_t>(), 2 );
@@ -1126,7 +1140,9 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
 {
     const std::string invalid = R"KDS((kichad_design
   (version 1)
-  (project strict (title "First") (title "Second"))
+  (project strict (title "First") (title "Second")
+    (comment 1 "First") (comment 1 "Second") (comment 10 "Out of range")
+    (comment "legacy unindexed form"))
   (library symbol Device (table project) (uri "${KIPRJMOD}/one.kicad_sym")
     (uri "${KIPRJMOD}/two.kicad_sym"))
   (library symbol Device (table global) (uri "forbidden.kicad_sym"))
@@ -1159,7 +1175,8 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
     BOOST_CHECK( !result.ok );
     const std::string diagnostics = result.diagnostics.dump();
 
-    for( const char* code : { "duplicate_project_field", "duplicate_library_field",
+    for( const char* code : { "duplicate_project_field", "duplicate_project_comment",
+                              "invalid_project_comment", "duplicate_library_field",
                               "duplicate_library", "redundant_global_library_uri",
                               "invalid_project_library_uri", "invalid_library_table",
                               "duplicate_sheet",
@@ -1617,6 +1634,7 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK_NE( description.dump().find( "dielectric core|prepreg" ),
                     std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "font stroke|NAME" ), std::string::npos );
+    BOOST_CHECK_NE( description.dump().find( "comment 1..9 TEXT" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find(
                             "dimension aligned|orthogonal|radial|leader|center" ),
                     std::string::npos );
@@ -1654,6 +1672,7 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     std::set<std::string> ids;
     std::set<std::string> domains;
     std::map<std::string, size_t> counts;
+    bool foundQualifiedTitleBlock = false;
 
     for( const nlohmann::json& facet : coverage["facets"] )
     {
@@ -1675,8 +1694,12 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
 
         domains.emplace( domain );
         ++counts[state];
+
+        if( id == "project.title_block" )
+            foundQualifiedTitleBlock = state == "qualified" && facet["gaps"].empty();
     }
 
+    BOOST_CHECK( foundQualifiedTitleBlock );
     BOOST_CHECK( domains == expectedDomains );
 
     for( const std::string& state : allowedStates )

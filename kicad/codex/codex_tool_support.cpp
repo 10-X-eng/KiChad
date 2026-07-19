@@ -4188,6 +4188,56 @@ bool queryPcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET&
 }
 
 
+bool queryPcbTitleBlock( const KICHAD_IPC_CLIENT& aClient,
+                         const KICHAD_IPC_TARGET& aTarget,
+                         kiapi::common::types::TitleBlockInfo& aTitleBlock,
+                         std::string& aError )
+{
+    kiapi::common::commands::GetTitleBlockInfo request;
+    request.mutable_document()->CopyFrom( aTarget.document );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError )
+        || !response.message().UnpackTo( &aTitleBlock ) )
+    {
+        if( aError.empty() )
+            aError = "KiCad returned an invalid board title block";
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool updatePcbTitleBlock( const KICHAD_IPC_CLIENT& aClient,
+                          const KICHAD_IPC_TARGET& aTarget,
+                          const kiapi::common::types::TitleBlockInfo& aTitleBlock,
+                          std::string& aError )
+{
+    kiapi::common::commands::SetTitleBlockInfo request;
+    request.mutable_document()->CopyFrom( aTarget.document );
+    request.mutable_title_block()->CopyFrom( aTitleBlock );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::common::types::TitleBlockInfo readback;
+
+    if( !queryPcbTitleBlock( aClient, aTarget, readback, aError ) )
+        return false;
+
+    if( readback.SerializeAsString() != aTitleBlock.SerializeAsString() )
+    {
+        aError = "KiCad title-block readback does not match the requested KDS metadata";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool updatePcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
                        const kiapi::board::BoardStackup& aStackup, std::string& aError )
 {
@@ -5064,6 +5114,22 @@ bool KICHAD::CODEX_TOOLS::QueryPcbStackup(
 }
 
 
+bool KICHAD::CODEX_TOOLS::QueryPcbTitleBlock(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        kiapi::common::types::TitleBlockInfo& aTitleBlock, std::string& aError )
+{
+    return queryPcbTitleBlock( aClient, aTarget, aTitleBlock, aError );
+}
+
+
+bool KICHAD::CODEX_TOOLS::UpdatePcbTitleBlock(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        const kiapi::common::types::TitleBlockInfo& aTitleBlock, std::string& aError )
+{
+    return updatePcbTitleBlock( aClient, aTarget, aTitleBlock, aError );
+}
+
+
 bool KICHAD::CODEX_TOOLS::UpdatePcbStackup(
         const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
         const kiapi::board::BoardStackup& aStackup, std::string& aError )
@@ -5224,4 +5290,3 @@ bool KICHAD::CODEX_TOOLS::HashFabricationFile(
 {
     return hashFabricationFile( aPath, aDigest );
 }
-

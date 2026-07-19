@@ -161,6 +161,55 @@ BOOST_AUTO_TEST_CASE( PreservesUnknownBytesAndExistingScreenUuidDuringManagedUpd
 }
 
 
+BOOST_AUTO_TEST_CASE( ReplacesAnExplicitlyOwnedCompleteRootTitleBlock )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project hierarchy
+    (title "Owned title") (date "2026-07-19") (revision "D")
+    (company "Owned company") (comment 2 "Owned comment"))
+  (sheet root (parent none) (file "hierarchy.kicad_sch") (title "Root"))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const std::string existingUuid = "11111111-2222-4333-8444-555555555555";
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                    compiled.ir, { { "hierarchy.kicad_sch", existingUuid } } );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    const std::string existing =
+            "(kicad_sch\n"
+            "  (version 20260306)\n"
+            "  (generator \"eeschema\")\n"
+            "  (generator_version \"10.0\")\n"
+            "  (uuid \"" + existingUuid + "\")\n"
+            "  (paper \"A4\")\n"
+            "  (title_block (title \"Stale\") (company \"Stale\") "
+            "(comment 1 \"Remove me\"))\n"
+            "  (lib_symbols)\n"
+            "  (sheet_instances (path \"/\" (page \"1\")))\n"
+            "  (embedded_fonts no)\n"
+            ")\n";
+    const nlohmann::json live = {
+        { { "path", "hierarchy.kicad_sch" }, { "present", true }, { "source", existing } }
+    };
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    plan.operations[0], nlohmann::json::array(), live );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.fileActions.size(), 1 );
+    const std::string updated = result.fileActions[0]["source"];
+    BOOST_CHECK_NE( updated.find( "(title \"Owned title\")" ), std::string::npos );
+    BOOST_CHECK_NE( updated.find( "(date \"2026-07-19\")" ), std::string::npos );
+    BOOST_CHECK_NE( updated.find( "(rev \"D\")" ), std::string::npos );
+    BOOST_CHECK_NE( updated.find( "(company \"Owned company\")" ), std::string::npos );
+    BOOST_CHECK_NE( updated.find( "(comment 2 \"Owned comment\")" ), std::string::npos );
+    BOOST_CHECK_EQUAL( updated.find( "Remove me" ), std::string::npos );
+    BOOST_CHECK_EQUAL( updated.find( "company \"Stale\"" ), std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( RemovesOnlyItemsProvenToBePreviouslyManaged )
 {
     const nlohmann::json operation = operationFor();

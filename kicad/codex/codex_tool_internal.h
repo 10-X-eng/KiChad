@@ -21,6 +21,7 @@
 #include <import_export.h>
 #include <api/board/board.pb.h>
 #include <api/common/types/enums.pb.h>
+#include <api/common/types/base_types.pb.h>
 #include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/any.pb.h>
 #include <google/protobuf/message.h>
@@ -111,6 +112,14 @@ bool QueryPcbInventory( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
                         std::string& aError );
 bool QueryPcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
                       kiapi::board::BoardStackup& aStackup, std::string& aError );
+bool QueryPcbTitleBlock( const KICHAD_IPC_CLIENT& aClient,
+                         const KICHAD_IPC_TARGET& aTarget,
+                         kiapi::common::types::TitleBlockInfo& aTitleBlock,
+                         std::string& aError );
+bool UpdatePcbTitleBlock( const KICHAD_IPC_CLIENT& aClient,
+                          const KICHAD_IPC_TARGET& aTarget,
+                          const kiapi::common::types::TitleBlockInfo& aTitleBlock,
+                          std::string& aError );
 bool UpdatePcbStackup( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
                        const kiapi::board::BoardStackup& aStackup, std::string& aError );
 bool QueryPcbRules( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,

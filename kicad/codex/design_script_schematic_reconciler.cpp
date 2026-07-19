@@ -415,7 +415,14 @@ bool reconcileRootMetadata( DOCUMENT& aDocument, size_t aRoot, const JSON& aFile
     if( !aFile.value( "root", false ) )
         return true;
 
-    if( !aFile.contains( "rootTitleSource" ) || !aFile["rootTitleSource"].is_string()
+    const bool ownsTitleBlock = aFile.value( "rootTitleBlockOwned", false );
+
+    if( ( ownsTitleBlock
+          && ( !aFile.contains( "rootTitleBlockSource" )
+               || !aFile["rootTitleBlockSource"].is_string() ) )
+        || ( !ownsTitleBlock
+             && ( !aFile.contains( "rootTitleSource" )
+                  || !aFile["rootTitleSource"].is_string() ) )
         || !aFile.contains( "rootInstancesSource" )
         || !aFile["rootInstancesSource"].is_string() )
     {
@@ -433,8 +440,14 @@ bool reconcileRootMetadata( DOCUMENT& aDocument, size_t aRoot, const JSON& aFile
 
     if( titleBlocks.empty() )
     {
-        std::string expression = "  (title_block\n    "
-                                 + aFile["rootTitleSource"].get<std::string>() + "\n  )\n";
+        std::string expression = ownsTitleBlock
+                                         ? "  "
+                                                   + aFile["rootTitleBlockSource"]
+                                                             .get<std::string>()
+                                                   + "\n"
+                                         : "  (title_block\n    "
+                                                   + aFile["rootTitleSource"].get<std::string>()
+                                                   + "\n  )\n";
         const std::vector<size_t> libraries = directLists( aDocument, aRoot, "lib_symbols" );
 
         if( libraries.size() == 1 )
@@ -443,28 +456,39 @@ bool reconcileRootMetadata( DOCUMENT& aDocument, size_t aRoot, const JSON& aFile
         return aDocument.InsertBeforeClosingList( aRoot, expression, &aError );
     }
 
-    const std::vector<size_t> titles = directLists( aDocument, titleBlocks.front(), "title" );
-
-    if( titles.size() > 1 )
+    if( ownsTitleBlock )
     {
-        aError = "root schematic title block contains duplicate titles";
-        return false;
-    }
-
-    if( titles.empty() )
-    {
-        if( !aDocument.InsertBeforeClosingList(
-                    titleBlocks.front(), "\n    "
-                                                 + aFile["rootTitleSource"].get<std::string>()
-                                                 + "\n  ", &aError ) )
+        if( !aDocument.ReplaceNode( titleBlocks.front(),
+                                    aFile["rootTitleBlockSource"].get<std::string>(), &aError ) )
         {
             return false;
         }
     }
-    else if( !aDocument.ReplaceNode( titles.front(),
-                                     aFile["rootTitleSource"].get<std::string>(), &aError ) )
+    else
     {
-        return false;
+        const std::vector<size_t> titles = directLists( aDocument, titleBlocks.front(), "title" );
+
+        if( titles.size() > 1 )
+        {
+            aError = "root schematic title block contains duplicate titles";
+            return false;
+        }
+
+        if( titles.empty() )
+        {
+            if( !aDocument.InsertBeforeClosingList(
+                        titleBlocks.front(), "\n    "
+                                                     + aFile["rootTitleSource"].get<std::string>()
+                                                     + "\n  ", &aError ) )
+            {
+                return false;
+            }
+        }
+        else if( !aDocument.ReplaceNode( titles.front(),
+                                         aFile["rootTitleSource"].get<std::string>(), &aError ) )
+        {
+            return false;
+        }
     }
 
     const std::vector<size_t> instances = directLists( aDocument, aRoot, "sheet_instances" );

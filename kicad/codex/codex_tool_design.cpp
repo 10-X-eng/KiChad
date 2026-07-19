@@ -301,6 +301,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                    { "physicalLayers",
                                      plannedOperation["stackup"]["layers"].size() } } );
             }
+            else if( action == "update_title_block" )
+            {
+                items.push_back( { { "action", "configure_title_block" } } );
+            }
             else if( action == "update_rules" )
             {
                 items.push_back( { { "action", "configure_global_board_rules" } } );
@@ -478,6 +482,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         }
 
         std::unique_ptr<kiapi::board::BoardStackup> desiredStackup;
+        std::unique_ptr<kiapi::common::types::TitleBlockInfo> desiredTitleBlock;
         std::unique_ptr<kiapi::board::BoardDesignRules> desiredRules;
         std::unique_ptr<kiapi::common::project::NetClassSettings> desiredNetClasses;
         JSON desiredLibraryTables = JSON::array();
@@ -490,7 +495,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             const std::string plannedAction = action.value( "action", "" );
 
-            if( plannedAction != "update_stackup" && plannedAction != "update_rules"
+            if( plannedAction != "update_stackup" && plannedAction != "update_title_block"
+                && plannedAction != "update_rules"
                 && plannedAction != "update_net_classes"
                 && plannedAction != "update_custom_rules"
                 && plannedAction != "update_project_library_table" )
@@ -575,6 +581,16 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 desiredStackup = std::make_unique<kiapi::board::BoardStackup>();
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "stackup" ).dump(), desiredStackup.get(), options );
+            }
+            else if( plannedAction == "update_title_block" )
+            {
+                if( desiredTitleBlock )
+                    return failure( "invalid_plan", "KDS planned more than one title block" );
+
+                desiredTitleBlock =
+                        std::make_unique<kiapi::common::types::TitleBlockInfo>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "titleBlock" ).dump(), desiredTitleBlock.get(), options );
             }
             else if( plannedAction == "update_rules" )
             {
@@ -850,6 +866,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "pcb_not_open", pathError );
 
         kiapi::board::BoardStackup previousStackup;
+        kiapi::common::types::TitleBlockInfo previousTitleBlock;
         kiapi::board::BoardDesignRules previousRules;
         kiapi::common::project::NetClassSettings previousNetClasses;
         bool        previousCustomRulesPresent = false;
@@ -857,6 +874,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         if( desiredStackup && !KICHAD::CODEX_TOOLS::QueryPcbStackup( client, target, previousStackup, pathError ) )
             return failure( "stackup_inventory_failed", pathError );
+
+        if( desiredTitleBlock
+            && !KICHAD::CODEX_TOOLS::QueryPcbTitleBlock(
+                    client, target, previousTitleBlock, pathError ) )
+        {
+            return failure( "title_block_inventory_failed", pathError );
+        }
 
         if( desiredRules && !KICHAD::CODEX_TOOLS::QueryPcbRules( client, target, previousRules, pathError ) )
             return failure( "rules_inventory_failed", pathError );
@@ -940,6 +964,25 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             applyJournal["previousStackup"] = JSON::parse( serializedPrevious );
         }
 
+        if( desiredTitleBlock )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousTitleBlock, &serializedPrevious, options );
+
+            if( !status.ok() )
+            {
+                return failure( "journal_failed",
+                                "could not serialize the prior board title block" );
+            }
+
+            applyJournal["previousTitleBlock"] = JSON::parse( serializedPrevious );
+        }
+
         if( desiredRules )
         {
             std::string serializedPrevious;
@@ -1019,6 +1062,43 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !KICHAD::CODEX_TOOLS::WriteJsonAtomically( journalPath, applyJournal, pathError ) )
             return failure( "journal_failed", pathError );
 
+        bool titleBlockApplied = false;
+
+        if( desiredTitleBlock )
+        {
+            if( !KICHAD::CODEX_TOOLS::UpdatePcbTitleBlock(
+                        client, target, *desiredTitleBlock, pathError ) )
+            {
+                std::string rollbackError;
+
+                if( !KICHAD::CODEX_TOOLS::UpdatePcbTitleBlock(
+                            client, target, previousTitleBlock, rollbackError ) )
+                {
+                    pathError += "; title-block rollback also failed: " + rollbackError;
+                }
+
+                return failure( "title_block_apply_failed",
+                                pathError
+                                        + "; the apply journal was retained for safe recovery" );
+            }
+
+            titleBlockApplied = true;
+        }
+
+        auto rollbackTitleBlock = [&]( std::string& aMessage )
+        {
+            if( !titleBlockApplied )
+                return;
+
+            std::string rollbackError;
+
+            if( !KICHAD::CODEX_TOOLS::UpdatePcbTitleBlock(
+                        client, target, previousTitleBlock, rollbackError ) )
+            {
+                aMessage += "; title-block rollback also failed: " + rollbackError;
+            }
+        };
+
         bool stackupApplied = false;
 
         if( desiredStackup )
@@ -1030,6 +1110,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 if( !KICHAD::CODEX_TOOLS::UpdatePcbStackup( client, target, previousStackup, rollbackError ) )
                     pathError += "; stackup rollback also failed: " + rollbackError;
 
+                rollbackTitleBlock( pathError );
+
                 return failure( "stackup_apply_failed",
                                 pathError + "; the apply journal was retained for safe recovery" );
             }
@@ -1039,13 +1121,18 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         auto rollbackStackup = [&]( std::string& aMessage )
         {
-            if( !stackupApplied )
-                return;
+            if( stackupApplied )
+            {
+                std::string rollbackError;
 
-            std::string rollbackError;
+                if( !KICHAD::CODEX_TOOLS::UpdatePcbStackup(
+                            client, target, previousStackup, rollbackError ) )
+                {
+                    aMessage += "; stackup rollback also failed: " + rollbackError;
+                }
+            }
 
-            if( !KICHAD::CODEX_TOOLS::UpdatePcbStackup( client, target, previousStackup, rollbackError ) )
-                aMessage += "; stackup rollback also failed: " + rollbackError;
+            rollbackTitleBlock( aMessage );
         };
 
         bool rulesApplied = false;
@@ -1354,11 +1441,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "sourceSha256", compiled.sourceSha256 },
                              { "counts", reconciled.counts },
                              { "transaction",
-                               stackupApplied || rulesApplied || netClassesApplied
+                               titleBlockApplied || stackupApplied || rulesApplied
+                                               || netClassesApplied
                                                || customRulesApplied || libraryTablesApplied > 0
                                                || schematicFilesApplied > 0
                                        ? "design settings applied"
                                        : "no board changes" },
+                             { "titleBlockApplied", titleBlockApplied },
                              { "stackupApplied", stackupApplied },
                              { "rulesApplied", rulesApplied },
                              { "netClassesApplied", netClassesApplied },
@@ -1432,6 +1521,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "managedItems",
                            reconciled.nextState["managedPcbItems"].size() },
                          { "transaction", "committed" },
+                         { "titleBlockApplied", titleBlockApplied },
                          { "stackupApplied", stackupApplied },
                          { "rulesApplied", rulesApplied },
                          { "netClassesApplied", netClassesApplied },
@@ -1514,4 +1604,3 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                      { "transaction", "snapshot-backed atomic save" } };
     return success( payload );
 }
-

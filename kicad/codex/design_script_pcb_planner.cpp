@@ -171,6 +171,21 @@ JSON planStackup( const JSON& aStatement )
 }
 
 
+JSON planTitleBlock( const JSON& aTitleBlock )
+{
+    JSON native = { { "title", aTitleBlock.at( "title" ) },
+                    { "date", aTitleBlock.at( "date" ) },
+                    { "revision", aTitleBlock.at( "revision" ) },
+                    { "company", aTitleBlock.at( "company" ) } };
+    const JSON& comments = aTitleBlock.at( "comments" );
+
+    for( size_t i = 0; i < comments.size(); ++i )
+        native["comment" + std::to_string( i + 1 )] = comments.at( i );
+
+    return { { "action", "update_title_block" }, { "titleBlock", std::move( native ) } };
+}
+
+
 JSON planRules( const JSON& aRules )
 {
     const auto distance = [&]( const char* aName )
@@ -1146,7 +1161,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                       { "netClasses", 0 }, { "netClassAssignments", 0 },
                       { "customRules", 0 }, { "symbolLibraries", 0 },
                       { "footprintLibraries", 0 }, { "modelLibraries", 0 },
-                      { "libraryTables", 0 }, { "stackups", 0 },
+                      { "libraryTables", 0 }, { "stackups", 0 }, { "titleBlocks", 0 },
                       { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -1165,6 +1180,13 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 
     try
     {
+        if( aCompilerIr["project"].contains( "titleBlock" ) )
+        {
+            result.operations.emplace_back(
+                    planTitleBlock( aCompilerIr["project"]["titleBlock"] ) );
+            result.counts["titleBlocks"] = 1;
+        }
+
         if( aCompilerIr.contains( "libraries" ) && aCompilerIr["libraries"].is_array()
             && !aCompilerIr["libraries"].empty() )
         {
@@ -1295,7 +1317,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                           { "netClasses", 0 }, { "netClassAssignments", 0 },
                           { "customRules", 0 }, { "symbolLibraries", 0 },
                           { "footprintLibraries", 0 }, { "modelLibraries", 0 },
-                          { "libraryTables", 0 }, { "stackups", 0 },
+                          { "libraryTables", 0 }, { "stackups", 0 }, { "titleBlocks", 0 },
                           { "unsupported", 0 } };
         return result;
     }

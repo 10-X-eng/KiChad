@@ -15,6 +15,7 @@
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <functional>
@@ -62,6 +63,38 @@ std::string quoted( const std::string& aText )
 
     result.push_back( '"' );
     return result;
+}
+
+
+std::string titleBlockExpression( const JSON& aTitleBlock )
+{
+    std::ostringstream output;
+    output << "(title_block";
+    const std::array<std::pair<const char*, const char*>, 4> fields = {
+        std::pair{ "title", "title" }, std::pair{ "date", "date" },
+        std::pair{ "revision", "rev" }, std::pair{ "company", "company" }
+    };
+
+    for( const auto& [irName, nativeName] : fields )
+    {
+        const std::string value = aTitleBlock.at( irName ).get<std::string>();
+
+        if( !value.empty() )
+            output << "\n    (" << nativeName << ' ' << quoted( value ) << ')';
+    }
+
+    const JSON& comments = aTitleBlock.at( "comments" );
+
+    for( size_t i = 0; i < comments.size(); ++i )
+    {
+        const std::string value = comments.at( i ).get<std::string>();
+
+        if( !value.empty() )
+            output << "\n    (comment " << i + 1 << ' ' << quoted( value ) << ')';
+    }
+
+    output << "\n  )";
+    return output.str();
 }
 
 
@@ -860,6 +893,26 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     }
 
     const std::string project = aCompilerIr["project"]["name"].get<std::string>();
+    const bool ownsTitleBlock = aCompilerIr["project"].contains( "titleBlock" );
+
+    if( ownsTitleBlock )
+    {
+        const JSON& titleBlock = aCompilerIr["project"]["titleBlock"];
+
+        if( !titleBlock.is_object() || !titleBlock.contains( "title" )
+            || !titleBlock["title"].is_string() || !titleBlock.contains( "date" )
+            || !titleBlock["date"].is_string() || !titleBlock.contains( "revision" )
+            || !titleBlock["revision"].is_string() || !titleBlock.contains( "company" )
+            || !titleBlock["company"].is_string() || !titleBlock.contains( "comments" )
+            || !titleBlock["comments"].is_array() || titleBlock["comments"].size() != 9
+            || !std::all_of( titleBlock["comments"].begin(), titleBlock["comments"].end(),
+                             []( const JSON& aComment ) { return aComment.is_string(); } ) )
+        {
+            diagnostic( result, "invalid_title_block_ir",
+                        "schematic title block IR must contain four strings and nine comments" );
+            return result;
+        }
+    }
     const JSON& sourceSheets = aCompilerIr["schematic"]["sheets"];
     const JSON& sourceComponents = aCompilerIr["schematic"]["components"];
     const JSON& sourceNets = aCompilerIr["schematic"]["nets"];
@@ -1400,7 +1453,13 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                      << "  (uuid " << quoted( screenUuid ) << ")\n"
                      << "  (paper \"A4\")\n";
 
-            if( id == rootId )
+            if( id == rootId && ownsTitleBlock )
+            {
+                document << "  "
+                         << titleBlockExpression( aCompilerIr["project"]["titleBlock"] )
+                         << "\n";
+            }
+            else if( id == rootId )
             {
                 document << "  (title_block\n"
                          << "    (title " << quoted( sheet["title"].get<std::string>() ) << ")\n"
@@ -1444,6 +1503,12 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                { "page", pages.at( id ) },
                                { "root", id == rootId },
                                { "title", sheet["title"] },
+                               { "rootTitleBlockOwned", id == rootId && ownsTitleBlock },
+                               { "rootTitleBlockSource",
+                                 id == rootId && ownsTitleBlock
+                                         ? JSON( titleBlockExpression(
+                                                   aCompilerIr["project"]["titleBlock"] ) )
+                                         : JSON( nullptr ) },
                                { "rootTitleSource",
                                  id == rootId
                                          ? JSON( "(title "

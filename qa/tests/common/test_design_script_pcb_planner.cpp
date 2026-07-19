@@ -19,6 +19,7 @@
 #include <import_export.h>
 #include <api/board/board.pb.h>
 #include <api/board/board_types.pb.h>
+#include <api/common/types/base_types.pb.h>
 #include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/json_util.h>
 #include <libraries/library_table_parser.h>
@@ -87,6 +88,35 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     BOOST_CHECK_EQUAL( id, "c3fc8149-6c3c-8f2d-94c6-2d462e6d2a49" );
     BOOST_CHECK_EQUAL( id[14], '8' );
     BOOST_CHECK( id[19] == '8' || id[19] == '9' || id[19] == 'a' || id[19] == 'b' );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersOneCompleteProjectTitleBlockToNativePcbSettings )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project titled
+    (title "Production Controller") (date "2026-07-19") (revision "C")
+    (company "KiChad QA") (comment 1 "Release candidate")
+    (comment 9 "Generated from KDS"))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"], "update_title_block" );
+    checkProtobufJson<kiapi::common::types::TitleBlockInfo>(
+            plan.operations[0]["titleBlock"] );
+    BOOST_CHECK_EQUAL( plan.operations[0]["titleBlock"]["title"],
+                       "Production Controller" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["titleBlock"]["comment1"],
+                       "Release candidate" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["titleBlock"]["comment9"],
+                       "Generated from KDS" );
+    BOOST_CHECK_EQUAL( plan.counts["titleBlocks"], 1 );
 }
 
 

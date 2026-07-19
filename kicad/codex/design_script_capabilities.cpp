@@ -73,9 +73,8 @@ nlohmann::json DesignScriptCapabilities()
 
                     capability( "project.identity", "project", "qualified", { "project" },
                                 "Project name and canonical root schematic/board binding." ),
-                    capability( "project.title_block", "project", "partial", { "project" },
-                                "Title is lowered for managed schematic files; other metadata is type-checked.",
-                                { "Company, revision, date, comments, board title block, and normalized readback are incomplete." } ),
+                    capability( "project.title_block", "project", "qualified", { "project" },
+                                "One normalized title, company, revision, date, and nine indexed comments lower to the root schematic and live board with native readback and rollback." ),
                     capability( "project.hierarchy", "project", "qualified", { "sheet" },
                                 "Nested sheets, files, instances, pins, hierarchical labels, page ordering, and rollback." ),
                     capability( "project.shared_screens", "project", "unrepresented", { "sheet" },

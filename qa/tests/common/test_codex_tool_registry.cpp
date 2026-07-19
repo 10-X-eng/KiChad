@@ -2430,6 +2430,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( firstData["counts"]["footprintCreate"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
+    BOOST_CHECK( firstData["titleBlockApplied"].get<bool>() );
     BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
     BOOST_CHECK( firstData["rulesApplied"].get<bool>() );
     BOOST_CHECK( firstData["netClassesApplied"].get<bool>() );
@@ -2471,6 +2472,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["footprintCreate"].get<int>(), 0 );
     BOOST_CHECK( repeatedData["stackupApplied"].get<bool>() );
+    BOOST_CHECK( repeatedData["titleBlockApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["customRulesApplied"].get<bool>() );
@@ -2482,7 +2484,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     const std::string rootBeforeRejectedApply = readExactTextFile( rootSchematic );
     const std::string originalSource = readExactTextFile( source );
     std::string rejectedSource = originalSource;
-    const std::string originalTitle = "KiChad live hierarchy";
+    const std::string originalTitle = "KiChad AI-native release";
     const size_t titlePosition = rejectedSource.find( originalTitle );
     BOOST_REQUIRE_NE( titlePosition, std::string::npos );
     rejectedSource.replace( titlePosition, originalTitle.size(), "Rejected native title" );
@@ -2511,6 +2513,24 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( envelope( rejectedApply )["error"]["code"].get<std::string>(),
                        "schematic_validation_failed" );
     BOOST_CHECK_EQUAL( readExactTextFile( rootSchematic ), rootBeforeRejectedApply );
+    KICHAD_IPC_CLIENT rollbackClient( "org.kichad.codex.qa.title-rollback",
+                                      socketDirectory );
+    KICHAD_IPC_TARGET rollbackTarget;
+    std::string rollbackIpcError;
+    BOOST_REQUIRE_MESSAGE(
+            rollbackClient.FindOpenPcb( project.GetFullPath(), board.GetFullPath(),
+                                        rollbackTarget, rollbackIpcError ),
+            rollbackIpcError );
+    kiapi::common::commands::GetTitleBlockInfo rollbackTitleRequest;
+    rollbackTitleRequest.mutable_document()->CopyFrom( rollbackTarget.document );
+    kiapi::common::ApiResponse rollbackTitleEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            rollbackClient.Call( rollbackTarget, rollbackTitleRequest,
+                                 rollbackTitleEnvelope, rollbackIpcError ),
+            rollbackIpcError );
+    kiapi::common::types::TitleBlockInfo rolledBackTitleBlock;
+    BOOST_REQUIRE( rollbackTitleEnvelope.message().UnpackTo( &rolledBackTitleBlock ) );
+    BOOST_CHECK_EQUAL( rolledBackTitleBlock.title(), "KiChad AI-native release" );
 
     JSON restoredSaved = registry.Handle(
             "design", { { "operation", "save" },
@@ -2536,6 +2556,20 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
             ipcClient.FindOpenPcb( project.GetFullPath(), board.GetFullPath(),
                                    ipcTarget, ipcError ),
             ipcError );
+    kiapi::common::commands::GetTitleBlockInfo titleRequest;
+    titleRequest.mutable_document()->CopyFrom( ipcTarget.document );
+    kiapi::common::ApiResponse titleEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, titleRequest, titleEnvelope, ipcError ), ipcError );
+    kiapi::common::types::TitleBlockInfo titleBlock;
+    BOOST_REQUIRE( titleEnvelope.message().UnpackTo( &titleBlock ) );
+    BOOST_CHECK_EQUAL( titleBlock.title(), "KiChad AI-native release" );
+    BOOST_CHECK_EQUAL( titleBlock.date(), "2026-07-19" );
+    BOOST_CHECK_EQUAL( titleBlock.revision(), "KDS-1" );
+    BOOST_CHECK_EQUAL( titleBlock.company(), "KiChad QA" );
+    BOOST_CHECK_EQUAL( titleBlock.comment1(), "Controlled by the KDS sidecar" );
+    BOOST_CHECK_EQUAL( titleBlock.comment2(), "" );
+    BOOST_CHECK_EQUAL( titleBlock.comment9(), "Complete indexed title-block proof" );
     kiapi::board::commands::GetBoardStackup stackupRequest;
     stackupRequest.mutable_board()->CopyFrom( ipcTarget.document );
     kiapi::common::ApiResponse stackupEnvelope;
@@ -3039,6 +3073,24 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE( recreatedManaged != recreatedFootprints.end() );
     BOOST_CHECK_EQUAL( ( *recreatedManaged )["id"]["value"].get<std::string>(),
                        managedFootprintId );
+
+    kiapi::common::commands::SaveDocument saveBoard;
+    saveBoard.mutable_document()->CopyFrom( ipcTarget.document );
+    kiapi::common::ApiResponse saveEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, saveBoard, saveEnvelope, ipcError ), ipcError );
+    const std::string savedBoard = readExactTextFile( board );
+    BOOST_CHECK_NE( savedBoard.find( "(title \"KiChad AI-native release\")" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find( "(date \"2026-07-19\")" ), std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find( "(rev \"KDS-1\")" ), std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find( "(company \"KiChad QA\")" ), std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find(
+                            "(comment 1 \"Controlled by the KDS sidecar\")" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find(
+                            "(comment 9 \"Complete indexed title-block proof\")" ),
+                    std::string::npos );
 }
 
 

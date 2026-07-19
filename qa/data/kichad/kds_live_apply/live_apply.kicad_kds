@@ -1,6 +1,12 @@
 (kichad_design
   (version 1)
-  (project live_apply)
+  (project live_apply
+    (title "KiChad AI-native release")
+    (date "2026-07-19")
+    (revision "KDS-1")
+    (company "KiChad QA")
+    (comment 1 "Controlled by the KDS sidecar")
+    (comment 9 "Complete indexed title-block proof"))
   (sheet root
     (parent none)
     (file "live_apply.kicad_sch")
