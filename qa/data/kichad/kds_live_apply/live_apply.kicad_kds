@@ -41,6 +41,7 @@
     (stroke 0.5mm dash))
   (bus_entry root-entry (sheet root) (from 85mm 48.73mm) (to 86.27mm 50mm)
     (stroke default default))
+  (bus_alias ROOT_SIGNALS (sheet root) (members Net1))
   (board
     (stackup
       (finish "ENIG")

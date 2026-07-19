@@ -182,6 +182,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
   (label signal-global (sheet root) (scope global) (net SIGNAL) (at 55mm 40mm)
     (rotation 180deg) (shape output) (size 1.5mm 1.2mm) (thickness 0.2mm)
     (justify right center) (bold true) (italic true))
+  (bus_alias SIGNALS (sheet root) (members SIGNAL))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
@@ -215,6 +216,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_EQUAL( plan.counts["netEndpoints"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["noConnects"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["busAliases"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["librarySymbols"].get<int>(), 1 );
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
     BOOST_CHECK_NE( native.find( "(symbol \"Local:R\"" ), std::string::npos );
@@ -234,6 +236,8 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(thickness 0.2)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(bold yes)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(italic yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
+                    std::string::npos );
 }
 
 

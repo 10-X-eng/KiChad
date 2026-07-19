@@ -1306,6 +1306,104 @@ JSON compileSchematicLabel( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileSchematicBusAlias( const DOCUMENT& aDocument, size_t aNode,
+                               KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string name;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], name )
+        || !validIdentifier( name ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_bus_alias",
+                    "bus_alias requires a bounded name" );
+        return JSON::object();
+    }
+
+    JSON alias = { { "name", name }, { "members", JSON::array() } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_bus_alias_field",
+                        "bus_alias field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet )
+                || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_bus_alias_sheet",
+                            "bus_alias sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                alias["sheet"] = sheet;
+            }
+
+            continue;
+        }
+
+        if( head == "members" )
+        {
+            const DOCUMENT::NODE& members = aDocument.Nodes()[child];
+            std::set<std::string> uniqueMembers;
+
+            for( size_t memberIndex = 1; memberIndex < members.children.size(); ++memberIndex )
+            {
+                std::string member;
+
+                if( !scalarText( aDocument, members.children[memberIndex], member )
+                    || member.empty() || member.size() > MAX_IDENTIFIER_BYTES )
+                {
+                    diagnostic( aResult, "error", "invalid_schematic_bus_alias_member",
+                                "bus_alias members must be bounded net names" );
+                    continue;
+                }
+
+                if( !uniqueMembers.emplace( member ).second )
+                {
+                    diagnostic( aResult, "error", "duplicate_schematic_bus_alias_member",
+                                "bus_alias member " + member + " occurs more than once" );
+                    continue;
+                }
+
+                alias["members"].push_back( member );
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_bus_alias_field",
+                    "bus_alias supports sheet and members" );
+    }
+
+    if( !alias.contains( "sheet" ) )
+    {
+        diagnostic( aResult, "error", "missing_schematic_bus_alias_field",
+                    "bus_alias " + name + " is missing sheet" );
+    }
+
+    if( !fields.contains( "members" ) || alias["members"].empty()
+        || alias["members"].size() > 256 )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_bus_alias_members",
+                    "bus_alias " + name + " requires 1 through 256 unique members" );
+    }
+
+    return alias;
+}
+
+
 JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
                     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
                     std::vector<std::string>& aReferencedComponents )
@@ -2799,6 +2897,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(size W H) (thickness auto|SIZE) "
                       "(justify left|center|right top|center|bottom) "
                       "(bold true|false) (italic true|false))" } },
+                  { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
                       "(title TEXT) [(at X Y) (size W H) "
@@ -2960,7 +3059,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "schematic",
           { { "sheets", JSON::array() }, { "components", JSON::array() },
             { "nets", JSON::array() }, { "noConnects", JSON::array() },
-            { "drawings", JSON::array() } } },
+            { "drawings", JSON::array() }, { "busAliases", JSON::array() } } },
         { "pcb", JSON::array() },
         { "rules", nullptr },
         { "netClasses", nullptr },
@@ -2987,6 +3086,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    outputKinds;
     std::set<std::string>    connectedPins;
     std::set<std::string>    schematicDrawingIds;
+    std::set<std::string>    schematicBusAliasIds;
     std::vector<std::string> referencedComponents;
     std::vector<std::string> referencedNets;
     size_t                   pinConnections = 0;
@@ -3126,6 +3226,21 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             }
 
             result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "bus_alias" )
+        {
+            JSON alias = compileSchematicBusAlias( *document, formNode, result );
+            const std::string key = alias.value( "sheet", "" ) + "\n"
+                                    + alias.value( "name", "" );
+
+            if( key != "\n" && !schematicBusAliasIds.emplace( key ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_bus_alias",
+                            "bus_alias " + alias.value( "name", "" )
+                                    + " occurs more than once on its sheet" );
+            }
+
+            result.ir["schematic"]["busAliases"].emplace_back( std::move( alias ) );
         }
         else if( form == "sheet" )
         {
@@ -3586,6 +3701,35 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         }
     }
 
+    for( const JSON& alias : result.ir["schematic"]["busAliases"] )
+    {
+        if( !alias.is_object() || !alias.contains( "sheet" ) || !alias["sheet"].is_string()
+            || !alias.contains( "members" ) || !alias["members"].is_array() )
+        {
+            continue;
+        }
+
+        const std::string sheet = alias["sheet"].get<std::string>();
+
+        if( !sheetsById.contains( sheet ) )
+        {
+            diagnostic( result, "error", "unresolved_schematic_bus_alias_sheet",
+                        "bus_alias " + alias.value( "name", "" )
+                                + " references undeclared sheet " + sheet );
+        }
+
+        for( const JSON& member : alias["members"] )
+        {
+            if( member.is_string() && !netNames.contains( member.get<std::string>() ) )
+            {
+                diagnostic( result, "error", "unresolved_schematic_bus_alias_member",
+                            "bus_alias " + alias.value( "name", "" )
+                                    + " references undeclared net "
+                                    + member.get<std::string>() );
+            }
+        }
+    }
+
     if( result.ir["libraries"].size() > MAX_LIBRARIES )
     {
         diagnostic( result, "error", "too_many_libraries",
@@ -3667,7 +3811,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( !result.ir["schematic"]["components"].empty()
         || !result.ir["schematic"]["nets"].empty()
         || !result.ir["schematic"]["noConnects"].empty()
-        || !result.ir["schematic"]["drawings"].empty() )
+        || !result.ir["schematic"]["drawings"].empty()
+        || !result.ir["schematic"]["busAliases"].empty() )
         passes.emplace_back( "schematic" );
 
     if( !result.ir["pcb"].empty() )
@@ -3697,6 +3842,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "nets", result.ir["schematic"]["nets"].size() },
             { "noConnects", result.ir["schematic"]["noConnects"].size() },
             { "drawings", result.ir["schematic"]["drawings"].size() },
+            { "busAliases", result.ir["schematic"]["busAliases"].size() },
             { "pinConnections", pinConnections },
             { "boardStatements", result.ir["pcb"].size() },
             { "rules", result.ir["rules"].is_object() ? 1 : 0 },

@@ -128,18 +128,22 @@ bool validManagedItem( const JSON& aItem )
                 || aItem["kind"] == "label" || aItem["kind"] == "no_connect"
                 || aItem["kind"] == "wire"
                 || aItem["kind"] == "bus" || aItem["kind"] == "bus_entry"
-                || aItem["kind"] == "junction" || aItem["kind"] == "lib_symbol" )
+                || aItem["kind"] == "junction" || aItem["kind"] == "lib_symbol"
+                || aItem["kind"] == "bus_alias" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()
            && aItem.contains( "uuid" ) && aItem["uuid"].is_string();
-    return base && ( aItem.value( "kind", "" ) != "lib_symbol"
-                     || ( aItem.contains( "libraryId" )
-                          && aItem["libraryId"].is_string() ) );
+    return base
+           && ( aItem.value( "kind", "" ) != "lib_symbol"
+                || ( aItem.contains( "libraryId" ) && aItem["libraryId"].is_string() ) )
+           && ( aItem.value( "kind", "" ) != "bus_alias"
+                || ( aItem.contains( "name" ) && aItem["name"].is_string() ) );
 }
 
 
 bool isDirectItem( const JSON& aItem )
 {
-    return aItem.value( "kind", "" ) != "lib_symbol";
+    return aItem.value( "kind", "" ) != "lib_symbol"
+           && aItem.value( "kind", "" ) != "bus_alias";
 }
 
 
@@ -202,6 +206,108 @@ bool validateDesiredLibrarySymbol( const JSON& aItem, std::string& aError )
            && document->Nodes().at( node.children[1] ).kind != DOCUMENT::NODE_KIND::LIST
            && document->AtomText( node.children[1] )
                       == aItem["libraryId"].get<std::string>();
+}
+
+
+bool validateDesiredBusAlias( const JSON& aItem, std::string& aError )
+{
+    if( !validManagedItem( aItem ) || aItem.value( "kind", "" ) != "bus_alias"
+        || !aItem.contains( "source" ) || !aItem["source"].is_string() )
+    {
+        aError = "planned schematic bus alias is malformed";
+        return false;
+    }
+
+    std::unique_ptr<DOCUMENT> document =
+            DOCUMENT::Parse( aItem["source"].get<std::string>(), &aError );
+
+    if( !document || document->Roots().size() != 1 )
+    {
+        if( aError.empty() )
+            aError = "planned schematic bus alias must contain one expression";
+
+        return false;
+    }
+
+    const size_t root = document->Roots().front();
+    const DOCUMENT::NODE& node = document->Nodes().at( root );
+    return document->ListHead( root ) == "bus_alias" && node.children.size() >= 2
+           && document->Nodes().at( node.children[1] ).kind != DOCUMENT::NODE_KIND::LIST
+           && document->AtomText( node.children[1] ) == aItem["name"].get<std::string>();
+}
+
+
+bool reconcileBusAliases( DOCUMENT& aDocument, size_t aRoot, const JSON& aDesired,
+                          const std::map<std::string, JSON>& aPrevious,
+                          RESULT& aResult, std::string& aInsertions, std::string& aError )
+{
+    std::map<std::string, size_t> nativeAliases;
+
+    for( size_t alias : directLists( aDocument, aRoot, "bus_alias" ) )
+    {
+        const DOCUMENT::NODE& node = aDocument.Nodes().at( alias );
+
+        if( node.children.size() < 2
+            || aDocument.Nodes().at( node.children[1] ).kind == DOCUMENT::NODE_KIND::LIST )
+        {
+            aError = "schematic contains a bus_alias without a scalar name";
+            return false;
+        }
+
+        const std::string name = aDocument.AtomText( node.children[1] );
+
+        if( !nativeAliases.emplace( name, alias ).second )
+        {
+            aError = "schematic contains duplicate bus_alias " + name;
+            return false;
+        }
+    }
+
+    std::map<std::string, JSON> desired;
+
+    for( const JSON& alias : aDesired )
+        desired.emplace( alias["name"].get<std::string>(), alias );
+
+    for( const auto& [ name, alias ] : desired )
+    {
+        auto native = nativeAliases.find( name );
+
+        if( native == nativeAliases.end() )
+        {
+            aInsertions += "  " + alias["source"].get<std::string>() + "\n";
+        }
+        else if( !aPrevious.contains( name ) )
+        {
+            aError = "bus_alias " + name + " is unmanaged and cannot be claimed by KDS";
+            return false;
+        }
+        else if( !aDocument.ReplaceNode( native->second,
+                                         alias["source"].get<std::string>(), &aError ) )
+        {
+            return false;
+        }
+
+        ++aResult.counts["itemsUpserted"].get_ref<int64_t&>();
+    }
+
+    for( const auto& [ name, previous ] : aPrevious )
+    {
+        if( desired.contains( name ) )
+            continue;
+
+        auto native = nativeAliases.find( name );
+
+        if( native != nativeAliases.end()
+            && !aDocument.RemoveNode( native->second, &aError ) )
+        {
+            return false;
+        }
+
+        if( native != nativeAliases.end() )
+            ++aResult.counts["itemsRemoved"].get_ref<int64_t&>();
+    }
+
+    return true;
 }
 
 
@@ -422,6 +528,7 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
 
     std::map<std::string, std::map<std::string, JSON>> previousByFile;
     std::map<std::string, std::map<std::string, JSON>> previousLibrariesByFile;
+    std::map<std::string, std::map<std::string, JSON>> previousBusAliasesByFile;
     std::set<std::string> previousLogicalIds;
 
     for( const JSON& item : aPreviousManagedItems )
@@ -432,8 +539,11 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             || !( isDirectItem( item )
                           ? previousByFile[item["file"].get<std::string>()]
                                     .emplace( item["uuid"].get<std::string>(), item ).second
-                          : previousLibrariesByFile[item["file"].get<std::string>()]
-                                    .emplace( item["libraryId"].get<std::string>(), item ).second ) )
+                  : item["kind"] == "lib_symbol"
+                          ? previousLibrariesByFile[item["file"].get<std::string>()]
+                                    .emplace( item["libraryId"].get<std::string>(), item ).second
+                          : previousBusAliasesByFile[item["file"].get<std::string>()]
+                                    .emplace( item["name"].get<std::string>(), item ).second ) )
         {
             diagnostic( result, "invalid_schematic_state",
                         "managed schematic state contains malformed or duplicate ownership" );
@@ -451,6 +561,7 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             || !file.contains( "root" ) || !file["root"].is_boolean()
             || !file.contains( "items" ) || !file["items"].is_array()
             || !file.contains( "libSymbols" ) || !file["libSymbols"].is_array()
+            || !file.contains( "busAliases" ) || !file["busAliases"].is_array()
             || !file.contains( "newDocumentSource" )
             || !file["newDocumentSource"].is_string()
             || !desiredFiles.emplace( file["path"].get<std::string>(), file ).second )
@@ -480,6 +591,21 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             std::string validationError;
 
             if( !validateDesiredLibrarySymbol( item, validationError )
+                || !desiredLogicalIds.emplace( item["kind"].get<std::string>() + "\n"
+                                               + item["logicalId"].get<std::string>() ).second )
+            {
+                diagnostic( result, "invalid_schematic_plan",
+                            validationError.empty() ? "schematic plan contains duplicate ownership"
+                                                    : validationError );
+                return result;
+            }
+        }
+
+        for( const JSON& item : file["busAliases"] )
+        {
+            std::string validationError;
+
+            if( !validateDesiredBusAlias( item, validationError )
                 || !desiredLogicalIds.emplace( item["kind"].get<std::string>() + "\n"
                                                + item["logicalId"].get<std::string>() ).second )
             {
@@ -530,6 +656,8 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
 
         const JSON& candidates = ownership["kind"] == "lib_symbol"
                                          ? desiredFile->second["libSymbols"]
+                                 : ownership["kind"] == "bus_alias"
+                                         ? desiredFile->second["busAliases"]
                                          : desiredFile->second["items"];
         const auto match = std::find_if(
                 candidates.begin(), candidates.end(), [&]( const JSON& aItem )
@@ -540,7 +668,8 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
                            && aItem.value( "uuid", "" ) == ownership.value( "uuid", "" )
                            && aItem.value( "file", "" ) == ownership.value( "file", "" )
                            && aItem.value( "libraryId", "" )
-                                      == ownership.value( "libraryId", "" );
+                                      == ownership.value( "libraryId", "" )
+                           && aItem.value( "name", "" ) == ownership.value( "name", "" );
                 } );
 
         if( match == candidates.end() )
@@ -576,6 +705,9 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
         relevantPaths.emplace( path );
 
     for( const auto& [ path, symbols ] : previousLibrariesByFile )
+        relevantPaths.emplace( path );
+
+    for( const auto& [ path, aliases ] : previousBusAliasesByFile )
         relevantPaths.emplace( path );
 
     for( const std::string& path : relevantPaths )
@@ -625,7 +757,8 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             result.counts["itemsUpserted"] =
                     result.counts["itemsUpserted"].get<int64_t>()
                     + desiredEntry->second["items"].size()
-                    + desiredEntry->second["libSymbols"].size();
+                    + desiredEntry->second["libSymbols"].size()
+                    + desiredEntry->second["busAliases"].size();
             continue;
         }
 
@@ -738,6 +871,18 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
 
         if( !reconcileLibrarySymbols( *document, root, desiredLibrarySymbols,
                                       previousLibrariesByFile[path], result, editError ) )
+        {
+            diagnostic( result, "schematic_edit_failed", path + ": " + editError );
+            return result;
+        }
+
+        const JSON desiredBusAliases = desiredEntry == desiredFiles.end()
+                                               ? JSON::array()
+                                               : desiredEntry->second["busAliases"];
+
+        if( !reconcileBusAliases( *document, root, desiredBusAliases,
+                                  previousBusAliasesByFile[path], result, insertions,
+                                  editError ) )
         {
             diagnostic( result, "schematic_edit_failed", path + ": " + editError );
             return result;

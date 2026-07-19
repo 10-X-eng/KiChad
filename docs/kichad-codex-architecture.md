@@ -146,6 +146,9 @@ existing direct item, so an unmanaged collision or stale kind aborts instead of 
 Local and global labels travel as the same typed drawing IR but reference an already resolved KDS
 net; the planner derives native label text and scope-specific native kind from that reference.
 Hierarchical labels continue to derive from sheet pins, keeping connectivity in one representation.
+Bus aliases similarly reference declared KDS nets rather than copying member semantics. Because the
+native format has no alias UUID, the sidecar owns a stable logical identity while reconciliation is
+keyed by the exact sheet-local alias name; unmanaged name collisions abort before any file edit.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

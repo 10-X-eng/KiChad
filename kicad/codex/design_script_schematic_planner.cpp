@@ -572,6 +572,21 @@ std::string labelExpression( const JSON& aDrawing, const std::string& aNativeKin
 }
 
 
+std::string busAliasExpression( const JSON& aAlias )
+{
+    std::ostringstream output;
+    output << "(bus_alias " << quoted( aAlias.at( "name" ).get<std::string>() ) << "\n"
+           << "    (members";
+
+    for( const JSON& member : aAlias.at( "members" ) )
+        output << ' ' << quoted( member.get<std::string>() );
+
+    output << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
 bool validSheetShape( const JSON& aSheet )
 {
     if( !aSheet.is_object() || !aSheet.contains( "id" ) || !aSheet["id"].is_string()
@@ -615,6 +630,26 @@ bool validSheetShape( const JSON& aSheet )
     }
 
     return true;
+}
+
+
+bool validBusAliasShape( const JSON& aAlias )
+{
+    if( !aAlias.is_object() || !aAlias.contains( "name" ) || !aAlias["name"].is_string()
+        || aAlias["name"].get<std::string>().empty() || !aAlias.contains( "sheet" )
+        || !aAlias["sheet"].is_string() || !aAlias.contains( "members" )
+        || !aAlias["members"].is_array() || aAlias["members"].empty()
+        || aAlias["members"].size() > 256 )
+    {
+        return false;
+    }
+
+    return std::all_of( aAlias["members"].begin(), aAlias["members"].end(),
+                        []( const JSON& aMember )
+                        {
+                            return aMember.is_string()
+                                   && !aMember.get<std::string>().empty();
+                        } );
 }
 
 
@@ -786,7 +821,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     RESULT result;
     result.counts = { { "files", 0 }, { "sheets", 0 }, { "pins", 0 },
                       { "components", 0 }, { "netEndpoints", 0 },
-                      { "noConnects", 0 }, { "drawings", 0 }, { "librarySymbols", 0 },
+                      { "noConnects", 0 }, { "drawings", 0 }, { "busAliases", 0 },
+                      { "librarySymbols", 0 },
                       { "managedItems", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -805,6 +841,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
         || !aCompilerIr["schematic"]["noConnects"].is_array()
         || !aCompilerIr["schematic"].contains( "drawings" )
         || !aCompilerIr["schematic"]["drawings"].is_array()
+        || !aCompilerIr["schematic"].contains( "busAliases" )
+        || !aCompilerIr["schematic"]["busAliases"].is_array()
         || !aExistingScreenUuids.is_object() || !aResolvedSymbols.is_object() )
     {
         diagnostic( result, "invalid_compiler_ir",
@@ -818,10 +856,11 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     const JSON& sourceNets = aCompilerIr["schematic"]["nets"];
     const JSON& sourceNoConnects = aCompilerIr["schematic"]["noConnects"];
     const JSON& sourceDrawings = aCompilerIr["schematic"]["drawings"];
+    const JSON& sourceBusAliases = aCompilerIr["schematic"]["busAliases"];
 
     if( sourceSheets.empty() )
     {
-        if( !sourceDrawings.empty() )
+        if( !sourceDrawings.empty() || !sourceBusAliases.empty() )
         {
             diagnostic( result, "invalid_schematic_ir",
                         "schematic drawings require a declared hierarchy" );
@@ -1080,6 +1119,27 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
 
     std::map<std::string, std::vector<JSON>> connectivityBySheet;
     std::map<std::string, std::vector<JSON>> drawingsBySheet;
+    std::map<std::string, std::vector<JSON>> busAliasesBySheet;
+
+    for( const JSON& alias : sourceBusAliases )
+    {
+        if( !validBusAliasShape( alias ) || !sheets.contains( alias.value( "sheet", "" ) ) )
+        {
+            diagnostic( result, "invalid_schematic_ir",
+                        "schematic IR contains a malformed bus alias or sheet reference" );
+            continue;
+        }
+
+        const std::string sheet = alias["sheet"].get<std::string>();
+        const std::string name = alias["name"].get<std::string>();
+        const std::string logicalId = sheet + "/" + name;
+        busAliasesBySheet[sheet].push_back(
+                { { "kind", "bus_alias" },
+                  { "logicalId", logicalId },
+                  { "name", name },
+                  { "uuid", stableUuid( project, "schematic_bus_alias", logicalId ) },
+                  { "source", busAliasExpression( alias ) } } );
+    }
 
     for( const JSON& drawing : sourceDrawings )
     {
@@ -1195,6 +1255,16 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
             const std::string screenUuid = screenUuids.at( file );
             JSON items = JSON::array();
             JSON libSymbols = JSON::array();
+            JSON busAliases = JSON::array();
+
+            for( JSON alias : busAliasesBySheet[id] )
+            {
+                alias["file"] = file;
+                busAliases.push_back( alias );
+                JSON ownership = std::move( alias );
+                ownership.erase( "source" );
+                managedItems.push_back( std::move( ownership ) );
+            }
 
             for( const auto& [ libraryId, resolved ] : librariesBySheet[id] )
             {
@@ -1321,6 +1391,9 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
 
             document << "  )\n";
 
+            for( const JSON& alias : busAliases )
+                document << "  " << alias["source"].get<std::string>() << "\n";
+
             for( const JSON& item : items )
                 document << "  " << item["source"].get<std::string>() << "\n";
 
@@ -1361,6 +1434,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                                  "  )" )
                                          : JSON( nullptr ) },
                                { "libSymbols", std::move( libSymbols ) },
+                               { "busAliases", std::move( busAliases ) },
                                { "items", std::move( items ) },
                                { "newDocumentSource", document.str() } } );
             result.counts["pins"] = result.counts["pins"].get<size_t>()
@@ -1389,6 +1463,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
 
     result.counts["noConnects"] = sourceNoConnects.size();
     result.counts["drawings"] = sourceDrawings.size();
+    result.counts["busAliases"] = sourceBusAliases.size();
 
     for( const auto& [ sheet, symbols ] : librariesBySheet )
         result.counts["librarySymbols"] = result.counts["librarySymbols"].get<size_t>()

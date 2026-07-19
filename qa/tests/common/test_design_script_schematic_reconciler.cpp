@@ -282,4 +282,76 @@ BOOST_AUTO_TEST_CASE( ReconcilesOnlyOwnedCachedSymbolsAndPlacedUnits )
 }
 
 
+BOOST_AUTO_TEST_CASE( ReconcilesBusAliasesByOwnedNameWithoutClaimingUnmanagedAliases )
+{
+    const nlohmann::json baseOperation = operationFor();
+    const nlohmann::json absent = {
+        { { "path", "hierarchy.kicad_sch" }, { "present", false } },
+        { { "path", "power.kicad_sch" }, { "present", false } }
+    };
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT baseCreated =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    baseOperation, nlohmann::json::array(), absent );
+    BOOST_REQUIRE_MESSAGE( baseCreated.ok, baseCreated.diagnostics.dump() );
+    nlohmann::json installed = nlohmann::json::array();
+
+    for( const nlohmann::json& action : baseCreated.fileActions )
+    {
+        installed.push_back( { { "path", action["path"] },
+                               { "present", true },
+                               { "source", action["source"] } } );
+    }
+
+    nlohmann::json aliasOperation = baseOperation;
+    const nlohmann::json alias = {
+        { "file", "hierarchy.kicad_sch" },
+        { "kind", "bus_alias" },
+        { "logicalId", "root/SIGNALS" },
+        { "name", "SIGNALS" },
+        { "uuid", "11111111-2222-8333-8444-555555555555" },
+        { "source", "(bus_alias \"SIGNALS\" (members \"SIGNAL\"))" }
+    };
+    aliasOperation["files"][0]["busAliases"].push_back( alias );
+    nlohmann::json aliasOwnership = alias;
+    aliasOwnership.erase( "source" );
+    aliasOperation["managedItems"].push_back( aliasOwnership );
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT added =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    aliasOperation, nlohmann::json::array(), installed );
+    BOOST_REQUIRE_MESSAGE( added.ok, added.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( added.fileActions.size(), 1 );
+    BOOST_CHECK_NE( added.fileActions[0]["source"].get<std::string>().find(
+                            "(bus_alias \"SIGNALS\"" ),
+                    std::string::npos );
+
+    for( nlohmann::json& live : installed )
+    {
+        if( live["path"] == "hierarchy.kicad_sch" )
+            live["source"] = added.fileActions[0]["source"];
+    }
+
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT repeated =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    aliasOperation, aliasOperation["managedItems"], installed );
+    BOOST_REQUIRE_MESSAGE( repeated.ok, repeated.diagnostics.dump() );
+    BOOST_CHECK( repeated.fileActions.empty() );
+
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT unmanaged =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    aliasOperation, nlohmann::json::array(), installed );
+    BOOST_CHECK( !unmanaged.ok );
+    BOOST_CHECK_NE( unmanaged.diagnostics.dump().find( "is unmanaged" ),
+                    std::string::npos );
+
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT removed =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    baseOperation, aliasOperation["managedItems"], installed );
+    BOOST_REQUIRE_MESSAGE( removed.ok, removed.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( removed.fileActions.size(), 1 );
+    BOOST_CHECK_EQUAL( removed.fileActions[0]["source"].get<std::string>().find(
+                               "(bus_alias \"SIGNALS\"" ),
+                       std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()

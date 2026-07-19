@@ -77,8 +77,8 @@ resulting hierarchy through the real `kicad-cli` schematic loader. The same proo
 project-local resistor symbols, places units on root and child sheets with rotation/mirroring,
 attaches a project-global net and explicit no-connect state to resolved pin coordinates, and checks
 the exported netlist for both components and both net nodes. The native schematic proof also
-reconciles a net-derived local label plus stable-ID wires, junctions, buses, and diagonal bus
-entries. It also applies and
+reconciles net-derived local/global labels, a name-owned bus alias, plus stable-ID wires, junctions,
+buses, and diagonal bus entries. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

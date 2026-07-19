@@ -333,6 +333,10 @@ source:
   (justify left bottom)
   (bold false)
   (italic false))
+
+(bus_alias SENSOR_SIGNALS
+  (sheet analog)
+  (members SENSOR_OUT SENSOR_ENABLE))
 ```
 
 Stroke width is either `default` (native zero-width/net-class policy) or a bounded physical width;
@@ -352,6 +356,13 @@ derived from that canonical name instead of being authored a second time. Scope 
 explicit. Hierarchical labels are not duplicated as free-standing forms: they remain derived from
 the child sheet's canonical `pin` declaration. Unknown nets and invalid scope/shape combinations
 abort compilation.
+
+A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
+KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are
+unique within a sheet. KiCad's native bus-alias item has no UUID, so KiChad records a stable sidecar
+identity but reconciles the native item by sheet and alias name. A same-name alias not proven to be
+previously managed is never claimed; apply fails before mutation. Repeated apply is byte-idempotent,
+and removing the KDS declaration removes only the alias named in prior managed state.
 
 ### Library dependencies and project tables
 
@@ -770,7 +781,7 @@ reconcilable on the next apply, while the whole turn remains revertible from loc
 
 The apply backend currently executes nested native schematic hierarchy, confined project-local
 symbol resolution, multi-unit component placement, global-net connectivity, explicit no-connect
-state, native local/global labels, wires/junctions/buses/bus entries, complete native project
+state, native local/global labels, bus aliases, wires/junctions/buses/bus entries, complete native project
 symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
@@ -849,7 +860,7 @@ executable with native parser validation, atomic installation, journaling, and r
 Project-local non-derived symbol content, component unit placement, connectivity, and no-connect
 state are executable with lossless reconciliation, stable identity, native netlist validation,
 journaling, rollback, and a disposable live integration proof. Derived symbols, global installed
-symbol content, library authoring, footprint/model content, bus aliases, and other schematic
+symbol content, library authoring, footprint/model content, and other schematic
 drawing forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
 hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

@@ -2626,7 +2626,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                             { "root", file["root"] },
                                             { "managedItems",
                                               file["items"].size()
-                                                      + file["libSymbols"].size() } } );
+                                                      + file["libSymbols"].size()
+                                                      + file["busAliases"].size() } } );
             }
         }
 

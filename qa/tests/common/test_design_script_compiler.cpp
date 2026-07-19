@@ -1223,6 +1223,7 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
   (label signal-global (sheet analog) (scope global) (net SIGNAL) (at 55mm 40mm)
     (rotation 180deg) (shape output) (size 1.5mm 1.2mm) (thickness 0.2mm)
     (justify right center) (bold true) (italic true))
+  (bus_alias SIGNALS (sheet root) (members SIGNAL))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
@@ -1239,6 +1240,8 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
     BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][0]["scope"], "local" );
     BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][1]["shape"], "output" );
     BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][1]["thicknessNm"], 200000 );
+    BOOST_REQUIRE_EQUAL( result.ir["schematic"]["busAliases"].size(), 1 );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["busAliases"][0]["members"][0], "SIGNAL" );
     BOOST_CHECK_EQUAL( result.plan["counts"]["noConnects"].get<int>(), 1 );
 
     const std::string invalid = R"KDS((kichad_design
@@ -1333,7 +1336,10 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeSchematicDrawingPrimitives )
           (sheet root (parent none) (file "bad_label_shape.kicad_sch") (title "Bad"))
           (label l (sheet root) (scope local) (net MISSING) (at 1mm 1mm)
             (rotation 0deg) (shape input) (size 1.27mm 1.27mm) (thickness auto)
-            (justify left bottom) (bold false) (italic false))))KDS"
+            (justify left bottom) (bold false) (italic false))))KDS",
+        R"KDS((kichad_design (version 1) (project bad_bus_alias)
+          (sheet root (parent none) (file "bad_bus_alias.kicad_sch") (title "Bad"))
+          (bus_alias CONTROL (sheet root) (members MISSING MISSING))))KDS"
     };
 
     for( const std::string& program : programs )

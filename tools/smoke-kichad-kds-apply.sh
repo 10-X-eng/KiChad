@@ -109,6 +109,7 @@ for attempt in $(seq 1 30); do
         done
         grep -Fq '(label "Net1"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(global_label "Net1"' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         echo "KiChad live KDS apply smoke test passed."
         exit 0
     fi
