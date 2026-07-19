@@ -24,9 +24,11 @@ saved or dispatched to a KiChad compiler pass.
 - Compatibility: unknown top-level forms are errors; newer syntax requires a new language version
 
 The project manager recognizes the extension, displays sidecars in the project tree, and opens them
-as text.  The native `design` tool supports `describe`, inline or file-backed `compile`, and `save`.
-Loading a sidecar never rewrites it.  Saving preserves the supplied source byte-for-byte after the
-compiler accepts it.
+as text. The native `design` tool supports `describe`, inline or file-backed `compile`, read-only
+`preview`, and `save`. Loading a sidecar never rewrites it. Saving preserves the supplied source
+byte-for-byte after the compiler accepts it. Preview lowers typed board statements into exact
+KiCad 10 protobuf JSON operations, deterministic item UUIDs, counts, and unsupported-backend
+diagnostics without connecting to or changing the PCB Editor.
 
 ## Version 1 source model
 
@@ -56,9 +58,11 @@ compiler accepts it.
 
   (board
     (stackup (copper_layers 2) (thickness 1.6mm))
-    (outline (rect (at 0mm 0mm) (size 40mm 30mm)))
+    (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
-    (route LED_A (width 0.25mm) (layer F.Cu)))
+    (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
+      (width 0.25mm) (layer F.Cu))
+    (via LED_A (id led-a-via) (at 20mm 10mm) (diameter 0.8mm) (drill 0.4mm)))
 
   (rule default_clearance (minimum 0.2mm))
   (source R1
@@ -74,9 +78,15 @@ compiler accepts it.
   (output bom))
 ```
 
-The compiler normalizes source into a validated intermediate representation.  Logical component and
-net identities remain stable across recompilation; generated KiCad UUIDs are recorded by the
-backend rather than embedded throughout the authored program.
+The compiler normalizes source into a validated intermediate representation. Logical component and
+net identities remain stable across recompilation. Previewed board items use stable RFC 9562 UUIDv8
+identities derived from the language namespace, project name, item kind, and authored logical ID;
+formatting and statement order do not affect those identities.
+
+Physical board quantities always carry explicit units (`mm`, `mil`, `um`, `nm`, or `in`), and
+rotations carry `deg`.  Generated items such as outlines, traces, arcs, and vias require logical
+`id` fields.  Those IDs are stable across formatting and statement reordering and are the source
+identity used by transactional backends; component placement uses the already-unique reference.
 
 ## Compiler pipeline
 

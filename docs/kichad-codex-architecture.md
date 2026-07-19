@@ -40,8 +40,10 @@ It accepts only existing project-relative paths, resolves symlinks before enforc
 root, checks the file extension against the document root, caps input/output sizes, and never writes.
 `design` is the compiler front end for reusable `.kicad_kds` KiChad Design Script sidecars.  It
 describes the versioned language, compiles either inline source or a project-confined sidecar into a
-deterministic validated IR and pass plan, and atomically saves only valid programs behind the pre-turn
-snapshot gate.  Existing sidecars require a matching SHA-256 revision before replacement.  KDS has
+deterministic validated IR and pass plan, previews typed physical board statements as exact KiCad 10
+protobuf JSON operations with stable UUIDv8 identities, and atomically saves only valid programs
+behind the pre-turn snapshot gate. Preview is bounded and read-only. Existing sidecars require a
+matching SHA-256 revision before replacement. KDS has
 no host-language or shell escape; it declares project metadata, libraries, schematic hierarchy,
 components, connectivity, board intent, design rules, sourcing, verification, and outputs.  See
 `kichad-design-script.md` for the file contract and support policy.
@@ -75,8 +77,8 @@ available for bounded inspection, diagnostics, and compiler implementation; they
 untracked source of design truth.  The sidecar is reusable source and the ordinary KiCad project
 files are its compiled artifacts.
 
-The complete tool surface is capped at nine host functions.  Each function accepts schema-validated,
-schema-validated requests and returns structured results; functionality is added to these tools
+The complete tool surface is capped at nine host functions. Each function accepts schema-validated
+requests and returns structured results; functionality is added to these tools
 instead of creating narrowly named one-off tools.
 
 1. `design` — load, save, compile, preview, apply, and verify a versioned `.kicad_kds` sidecar.

@@ -11,6 +11,7 @@
 
 #include "design_script_compiler.h"
 
+#include "design_script_board_compiler.h"
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
@@ -480,52 +481,6 @@ JSON compileNamedFacet( const DOCUMENT& aDocument, size_t aNode, const std::stri
 }
 
 
-JSON compileBoardStatement( const DOCUMENT& aDocument, size_t aNode,
-                            KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
-                            std::vector<std::string>& aReferencedComponents,
-                            std::vector<std::string>& aReferencedNets )
-{
-    static const std::set<std::string> allowed = {
-        "stackup", "outline", "place", "route", "via",
-        "zone", "text", "dimension", "keepout"
-    };
-    const std::string head = aDocument.ListHead( aNode );
-
-    if( !allowed.contains( head ) )
-    {
-        diagnostic( aResult, "error", "unknown_board_statement",
-                    "board statement '" + head + "' is not part of KDS version 1" );
-        return JSON::object();
-    }
-
-    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
-
-    if( head == "place" || head == "route" )
-    {
-        std::string identity;
-
-        if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], identity )
-            || ( head == "place" && !validIdentifier( identity ) )
-            || ( head == "route"
-                 && ( identity.empty() || identity.size() > MAX_IDENTIFIER_BYTES ) ) )
-        {
-            diagnostic( aResult, "error", "invalid_board_reference",
-                        "board " + head + " requires a bounded logical reference" );
-        }
-        else if( head == "place" )
-        {
-            aReferencedComponents.emplace_back( identity );
-        }
-        else
-        {
-            aReferencedNets.emplace_back( identity );
-        }
-    }
-
-    return expressionToIr( aDocument, aNode );
-}
-
-
 JSON compileEnumeratedFacet( const DOCUMENT& aDocument, size_t aNode, const std::string& aFacet,
                              const std::set<std::string>& aAllowed,
                              KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
@@ -580,8 +535,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form", "(net NAME (pin REF NUMBER) (pin REF NUMBER) ...)" } },
                   { { "form", "(sheet NAME ...)" } },
                   { { "form",
-                      "(board (stackup ...) (outline ...) (place ...) (route ...) (via ...) "
-                      "(zone ...) (text ...) (dimension ...) (keepout ...))" } },
+                      "(board (stackup ...) (outline (rect (id ID) (at X Y) (size W H))) "
+                      "(place REF (at X Y) ...) (route NET (id ID) (from X Y) (to X Y) ...) "
+                      "(via NET (id ID) (at X Y) ...) (zone ...) (text ...) (dimension ...) "
+                      "(keepout ...))" } },
                   { { "form", "(rule NAME ...)" } },
                   { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "
@@ -687,6 +644,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     bool                     sawProject = false;
     bool                     sawUnits = false;
     bool                     sawBoard = false;
+    bool                     boardFullyTyped = true;
     std::set<std::string>    componentIds;
     std::set<std::string>    netNames;
     std::set<std::string>    libraryIds;
@@ -809,14 +767,21 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             if( sawBoard )
                 diagnostic( result, "error", "duplicate_board", "board occurs more than once" );
 
-            const DOCUMENT::NODE& board = document->Nodes()[formNode];
+            KICHAD::DESIGN_SCRIPT_BOARD_COMPILER::RESULT board =
+                    KICHAD::DESIGN_SCRIPT_BOARD_COMPILER::Compile( *document, formNode );
 
-            for( size_t child = 1; child < board.children.size(); ++child )
-            {
-                result.ir["pcb"].emplace_back(
-                        compileBoardStatement( *document, board.children[child], result,
-                                               referencedComponents, referencedNets ) );
-            }
+            for( JSON& statement : board.statements )
+                result.ir["pcb"].emplace_back( std::move( statement ) );
+
+            for( JSON& boardDiagnostic : board.diagnostics )
+                result.diagnostics.emplace_back( std::move( boardDiagnostic ) );
+
+            referencedComponents.insert( referencedComponents.end(),
+                                         board.componentReferences.begin(),
+                                         board.componentReferences.end() );
+            referencedNets.insert( referencedNets.end(), board.netReferences.begin(),
+                                   board.netReferences.end() );
+            boardFullyTyped = boardFullyTyped && board.fullyTyped;
 
             sawBoard = true;
         }
@@ -933,6 +898,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "passes", std::move( passes ) },
         { "mutationRequired", true },
         { "transactional", true },
+        { "boardFullyTyped", boardFullyTyped },
         { "counts",
           { { "libraries", result.ir["libraries"].size() },
             { "sheets", result.ir["schematic"]["sheets"].size() },

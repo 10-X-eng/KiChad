@@ -11,6 +11,7 @@
 
 #include "codex_tool_registry.h"
 #include "design_script_compiler.h"
+#include "design_script_pcb_planner.h"
 #include "kicad_ipc_client.h"
 #include "lossless_sexpr_document.h"
 
@@ -600,7 +601,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                           { "required", JSON::array( { "operation" } ) } };
     designSchema["properties"]["operation"] =
             { { "type", "string" },
-              { "enum", JSON::array( { "describe", "compile", "save" } ) } };
+              { "enum", JSON::array( { "describe", "compile", "preview", "save" } ) } };
     designSchema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative reusable .kicad_kds sidecar path." } };
@@ -614,11 +615,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
     designSchema["properties"]["includeIr"] =
             { { "type", "boolean" },
               { "description", "Include bounded validated compiler IR; defaults to true." } };
+    designSchema["properties"]["includeOperations"] =
+            { { "type", "boolean" },
+              { "description",
+                "Include bounded KiCad protobuf-JSON operations in preview; defaults to true." } };
 
     specs.push_back( { { "type", "function" },
                        { "name", "design" },
                        { "description",
-                         "Describe, compile, import, or atomically save a reusable KiChad Design "
+                         "Describe, compile, preview, import, or atomically save a reusable KiChad Design "
                          "Script sidecar. KDS programs declare the complete project—schematic, "
                          "libraries, PCB intent, sourcing, verification, and fabrication outputs—"
                          "for deterministic execution by KiChad compiler backends." },
@@ -724,10 +729,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     const std::string operation = aArguments["operation"].get<std::string>();
 
-    if( operation != "describe" && operation != "compile" && operation != "save" )
+    if( operation != "describe" && operation != "compile" && operation != "preview"
+        && operation != "save" )
     {
         return failure( "invalid_arguments",
-                        "design.operation must be 'describe', 'compile', or 'save'" );
+                        "design.operation must be 'describe', 'compile', 'preview', or 'save'" );
     }
 
     if( operation == "describe" )
@@ -736,20 +742,23 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
     const bool hasSource = aArguments.contains( "source" ) && aArguments["source"].is_string();
     const bool hasPath = aArguments.contains( "path" ) && aArguments["path"].is_string();
 
-    if( ( operation == "compile" && hasSource == hasPath )
+    if( ( ( operation == "compile" || operation == "preview" ) && hasSource == hasPath )
         || ( operation == "save" && ( !hasSource || !hasPath ) ) )
     {
         return failure( "invalid_arguments",
-                        operation == "compile"
-                                ? "design.compile requires exactly one of source or path"
+                        operation != "save"
+                                ? "design.compile and design.preview require exactly one of source or path"
                                 : "design.save requires source and path" );
     }
 
     if( ( aArguments.contains( "source" ) && !aArguments["source"].is_string() )
         || ( aArguments.contains( "path" ) && !aArguments["path"].is_string() )
-        || ( aArguments.contains( "includeIr" ) && !aArguments["includeIr"].is_boolean() ) )
+        || ( aArguments.contains( "includeIr" ) && !aArguments["includeIr"].is_boolean() )
+        || ( aArguments.contains( "includeOperations" )
+             && !aArguments["includeOperations"].is_boolean() ) )
     {
-        return failure( "invalid_arguments", "design source, path, or includeIr has the wrong type" );
+        return failure( "invalid_arguments",
+                        "design source, path, includeIr, or includeOperations has the wrong type" );
     }
 
     auto readFile = []( const wxFileName& aFile, std::string& aSource,
@@ -794,7 +803,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !resolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
             return failure( "invalid_path", pathError );
 
-        if( operation == "compile" && !sidecar.FileExists() )
+        if( ( operation == "compile" || operation == "preview" ) && !sidecar.FileExists() )
             return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
     }
 
@@ -836,6 +845,49 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             payload["irOmitted"] = true;
             payload["irOmissionReason"] = includeIr ? "size_limit" : "not_requested";
         }
+
+        return success( payload );
+    }
+
+    if( operation == "preview" )
+    {
+        if( !compiled.ok )
+        {
+            std::string message = "KiChad Design Script did not pass compilation";
+
+            if( !compiled.diagnostics.empty() )
+                message += ": " + compiled.diagnostics.front().value( "message", "invalid program" );
+
+            return failure( "compile_failed", message );
+        }
+
+        KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
+                KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        JSON boardPlan = { { "fullyLowered", planned.fullyLowered },
+                           { "counts", std::move( planned.counts ) },
+                           { "diagnostics", std::move( planned.diagnostics ) } };
+        const bool includeOperations = aArguments.value( "includeOperations", true );
+
+        if( includeOperations && planned.operations.dump().size() <= MAX_DESIGN_RESULT_BYTES )
+        {
+            boardPlan["operations"] = std::move( planned.operations );
+            boardPlan["operationsOmitted"] = false;
+        }
+        else
+        {
+            boardPlan["operationsOmitted"] = true;
+            boardPlan["operationsOmissionReason"] =
+                    includeOperations ? "size_limit" : "not_requested";
+        }
+
+        JSON payload = { { "operation", "preview" },
+                         { "valid", true },
+                         { "sourceSha256", compiled.sourceSha256 },
+                         { "compilerPlan", std::move( compiled.plan ) },
+                         { "boardPlan", std::move( boardPlan ) } };
+
+        if( hasPath )
+            payload["path"] = aArguments["path"];
 
         return success( payload );
     }

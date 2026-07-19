@@ -113,6 +113,10 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( specs[1]["name"].get<std::string>(), "inspect" );
     BOOST_CHECK_EQUAL( specs[2]["name"].get<std::string>(), "design" );
     BOOST_CHECK_EQUAL( specs[3]["name"].get<std::string>(), "pcb" );
+    const JSON& designOperations =
+            specs[2]["inputSchema"]["properties"]["operation"]["enum"];
+    BOOST_REQUIRE_EQUAL( designOperations.size(), 4 );
+    BOOST_CHECK_EQUAL( designOperations[2].get<std::string>(), "preview" );
 }
 
 
@@ -175,6 +179,10 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     (value "GREEN")
     (footprint "LED_SMD:LED_0603_1608Metric"))
   (net LED_A (pin R1 1) (pin LED1 1))
+  (board
+    (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
+    (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
+      (width 0.25mm) (layer F.Cu)))
   (check erc)
   (check drc)
   (output gerbers))
@@ -187,6 +195,23 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     BOOST_CHECK( compileData["valid"].get<bool>() );
     BOOST_CHECK( !compileData["irOmitted"].get<bool>() );
     const std::string firstHash = compileData["sourceSha256"].get<std::string>();
+
+    CODEX_TOOL_REGISTRY readOnlyRegistry( [&fixture]() { return fixture.Root(); } );
+    JSON firstPreview = readOnlyRegistry.Handle(
+            "design", { { "operation", "preview" }, { "source", source } } );
+    JSON secondPreview = readOnlyRegistry.Handle(
+            "design", { { "operation", "preview" }, { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( firstPreview.at( "success" ).get<bool>(), firstPreview.dump() );
+    BOOST_REQUIRE_MESSAGE( secondPreview.at( "success" ).get<bool>(), secondPreview.dump() );
+    JSON firstBoardPlan = envelope( firstPreview )["data"]["boardPlan"];
+    JSON secondBoardPlan = envelope( secondPreview )["data"]["boardPlan"];
+    BOOST_CHECK( firstBoardPlan["fullyLowered"].get<bool>() );
+    BOOST_CHECK( !firstBoardPlan["operationsOmitted"].get<bool>() );
+    BOOST_REQUIRE_EQUAL( firstBoardPlan["operations"].size(), 2 );
+    BOOST_CHECK_EQUAL( firstBoardPlan["operations"][0]["itemId"].get<std::string>(),
+                       secondBoardPlan["operations"][0]["itemId"].get<std::string>() );
+    BOOST_CHECK_EQUAL( firstBoardPlan["operations"][1]["itemId"].get<std::string>(),
+                       secondBoardPlan["operations"][1]["itemId"].get<std::string>() );
 
     JSON saved = registry.Handle( "design", { { "operation", "save" },
                                                { "path", "reusable.kicad_kds" },

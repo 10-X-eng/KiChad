@@ -24,7 +24,7 @@ class CODEX_TOOL_REGISTRY
 {
 public:
     using JSON = nlohmann::json;
-    static constexpr int SCHEMA_VERSION = 2;
+    static constexpr int SCHEMA_VERSION = 3;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},

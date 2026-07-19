@@ -22,7 +22,9 @@ include_directories(
 
 set( KICAD_SRCS
     codex/codex_app_server_client.cpp
+    codex/design_script_board_compiler.cpp
     codex/design_script_compiler.cpp
+    codex/design_script_pcb_planner.cpp
     codex/kicad_ipc_client.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp

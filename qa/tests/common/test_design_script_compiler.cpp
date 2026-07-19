@@ -39,9 +39,13 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
   (sheet root (title "Main"))
   (board
     (stackup (copper_layers 2) (thickness 1.6mm))
-    (outline (rect (at 0mm 0mm) (size 40mm 30mm)))
+    (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
-    (route LED_A (width 0.25mm) (layer F.Cu)))
+    (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
+      (width 0.25mm) (layer F.Cu))
+    (route LED_A (id led-a-arc) (from 20mm 10mm) (mid 22mm 12mm) (to 24mm 10mm)
+      (width 0.25mm) (layer F.Cu))
+    (via LED_A (id led-a-via) (at 24mm 10mm) (diameter 0.8mm) (drill 0.4mm)))
   (rule default_clearance (minimum 0.2mm))
   (source R1
     (manufacturer "Yageo")
@@ -77,11 +81,90 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
     BOOST_CHECK_EQUAL( first.ir["schematic"]["components"].size(), 2 );
     BOOST_CHECK_EQUAL( first.ir["schematic"]["nets"].size(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["pinConnections"].get<size_t>(), 2 );
-    BOOST_CHECK_EQUAL( first.plan["counts"]["boardStatements"].get<size_t>(), 4 );
+    BOOST_CHECK_EQUAL( first.plan["counts"]["boardStatements"].get<size_t>(), 6 );
+    BOOST_CHECK( first.plan["boardFullyTyped"].get<bool>() );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][1]["logicalId"].get<std::string>(), "board-edge" );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][3]["kind"].get<std::string>(), "trace" );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][3]["widthNm"].get<int64_t>(), 250000 );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][4]["kind"].get<std::string>(), "arc" );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][5]["drillNm"].get<int64_t>(), 400000 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["sourcingRecords"].get<size_t>(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["checks"].get<size_t>(), 3 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["outputs"].get<size_t>(), 3 );
     BOOST_CHECK( first.plan["transactional"].get<bool>() );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalBoardIntent )
+{
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project physical_errors)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net POWER (pin R1 1) (pin R2 1))
+  (board
+    (stackup (copper_layers 3) (thickness -1mm))
+    (outline (rect (id same) (at 0 0mm) (size -1mm 2mm)))
+    (route POWER (id same) (from 0mm 0mm) (to 0mm 0mm)
+      (width 0mm) (layer Edge.Cuts))
+    (via POWER (id via1) (at 1mm 1mm) (diameter 0.4mm) (drill 0.5mm)
+      (layers F.Cu In1.Cu) (type through))))
+)KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+
+    BOOST_CHECK( !result.ok );
+    const std::string diagnostics = result.diagnostics.dump();
+
+    for( const char* code : { "invalid_stackup_layers", "invalid_stackup_thickness",
+                              "invalid_outline_position", "invalid_outline_size",
+                              "duplicate_board_id", "zero_length_route", "invalid_route_width",
+                              "invalid_route_layer", "invalid_via_drill",
+                              "invalid_through_via_layers" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( EnforcesStackupAndSinglePlacementSemantics )
+{
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project stackup_errors)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net POWER (pin R1 1) (pin R2 1))
+  (board
+    (stackup (copper_layers 4) (thickness 1.6mm))
+    (place R1 (at 1mm 1mm))
+    (place R1 (at 2mm 2mm))
+    (route POWER (id outside-route) (from 0mm 0mm) (to 1mm 1mm)
+      (width 0.2mm) (layer In3.Cu))
+    (route POWER (id overflow-route) (from 9223372036854775808nm 0mm) (to 1mm 1mm)
+      (width 0.2mm) (layer F.Cu))
+    (via POWER (id blind) (at 1mm 1mm) (diameter 0.8mm) (drill 0.4mm)
+      (layers F.Cu B.Cu) (type blind))
+    (via POWER (id buried) (at 2mm 2mm) (diameter 0.8mm) (drill 0.4mm)
+      (layers F.Cu In1.Cu) (type buried))
+    (via POWER (id micro) (at 3mm 3mm) (diameter 0.4mm) (drill 0.2mm)
+      (layers F.Cu In2.Cu) (type micro))))
+)KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+
+    BOOST_CHECK( !result.ok );
+    const std::string diagnostics = result.diagnostics.dump();
+
+    for( const char* code : { "duplicate_board_placement", "route_layer_outside_stackup",
+                              "invalid_route_start", "invalid_blind_via_span",
+                              "invalid_buried_via_span", "invalid_microvia_span" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
 }
 
 
