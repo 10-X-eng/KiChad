@@ -204,6 +204,7 @@ public:
     static const std::string GencadFileExtension;
 
     static const std::string KiCadJobSetFileExtension;
+    static const std::string KiChadDesignScriptFileExtension;
 
     static const wxString GerberFileExtensionsRegex;
 

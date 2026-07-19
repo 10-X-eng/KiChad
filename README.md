@@ -39,9 +39,18 @@ are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architec
 submitted turn first snapshots the project through KiCad's local-history system, and the panel can
 restore that complete pre-turn state.  The initial native `project` and `inspect` calls expose
 project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation;
-the `pcb` call exposes the exact protobuf field schema and connects directly to the open PCB Editor
+the `design` call compiles and atomically saves reusable `.kicad_kds` project sidecars, and the
+`pcb` call exposes the exact protobuf field schema and connects directly to the open PCB Editor
 through KiCad 10's protobuf IPC API for bounded live reads and snapshot-gated, native undoable
 transactions.
+
+KiChad Design Script is the versioned source language Codex uses to describe a complete design.
+A `project.kicad_kds` sidecar lives beside the normal project, schematic, and board files; KiChad
+shows it in the project tree and can load, compile, or save it without losing source text.  The
+sidecar declares libraries, components, nets, board intent, rules, sourcing, checks, and fabrication
+outputs, while ordinary KiCad files remain the compiler artifacts.  The format, grammar, safety
+rules, and production support criteria are documented in
+[docs/kichad-design-script.md](docs/kichad-design-script.md).
 
 For an opt-in transaction proof, first open a disposable project copy in the installed PCB Editor,
 then run `tools/smoke-kichad-live-ipc.sh --allow-mutation PROJECT_DIRECTORY BOARD_FILE`.  The smoke

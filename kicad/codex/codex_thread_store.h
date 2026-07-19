@@ -13,21 +13,28 @@
 #define KICHAD_CODEX_THREAD_STORE_H
 
 #include <string>
+#include <utility>
 
 #include <wx/string.h>
 
 
-/** Persists only app-server thread IDs keyed by project; credentials remain owned by Codex. */
+/** Persists app-server thread IDs and their native-tool schema keyed by project. */
 class CODEX_THREAD_STORE
 {
 public:
-    std::string Load( const wxString& aProjectPath ) const;
-    bool Save( const wxString& aProjectPath, const std::string& aThreadId,
+    explicit CODEX_THREAD_STORE( wxString aStoragePath = wxString() ) :
+            m_storagePath( std::move( aStoragePath ) )
+    {}
+
+    std::string Load( const wxString& aProjectPath, int aToolSchemaVersion ) const;
+    bool Save( const wxString& aProjectPath, const std::string& aThreadId, int aToolSchemaVersion,
                wxString* aError = nullptr ) const;
 
 private:
     wxString storagePath() const;
     std::string projectKey( const wxString& aProjectPath ) const;
+
+    wxString m_storagePath;
 };
 
 #endif // KICHAD_CODEX_THREAD_STORE_H

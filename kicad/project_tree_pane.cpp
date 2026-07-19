@@ -149,6 +149,7 @@ static const wxChar* s_allowedExtensionsToList[] =
     wxT( "^.*\\.ps$" ),            // PostScript plot files
     wxT( "^.*\\.zip$" ),           // Zip archive files
     wxT( "^.*\\.kicad_jobset" ),   // KiCad jobs file
+    wxT( "^.*\\.kicad_kds$" ),      // KiChad Design Script sidecar
     nullptr                        // end of list
 };
 
@@ -411,6 +412,7 @@ wxString PROJECT_TREE_PANE::GetFileExt( TREE_FILE_TYPE type )
     case TREE_FILE_TYPE::DESIGN_RULES:          return FILEEXT::DesignRulesFileExtension;
     case TREE_FILE_TYPE::ZIP_ARCHIVE:           return FILEEXT::ArchiveFileExtension;
     case TREE_FILE_TYPE::JOBSET_FILE:           return FILEEXT::KiCadJobSetFileExtension;
+    case TREE_FILE_TYPE::KICHAD_DESIGN_SCRIPT:  return FILEEXT::KiChadDesignScriptFileExtension;
 
     case TREE_FILE_TYPE::ROOT:
     case TREE_FILE_TYPE::UNKNOWN:

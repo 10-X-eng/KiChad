@@ -24,6 +24,7 @@ class CODEX_TOOL_REGISTRY
 {
 public:
     using JSON = nlohmann::json;
+    static constexpr int SCHEMA_VERSION = 2;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
@@ -39,6 +40,8 @@ private:
     JSON handleProject( const JSON& aArguments, const wxString& aProjectPath,
                         bool aMutationAvailable ) const;
     JSON handleInspect( const JSON& aArguments, const wxString& aProjectPath ) const;
+    JSON handleDesign( const JSON& aArguments, const wxString& aProjectPath,
+                       bool aMutationAvailable ) const;
     JSON handlePcb( const JSON& aArguments, const wxString& aProjectPath,
                     bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
     JSON success( const JSON& aPayload ) const;

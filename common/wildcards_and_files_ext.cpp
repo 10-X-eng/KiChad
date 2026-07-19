@@ -158,6 +158,7 @@ const std::string FILEEXT::HotkeyFileExtension( "hotkeys" );
 const std::string FILEEXT::DatabaseLibraryFileExtension( "kicad_dbl" );
 const std::string FILEEXT::HTTPLibraryFileExtension( "kicad_httplib" );
 const std::string FILEEXT::KiCadJobSetFileExtension( "kicad_jobset" );
+const std::string FILEEXT::KiChadDesignScriptFileExtension( "kicad_kds" );
 
 const std::string FILEEXT::ArchiveFileExtension( "zip" );
 

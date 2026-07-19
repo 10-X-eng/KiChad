@@ -91,7 +91,8 @@ bool PROJECT_TREE_ITEM::CanDelete() const
         || m_type == TREE_FILE_TYPE::FOOTPRINT_FILE
         || m_type == TREE_FILE_TYPE::SCHEMATIC_LIBFILE
         || m_type == TREE_FILE_TYPE::SEXPR_SYMBOL_LIB_FILE
-        || m_type == TREE_FILE_TYPE::DESIGN_RULES )
+        || m_type == TREE_FILE_TYPE::DESIGN_RULES
+        || m_type == TREE_FILE_TYPE::KICHAD_DESIGN_SCRIPT )
         return false;
 
     return true;
@@ -337,6 +338,7 @@ void PROJECT_TREE_ITEM::Activate( PROJECT_TREE_PANE* aTreePrjFrame )
     case TREE_FILE_TYPE::TXT:
     case TREE_FILE_TYPE::MD:
     case TREE_FILE_TYPE::REPORT:
+    case TREE_FILE_TYPE::KICHAD_DESIGN_SCRIPT:
         toolMgr->RunAction<wxString*>( KICAD_MANAGER_ACTIONS::openTextEditor, &fullFileName );
         break;
 

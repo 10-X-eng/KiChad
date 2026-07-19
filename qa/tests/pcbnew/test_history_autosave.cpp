@@ -482,6 +482,8 @@ BOOST_AUTO_TEST_CASE( CommitFullProjectSnapshotExcludesNonKiCadFiles )
                    wxS( "(kicad_pcb (version 20240108))\n" ) );
     writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_sch" ),
                    wxS( "(kicad_sch (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_kds" ),
+                   wxS( "(kichad_design (version 1) (project p))\n" ) );
 
     writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "passwords.txt" ), wxS( "secret\n" ) );
     writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "datasheet.pdf" ), wxS( "fake pdf bytes\n" ) );
@@ -533,6 +535,7 @@ BOOST_AUTO_TEST_CASE( CommitFullProjectSnapshotExcludesNonKiCadFiles )
     BOOST_CHECK_MESSAGE( contains( "p.kicad_pro" ), "kicad_pro must be committed" );
     BOOST_CHECK_MESSAGE( contains( "p.kicad_pcb" ), "kicad_pcb must be committed" );
     BOOST_CHECK_MESSAGE( contains( "p.kicad_sch" ), "kicad_sch must be committed" );
+    BOOST_CHECK_MESSAGE( contains( "p.kicad_kds" ), "KiChad design source must be committed" );
 
     BOOST_CHECK_MESSAGE( !contains( "passwords.txt" ), "passwords.txt must NOT appear in history" );
     BOOST_CHECK_MESSAGE( !contains( "datasheet.pdf" ), "datasheet.pdf must NOT appear in history" );

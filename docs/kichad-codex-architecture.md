@@ -33,11 +33,18 @@ The panel's **Revert turn** action closes open editors through the normal KiCad 
 that exact pre-turn state.  If a snapshot cannot be established, mutating native tools stay locked;
 read-only conversation and inspection can continue.
 
-The first three advertised native tools are `project`, `inspect`, and `pcb`.  `project` reports the
-active design context and snapshot gate.  `inspect` parses KiCad 10 schematic, board, symbol, and
+The first four advertised native tools are `project`, `inspect`, `design`, and `pcb`.  `project`
+reports the active design context and snapshot gate.  `inspect` parses KiCad 10 schematic, board, symbol, and
 footprint s-expressions in-process and returns structural summaries or bounded matching expressions.
 It accepts only existing project-relative paths, resolves symlinks before enforcing the project
 root, checks the file extension against the document root, caps input/output sizes, and never writes.
+`design` is the compiler front end for reusable `.kicad_kds` KiChad Design Script sidecars.  It
+describes the versioned language, compiles either inline source or a project-confined sidecar into a
+deterministic validated IR and pass plan, and atomically saves only valid programs behind the pre-turn
+snapshot gate.  Existing sidecars require a matching SHA-256 revision before replacement.  KDS has
+no host-language or shell escape; it declares project metadata, libraries, schematic hierarchy,
+components, connectivity, board intent, design rules, sourcing, verification, and outputs.  See
+`kichad-design-script.md` for the file contract and support policy.
 `pcb` discovers the matching open board and instance token through KiCad 10's supported protobuf IPC
 API.  Its bounded `describe` operation exposes exact protobuf JSON fields and nested enum values, so
 the model does not infer message shapes.  It can read typed live items and create, field-mask update,
@@ -59,26 +66,33 @@ Schema and TypeScript contract under the ignored `build/` tree.  This is the rev
 protocol changes; the runtime client accepts unknown notifications and relies only on the fields it
 negotiates during `initialize`.
 
-## Native tool surface
+## Compiler and native tool surface
 
-The complete tool surface is capped at nine host functions.  Each function accepts typed,
+Codex primarily authors a KDS program.  The compiler parses and type-checks that program, resolves
+logical design identities, produces a reviewable plan, establishes a snapshot, and invokes the
+native schematic/library/PCB/sourcing/check/output backends.  The lower-level native calls remain
+available for bounded inspection, diagnostics, and compiler implementation; they are not a second,
+untracked source of design truth.  The sidecar is reusable source and the ordinary KiCad project
+files are its compiled artifacts.
+
+The complete tool surface is capped at nine host functions.  Each function accepts schema-validated,
 schema-validated requests and returns structured results; functionality is added to these tools
 instead of creating narrowly named one-off tools.
 
-1. `project` — create/open projects, read context, set stackup/rules/net classes, and manage whole
+1. `design` — load, save, compile, preview, apply, and verify a versioned `.kicad_kds` sidecar.
+2. `project` — create/open projects, read context, set stackup/rules/net classes, and manage whole
    turn snapshots.
-2. `source_parts` — verify MPNs/datasheets, query live distributor availability, and maintain the
+3. `source_parts` — verify MPNs/datasheets, query live distributor availability, and maintain the
    sourcing cache.
-3. `library` — inspect or create verified KLC-compliant symbols, footprints, and model mappings.
-4. `schematic` — losslessly inspect and mutate schematics, connectivity, hierarchy, annotations,
+4. `library` — inspect or create verified KLC-compliant symbols, footprints, and model mappings.
+5. `schematic` — losslessly inspect and mutate schematics, connectivity, hierarchy, annotations,
    and netlists.
-5. `board` — inspect and mutate the live board through the KiCad 10 IPC API and transactions,
+6. `board` — inspect and mutate the live board through the KiCad 10 IPC API and transactions,
    including placement, copper, routing, zones, vias, constraints, and dimensions.
-6. `inspect` — return compact structured design context plus rendered schematic/PCB/3D images.
-7. `verify` — run structured ERC, DRC, connectivity, sourcing, and manufacturability checks.
-8. `fabricate` — generate and verify Gerber, drill, position, BOM, and other fabrication outputs
+7. `inspect` — return compact structured design context plus rendered schematic/PCB/3D images.
+8. `verify` — run structured ERC, DRC, connectivity, sourcing, and manufacturability checks.
+9. `fabricate` — generate and verify Gerber, drill, position, BOM, and other fabrication outputs
    behind an explicit final-action permission gate.
-9. `ask_user` — request a structured decision when an engineering choice cannot safely be inferred.
 
 The host advertises only implemented tools.  A tool is not exposed with a stub implementation.
 

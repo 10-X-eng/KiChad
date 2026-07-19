@@ -19,6 +19,14 @@
 namespace KICHAD
 {
 
+namespace
+{
+
+constexpr size_t MAX_PARSE_DEPTH = 256;
+constexpr size_t MAX_PARSE_NODES = 1000000;
+
+} // namespace
+
 std::unique_ptr<LOSSLESS_SEXPR_DOCUMENT> LOSSLESS_SEXPR_DOCUMENT::Parse( std::string aSource,
                                                                          std::string* aError )
 {
@@ -186,7 +194,7 @@ bool LOSSLESS_SEXPR_DOCUMENT::parse( std::string* aError )
 
         size_t node = NO_NODE;
 
-        if( !parseNode( cursor, NO_NODE, node, aError ) )
+        if( !parseNode( cursor, NO_NODE, node, 0, aError ) )
             return false;
 
         m_roots.emplace_back( node );
@@ -200,10 +208,16 @@ bool LOSSLESS_SEXPR_DOCUMENT::parse( std::string* aError )
 
 
 bool LOSSLESS_SEXPR_DOCUMENT::parseNode( size_t& aCursor, size_t aParent, size_t& aNode,
-                                         std::string* aError )
+                                         size_t aDepth, std::string* aError )
 {
     if( aCursor >= m_source.size() )
         return fail( aCursor, "Expected expression", aError );
+
+    if( aDepth > MAX_PARSE_DEPTH )
+        return fail( aCursor, "Expression nesting exceeds 256 levels", aError );
+
+    if( m_nodes.size() >= MAX_PARSE_NODES )
+        return fail( aCursor, "Document contains more than 1000000 expressions", aError );
 
     const size_t begin = aCursor;
 
@@ -232,7 +246,7 @@ bool LOSSLESS_SEXPR_DOCUMENT::parseNode( size_t& aCursor, size_t aParent, size_t
 
             size_t child = NO_NODE;
 
-            if( !parseNode( aCursor, aNode, child, aError ) )
+            if( !parseNode( aCursor, aNode, child, aDepth + 1, aError ) )
                 return false;
 
             m_nodes[aNode].children.emplace_back( child );

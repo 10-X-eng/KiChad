@@ -314,9 +314,12 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "serviceName", "KiChad" },
         { "baseInstructions",
           "You are the KiChad electronics design agent. Use only the native KiChad dynamic tools "
-          "advertised by the host for design work. Never use shell, arbitrary code execution, GUI "
-          "automation, MCP, or direct ad-hoc file rewriting. Use live web search only to verify "
-          "components, manufacturer data, datasheets, availability, and other design evidence." },
+          "advertised by the host for design work. Treat the versioned project.kicad_kds KiChad "
+          "Design Script sidecar as reusable design source: describe the language when needed, "
+          "compile before saving, and use compiler plans and native backends to produce KiCad "
+          "artifacts. Never use shell, arbitrary code execution, GUI automation, MCP, or direct "
+          "ad-hoc file rewriting. Use live web search only to verify components, manufacturer "
+          "data, datasheets, availability, and other design evidence." },
         { "config",
           { { "features",
               { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
@@ -359,7 +362,8 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
 
                 wxString saveError;
 
-                if( !m_threadStore.Save( m_threadProjectPath, m_threadId, &saveError ) )
+                if( !m_threadStore.Save( m_threadProjectPath, m_threadId,
+                                         CODEX_TOOL_REGISTRY::SCHEMA_VERSION, &saveError ) )
                     appendTranscript( wxString::Format( _( "\n[Conversation persistence: %s]\n" ),
                                                         saveError ) );
 
@@ -518,7 +522,7 @@ void CODEX_PANEL::selectProjectThread()
         return;
 
     m_threadProjectPath = activePath;
-    m_threadId = m_threadStore.Load( activePath );
+    m_threadId = m_threadStore.Load( activePath, CODEX_TOOL_REGISTRY::SCHEMA_VERSION );
     m_turnId.clear();
     m_turnSnapshotHash.clear();
     m_revertButton->Disable();

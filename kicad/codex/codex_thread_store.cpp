@@ -18,9 +18,15 @@
 #include <wx/intl.h>
 
 
-std::string CODEX_THREAD_STORE::Load( const wxString& aProjectPath ) const
+std::string CODEX_THREAD_STORE::Load( const wxString& aProjectPath,
+                                      int aToolSchemaVersion ) const
 {
-    wxFFile file( storagePath(), wxS( "rb" ) );
+    const wxString path = storagePath();
+
+    if( !wxFileName::FileExists( path ) )
+        return {};
+
+    wxFFile file( path, wxS( "rb" ) );
 
     if( !file.IsOpened() )
         return {};
@@ -39,12 +45,27 @@ std::string CODEX_THREAD_STORE::Load( const wxString& aProjectPath ) const
         return {};
     }
 
-    return document["projects"].value( projectKey( aProjectPath ), "" );
+    const std::string key = projectKey( aProjectPath );
+
+    if( !document["projects"].contains( key ) || !document["projects"][key].is_object() )
+        return {};
+
+    const nlohmann::json& entry = document["projects"][key];
+
+    if( !entry.contains( "threadId" ) || !entry["threadId"].is_string()
+        || !entry.contains( "toolSchemaVersion" )
+        || !entry["toolSchemaVersion"].is_number_integer()
+        || entry["toolSchemaVersion"].get<int>() != aToolSchemaVersion )
+    {
+        return {};
+    }
+
+    return entry["threadId"].get<std::string>();
 }
 
 
 bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& aThreadId,
-                               wxString* aError ) const
+                               int aToolSchemaVersion, wxString* aError ) const
 {
     const wxString path = storagePath();
     wxFileName target( path );
@@ -58,8 +79,11 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
         return false;
     }
 
-    nlohmann::json document = { { "version", 1 }, { "projects", nlohmann::json::object() } };
-    wxFFile existing( path, wxS( "rb" ) );
+    nlohmann::json document = { { "version", 2 }, { "projects", nlohmann::json::object() } };
+    wxFFile existing;
+
+    if( wxFileName::FileExists( path ) )
+        existing.Open( path, wxS( "rb" ) );
 
     if( existing.IsOpened() )
     {
@@ -76,10 +100,13 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
                 document = std::move( parsed );
             }
         }
+
+        existing.Close();
     }
 
-    document["version"] = 1;
-    document["projects"][projectKey( aProjectPath )] = aThreadId;
+    document["version"] = 2;
+    document["projects"][projectKey( aProjectPath )] =
+            { { "threadId", aThreadId }, { "toolSchemaVersion", aToolSchemaVersion } };
 
     wxString temporaryPath = path + wxS( ".tmp" );
     wxFFile temporary( temporaryPath, wxS( "wb" ) );
@@ -88,6 +115,9 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
         || !temporary.Write( wxString::FromUTF8( document.dump( 2 ) ), wxConvUTF8 )
         || !temporary.Flush() )
     {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+
         if( aError )
             *aError = _( "Could not write the KiChad Codex conversation index." );
 
@@ -98,6 +128,8 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
 
     if( !wxRenameFile( temporaryPath, path, true ) )
     {
+        wxRemoveFile( temporaryPath );
+
         if( aError )
             *aError = _( "Could not atomically update the KiChad Codex conversation index." );
 
@@ -110,7 +142,7 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
 
 wxString CODEX_THREAD_STORE::storagePath() const
 {
-    return KICHAD::CODEX_PATHS::ThreadIndex();
+    return m_storagePath.IsEmpty() ? KICHAD::CODEX_PATHS::ThreadIndex() : m_storagePath;
 }
 
 

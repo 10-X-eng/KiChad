@@ -10,6 +10,7 @@
  */
 
 #include "codex_tool_registry.h"
+#include "design_script_compiler.h"
 #include "kicad_ipc_client.h"
 #include "lossless_sexpr_document.h"
 
@@ -28,8 +29,11 @@
 #include <google/protobuf/util/json_util.h>
 #include <wx/dir.h>
 #include <wx/file.h>
+#include <wx/ffile.h>
 #include <wx/filename.h>
 #include <wx/utils.h>
+
+#include <picosha2.h>
 
 
 namespace
@@ -41,6 +45,8 @@ constexpr size_t       MAX_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DISTINCT_HEADS = 512;
 constexpr size_t       MAX_PCB_ARGUMENT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
+constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
+constexpr size_t       MAX_DESIGN_RESULT_BYTES = 256 * 1024;
 
 
 bool isInspectableExtension( const wxString& aExtension )
@@ -151,6 +157,85 @@ bool resolveProjectFile( const wxString& aProjectPath, const std::string& aRelat
     }
 
     aResolved = candidate;
+    return true;
+}
+
+
+bool resolveProjectSidecar( const wxString& aProjectPath, const std::string& aRelativePath,
+                            wxFileName& aResolved, std::string& aError )
+{
+    wxString   relative = wxString::FromUTF8( aRelativePath );
+    wxFileName candidate( relative );
+
+    if( aRelativePath.size() > 4096 || aRelativePath.find( '\0' ) != std::string::npos
+        || relative.IsEmpty() || candidate.IsAbsolute()
+        || candidate.GetExt() != wxS( "kicad_kds" ) )
+    {
+        aError = "path must be a project-relative .kicad_kds file";
+        return false;
+    }
+
+    wxFileName root = wxFileName::DirName( aProjectPath );
+    root.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    if( !canonicalizeExisting( root, true ) )
+    {
+        aError = "active project path could not be resolved";
+        return false;
+    }
+
+    candidate.MakeAbsolute( root.GetFullPath() );
+    candidate.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    wxFileName parent = wxFileName::DirName( candidate.GetPath() );
+
+    if( !canonicalizeExisting( parent, true ) )
+    {
+        aError = "sidecar parent directory does not exist";
+        return false;
+    }
+
+    wxString parentPath = parent.GetPathWithSep();
+    wxString rootPath = root.GetPathWithSep();
+
+#ifdef __WXMSW__
+    parentPath.MakeLower();
+    rootPath.MakeLower();
+#endif
+
+    if( !parentPath.StartsWith( rootPath ) && parent.GetFullPath() != root.GetFullPath() )
+    {
+        aError = "path resolves outside the active project";
+        return false;
+    }
+
+    aResolved.Assign( parent.GetFullPath(), candidate.GetFullName() );
+
+    if( aResolved.FileExists() )
+    {
+        wxFileName canonicalTarget = aResolved;
+
+        if( !canonicalizeExisting( canonicalTarget ) )
+        {
+            aError = "existing sidecar path could not be resolved";
+            return false;
+        }
+
+        wxString targetPath = canonicalTarget.GetFullPath();
+
+#ifdef __WXMSW__
+        targetPath.MakeLower();
+#endif
+
+        if( !targetPath.StartsWith( rootPath ) )
+        {
+            aError = "existing sidecar resolves outside the active project";
+            return false;
+        }
+
+        aResolved = canonicalTarget;
+    }
+
     return true;
 }
 
@@ -510,6 +595,35 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                          "bounded raw expressions with a particular list head." },
                        { "inputSchema", std::move( inspectSchema ) } } );
 
+    JSON designSchema = { { "type", "object" },
+                          { "additionalProperties", false },
+                          { "required", JSON::array( { "operation" } ) } };
+    designSchema["properties"]["operation"] =
+            { { "type", "string" },
+              { "enum", JSON::array( { "describe", "compile", "save" } ) } };
+    designSchema["properties"]["path"] =
+            { { "type", "string" }, { "maxLength", 4096 },
+              { "description", "Project-relative reusable .kicad_kds sidecar path." } };
+    designSchema["properties"]["source"] =
+            { { "type", "string" }, { "maxLength", MAX_DESIGN_SCRIPT_BYTES },
+              { "description", "Inline KiChad Design Script s-expression source." } };
+    designSchema["properties"]["expectedSha256"] =
+            { { "type", "string" }, { "minLength", 64 }, { "maxLength", 64 },
+              { "description",
+                "Required when replacing an existing sidecar to prevent stale writes." } };
+    designSchema["properties"]["includeIr"] =
+            { { "type", "boolean" },
+              { "description", "Include bounded validated compiler IR; defaults to true." } };
+
+    specs.push_back( { { "type", "function" },
+                       { "name", "design" },
+                       { "description",
+                         "Describe, compile, import, or atomically save a reusable KiChad Design "
+                         "Script sidecar. KDS programs declare the complete project—schematic, "
+                         "libraries, PCB intent, sourcing, verification, and fabrication outputs—"
+                         "for deterministic execution by KiChad compiler backends." },
+                       { "inputSchema", std::move( designSchema ) } } );
+
     JSON pcbSchema = { { "type", "object" },
                        { "additionalProperties", false },
                        { "required", JSON::array( { "operation", "path" } ) } };
@@ -584,6 +698,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
         if( aTool == "inspect" )
             return handleInspect( aArguments, aProjectPath );
 
+        if( aTool == "design" )
+            return handleDesign( aArguments, aProjectPath, aMutationAvailable );
+
         if( aTool == "pcb" )
             return handlePcb( aArguments, aProjectPath, aMutationAvailable, aIpcSocketDirectory );
 
@@ -593,6 +710,204 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
     {
         return failure( "tool_failed", error.what() );
     }
+}
+
+
+CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
+        const JSON& aArguments, const wxString& aProjectPath, bool aMutationAvailable ) const
+{
+    if( !aArguments.is_object() || !aArguments.contains( "operation" )
+        || !aArguments["operation"].is_string() )
+    {
+        return failure( "invalid_arguments", "design.operation must be a string" );
+    }
+
+    const std::string operation = aArguments["operation"].get<std::string>();
+
+    if( operation != "describe" && operation != "compile" && operation != "save" )
+    {
+        return failure( "invalid_arguments",
+                        "design.operation must be 'describe', 'compile', or 'save'" );
+    }
+
+    if( operation == "describe" )
+        return success( KICHAD::DESIGN_SCRIPT_COMPILER::Describe() );
+
+    const bool hasSource = aArguments.contains( "source" ) && aArguments["source"].is_string();
+    const bool hasPath = aArguments.contains( "path" ) && aArguments["path"].is_string();
+
+    if( ( operation == "compile" && hasSource == hasPath )
+        || ( operation == "save" && ( !hasSource || !hasPath ) ) )
+    {
+        return failure( "invalid_arguments",
+                        operation == "compile"
+                                ? "design.compile requires exactly one of source or path"
+                                : "design.save requires source and path" );
+    }
+
+    if( ( aArguments.contains( "source" ) && !aArguments["source"].is_string() )
+        || ( aArguments.contains( "path" ) && !aArguments["path"].is_string() )
+        || ( aArguments.contains( "includeIr" ) && !aArguments["includeIr"].is_boolean() ) )
+    {
+        return failure( "invalid_arguments", "design source, path, or includeIr has the wrong type" );
+    }
+
+    auto readFile = []( const wxFileName& aFile, std::string& aSource,
+                        std::string& aError ) -> bool
+    {
+        wxFile file( aFile.GetFullPath(), wxFile::read );
+
+        if( !file.IsOpened() )
+        {
+            aError = "could not open the KiChad Design Script sidecar";
+            return false;
+        }
+
+        const wxFileOffset length = file.Length();
+
+        if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_SCRIPT_BYTES ) )
+        {
+            aError = "KiChad Design Script sidecars must contain 1 byte to 1 MiB";
+            return false;
+        }
+
+        aSource.assign( static_cast<size_t>( length ), '\0' );
+
+        if( file.Read( aSource.data(), static_cast<size_t>( length ) ) != length )
+        {
+            aError = "could not read the complete KiChad Design Script sidecar";
+            aSource.clear();
+            return false;
+        }
+
+        return true;
+    };
+
+    std::string source;
+    wxFileName  sidecar;
+    std::string pathError;
+
+    if( hasPath )
+    {
+        const std::string relativePath = aArguments["path"].get<std::string>();
+
+        if( !resolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
+            return failure( "invalid_path", pathError );
+
+        if( operation == "compile" && !sidecar.FileExists() )
+            return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
+    }
+
+    if( hasSource )
+        source = aArguments["source"].get<std::string>();
+    else if( !readFile( sidecar, source, pathError ) )
+        return failure( "read_failed", pathError );
+
+    if( source.empty() || source.size() > MAX_DESIGN_SCRIPT_BYTES
+        || source.find( '\0' ) != std::string::npos )
+    {
+        return failure( "invalid_source",
+                        "KiChad Design Script source must be UTF-8 text containing 1 byte to 1 MiB" );
+    }
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    if( operation == "compile" )
+    {
+        JSON payload = { { "operation", "compile" },
+                         { "valid", compiled.ok },
+                         { "sourceSha256", compiled.sourceSha256 },
+                         { "plan", compiled.plan },
+                         { "diagnostics", compiled.diagnostics } };
+
+        if( hasPath )
+            payload["path"] = aArguments["path"];
+
+        const bool includeIr = aArguments.value( "includeIr", true );
+
+        if( includeIr && compiled.ir.dump().size() <= MAX_DESIGN_RESULT_BYTES )
+        {
+            payload["ir"] = std::move( compiled.ir );
+            payload["irOmitted"] = false;
+        }
+        else
+        {
+            payload["irOmitted"] = true;
+            payload["irOmissionReason"] = includeIr ? "size_limit" : "not_requested";
+        }
+
+        return success( payload );
+    }
+
+    if( !aMutationAvailable )
+        return failure( "snapshot_required", "A pre-turn project snapshot is required to save KDS" );
+
+    if( !compiled.ok )
+    {
+        std::string message = "KiChad Design Script did not pass compilation";
+
+        if( !compiled.diagnostics.empty() )
+            message += ": " + compiled.diagnostics.front().value( "message", "invalid program" );
+
+        return failure( "compile_failed", message );
+    }
+
+    if( sidecar.FileExists() )
+    {
+        if( !aArguments.contains( "expectedSha256" )
+            || !aArguments["expectedSha256"].is_string() )
+        {
+            return failure( "stale_source",
+                            "expectedSha256 is required when replacing an existing sidecar" );
+        }
+
+        std::string existing;
+
+        if( !readFile( sidecar, existing, pathError ) )
+            return failure( "read_failed", pathError );
+
+        std::string existingSha256;
+        picosha2::hash256_hex_string( existing, existingSha256 );
+
+        if( aArguments["expectedSha256"].get<std::string>() != existingSha256 )
+            return failure( "stale_source", "sidecar changed since it was loaded" );
+    }
+
+    const wxString temporaryPath =
+            sidecar.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
+    wxFile temporary;
+
+    if( !temporary.Create( temporaryPath, true )
+        || temporary.Write( source.data(), source.size() ) != source.size()
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+        return failure( "write_failed", "could not durably write the sidecar temporary file" );
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, sidecar.GetFullPath(), true ) )
+    {
+        wxRemoveFile( temporaryPath );
+        return failure( "write_failed", "could not atomically install the sidecar" );
+    }
+
+    std::string installed;
+
+    if( !readFile( sidecar, installed, pathError ) || installed != source )
+        return failure( "write_failed", "sidecar verification failed after atomic installation" );
+
+    JSON payload = { { "operation", "save" },
+                     { "path", aArguments["path"] },
+                     { "bytes", source.size() },
+                     { "sourceSha256", compiled.sourceSha256 },
+                     { "valid", true },
+                     { "plan", compiled.plan },
+                     { "transaction", "snapshot-backed atomic save" } };
+    return success( payload );
 }
 
 

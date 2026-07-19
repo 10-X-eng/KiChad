@@ -76,7 +76,8 @@ private:
     explicit LOSSLESS_SEXPR_DOCUMENT( std::string aSource ) : m_source( std::move( aSource ) ) {}
 
     bool parse( std::string* aError );
-    bool parseNode( size_t& aCursor, size_t aParent, size_t& aNode, std::string* aError );
+    bool parseNode( size_t& aCursor, size_t aParent, size_t& aNode, size_t aDepth,
+                    std::string* aError );
     void skipTrivia( size_t& aCursor ) const;
     bool fail( size_t aCursor, const std::string& aMessage, std::string* aError ) const;
 

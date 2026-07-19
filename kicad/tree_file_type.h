@@ -64,7 +64,8 @@ enum class TREE_FILE_TYPE
     SEXPR_SYMBOL_LIB_FILE, // s-expression symbol library file (.kicad_sym)
     DESIGN_RULES,          // design rules (.kicad_dru)
     ZIP_ARCHIVE,           // .zip file
-    JOBSET_FILE,             // jobs (.kicad_jobs)
+    JOBSET_FILE,           // jobs (.kicad_jobset)
+    KICHAD_DESIGN_SCRIPT,  // reusable KiChad Design Script sidecar (.kicad_kds)
     MAX                    // Sentinel
 };
 

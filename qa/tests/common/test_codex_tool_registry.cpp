@@ -108,10 +108,11 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     CODEX_TOOL_REGISTRY registry( []() { return wxString(); } );
     JSON                specs = registry.Specs();
 
-    BOOST_REQUIRE_EQUAL( specs.size(), 3 );
+    BOOST_REQUIRE_EQUAL( specs.size(), 4 );
     BOOST_CHECK_EQUAL( specs[0]["name"].get<std::string>(), "project" );
     BOOST_CHECK_EQUAL( specs[1]["name"].get<std::string>(), "inspect" );
-    BOOST_CHECK_EQUAL( specs[2]["name"].get<std::string>(), "pcb" );
+    BOOST_CHECK_EQUAL( specs[2]["name"].get<std::string>(), "design" );
+    BOOST_CHECK_EQUAL( specs[3]["name"].get<std::string>(), "pcb" );
 }
 
 
@@ -155,6 +156,89 @@ BOOST_AUTO_TEST_CASE( ReportsProjectAndSnapshotState )
                        std::string( fixture.Root().ToUTF8() ) );
     BOOST_CHECK( data.at( "mutationAvailable" ).get<bool>() );
     BOOST_CHECK_GE( data.at( "files" ).size(), 2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project reusable)
+  (component R1
+    (symbol "Device:R")
+    (value "10k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (component LED1
+    (symbol "Device:LED")
+    (value "GREEN")
+    (footprint "LED_SMD:LED_0603_1608Metric"))
+  (net LED_A (pin R1 1) (pin LED1 1))
+  (check erc)
+  (check drc)
+  (output gerbers))
+)KDS";
+
+    JSON compiled = registry.Handle( "design", { { "operation", "compile" },
+                                                  { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( compiled.at( "success" ).get<bool>(), compiled.dump() );
+    JSON compileData = envelope( compiled )["data"];
+    BOOST_CHECK( compileData["valid"].get<bool>() );
+    BOOST_CHECK( !compileData["irOmitted"].get<bool>() );
+    const std::string firstHash = compileData["sourceSha256"].get<std::string>();
+
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                               { "path", "reusable.kicad_kds" },
+                                               { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    BOOST_CHECK_EQUAL( envelope( saved )["data"]["sourceSha256"].get<std::string>(),
+                       firstHash );
+
+    JSON loaded = registry.Handle( "design", { { "operation", "compile" },
+                                                { "path", "reusable.kicad_kds" },
+                                                { "includeIr", false } } );
+    BOOST_REQUIRE_MESSAGE( loaded.at( "success" ).get<bool>(), loaded.dump() );
+    BOOST_CHECK( envelope( loaded )["data"]["valid"].get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( loaded )["data"]["sourceSha256"].get<std::string>(),
+                       firstHash );
+    BOOST_CHECK( envelope( loaded )["data"]["irOmitted"].get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( loaded )["data"]["irOmissionReason"].get<std::string>(),
+                       "not_requested" );
+
+    const std::string updated = source + "; reusable sidecar comment\n";
+    JSON noHash = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "reusable.kicad_kds" },
+                                                { "source", updated } } );
+    BOOST_CHECK( !noHash.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( noHash )["error"]["code"].get<std::string>(), "stale_source" );
+
+    JSON stale = registry.Handle( "design", { { "operation", "save" },
+                                               { "path", "reusable.kicad_kds" },
+                                               { "source", updated },
+                                               { "expectedSha256", std::string( 64, '0' ) } } );
+    BOOST_CHECK( !stale.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( stale )["error"]["code"].get<std::string>(), "stale_source" );
+
+    JSON replaced = registry.Handle( "design", { { "operation", "save" },
+                                                  { "path", "reusable.kicad_kds" },
+                                                  { "source", updated },
+                                                  { "expectedSha256", firstHash } } );
+    BOOST_REQUIRE_MESSAGE( replaced.at( "success" ).get<bool>(), replaced.dump() );
+
+    wxFile installed( wxFileName( fixture.Root(), wxS( "reusable.kicad_kds" ) ).GetFullPath(),
+                      wxFile::read );
+    BOOST_REQUIRE( installed.IsOpened() );
+    std::string installedSource( static_cast<size_t>( installed.Length() ), '\0' );
+    BOOST_REQUIRE_EQUAL( installed.Read( installedSource.data(), installedSource.size() ),
+                         installedSource.size() );
+    BOOST_CHECK_EQUAL( installedSource, updated );
+
+    JSON escaped = registry.Handle( "design", { { "operation", "save" },
+                                                 { "path", "../escape.kicad_kds" },
+                                                 { "source", source } } );
+    BOOST_CHECK( !escaped.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( escaped )["error"]["code"].get<std::string>(), "invalid_path" );
 }
 
 

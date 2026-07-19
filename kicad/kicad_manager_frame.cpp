@@ -1164,6 +1164,27 @@ void KICAD_MANAGER_FRAME::CreateNewProject( const wxFileName& aProjectFileName, 
 
             // wxFFile dtor will close the file
         }
+
+        // The reusable KiChad Design Script is the source sidecar for generated project artifacts.
+        // Create a valid minimal program for new KiChad projects without replacing imported source.
+        fn.SetExt( FILEEXT::KiChadDesignScriptFileExtension );
+
+        if( !fn.FileExists() )
+        {
+            wxString projectName = fn.GetName();
+            projectName.Replace( wxS( "\\" ), wxS( "\\\\" ) );
+            projectName.Replace( wxS( "\"" ), wxS( "\\\"" ) );
+            wxFFile file( fn.GetFullPath(), "wb" );
+
+            if( file.IsOpened() )
+            {
+                file.Write( wxString::Format( "(kichad_design\n"
+                                              "  (version 1)\n"
+                                              "  (project \"%s\"))\n",
+                                              projectName ),
+                            wxConvUTF8 );
+            }
+        }
     }
 
     // Save history & window state to disk now.  Don't wait around for a crash.
