@@ -11,12 +11,15 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <limits>
+
 #include <kicad/codex/design_script_compiler.h>
 #include <kicad/codex/design_script_pcb_planner.h>
 
 #include <import_export.h>
 #include <api/board/board.pb.h>
 #include <api/board/board_types.pb.h>
+#include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/json_util.h>
 
 
@@ -185,6 +188,71 @@ BOOST_AUTO_TEST_CASE( LowersCanonicalGlobalRulesIntoOneNativeMessage )
     BOOST_CHECK( rules["useHeightForLengthCalculations"].get<bool>() );
     BOOST_CHECK_EQUAL( rules["maximumError"]["valueNm"].get<std::string>(), "5000" );
     BOOST_CHECK( !rules["allowFilletsOutsideZoneOutline"].get<bool>() );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersCanonicalNetclassesIntoOneCompleteNativeMessage )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project controlled_netclasses)
+  (net_classes
+    (class Default
+      (clearance 0.2mm) (track_width 0.2mm)
+      (via_diameter 0.6mm) (via_drill 0.3mm)
+      (microvia_diameter 0.3mm) (microvia_drill 0.1mm)
+      (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+      (tuning_profile none) (pcb_color default)
+      (wire_width 0.15mm) (bus_width 0.3mm)
+      (schematic_color default) (line_style solid))
+    (class USB_HS
+      (clearance inherit) (track_width 0.15mm)
+      (via_diameter inherit) (via_drill inherit)
+      (microvia_diameter 0.25mm) (microvia_drill inherit)
+      (diff_pair_width 0.15mm) (diff_pair_gap 0.18mm) (diff_pair_via_gap inherit)
+      (tuning_profile usb_hs) (pcb_color "#112233CC")
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color "#AABBCC") (line_style dash_dot))
+    (assign (pattern "USB_[PN]") (classes USB_HS))
+    (assign (pattern "/usb/D[PN]") (classes USB_HS))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( plan.counts["netClasses"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["netClassAssignments"].get<int>(), 2 );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"].get<std::string>(),
+                       "update_net_classes" );
+    const nlohmann::json& settings = plan.operations[0]["settings"];
+    checkProtobufJson<kiapi::common::project::NetClassSettings>( settings );
+    BOOST_REQUIRE_EQUAL( settings["netClasses"].size(), 2 );
+    BOOST_REQUIRE_EQUAL( settings["assignments"].size(), 2 );
+    BOOST_CHECK_EQUAL( settings["netClasses"][0]["priority"].get<int64_t>(),
+                       std::numeric_limits<int32_t>::max() );
+    BOOST_CHECK_EQUAL( settings["netClasses"][1]["priority"].get<int64_t>(), 0 );
+    BOOST_CHECK_EQUAL(
+            settings["netClasses"][0]["board"]["viaStack"]["copperLayers"][0]["size"]
+                    ["xNm"].get<std::string>(),
+            "600000" );
+    BOOST_CHECK_EQUAL(
+            settings["netClasses"][0]["board"]["microviaStack"]["drill"]["diameter"]
+                    ["xNm"].get<std::string>(),
+            "100000" );
+    BOOST_CHECK_EQUAL(
+            settings["netClasses"][0]["schematic"]["wireWidth"]["valueNm"]
+                    .get<std::string>(),
+            "150000" );
+    BOOST_CHECK_EQUAL( settings["netClasses"][1]["schematic"]["lineStyle"]
+                               .get<std::string>(),
+                       "SLS_DASHDOT" );
+    BOOST_CHECK_CLOSE( settings["netClasses"][1]["board"]["color"]["r"].get<double>(),
+                       17.0 / 255.0, 0.0001 );
+    BOOST_CHECK_EQUAL( settings["assignments"][0]["netClass"].get<std::string>(),
+                       "USB_HS" );
 }
 
 

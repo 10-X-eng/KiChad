@@ -51,6 +51,23 @@ message SetNetClasses
 }
 
 
+message GetNetClassSettings
+{
+}
+
+message NetClassSettingsResponse
+{
+  kiapi.common.project.NetClassSettings settings = 1;
+}
+
+// Atomically validates and replaces the complete explicit netclass table and pattern assignments.
+// Returns NetClassSettingsResponse with the normalized active settings.
+message UpdateNetClassSettings
+{
+  kiapi.common.project.NetClassSettings settings = 1;
+}
+
+
 message ExpandTextVariables
 {
   kiapi.common.types.DocumentSpecifier document = 1;

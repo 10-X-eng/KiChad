@@ -74,7 +74,10 @@ reads back the one authored physical stackup—including finish, impedance polic
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board
 Setup constraint set through a typed native rules endpoint, including physical via consistency and
-the semantic legacy copper-edge mode. It creates and fills a
+the semantic legacy copper-edge mode. It also applies and reads back the one canonical KDS net-class
+table—including explicit priority order, inherited fields, via and microvia geometry, schematic
+styles, colors, tuning profiles, and pattern assignments—then proves an invalid native replacement
+is rejected without mutation. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.

@@ -11,6 +11,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <limits>
+
 #include <kicad/codex/design_script_compiler.h>
 
 
@@ -212,6 +214,143 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitLosslessStackupRepresentation )
     BOOST_CHECK_EQUAL( stackup["layers"][8]["dielectricIndex"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( stackup["layers"][9]["layer"].get<std::string>(), "B.Cu" );
     BOOST_CHECK_EQUAL( stackup["layers"][12]["color"].get<std::string>(), "White" );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesOneCanonicalCompleteNetclassRepresentation )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project controlled_netclasses)
+  (net_classes
+    (class Default
+      (clearance 0.2mm) (track_width 0.2mm)
+      (via_diameter 0.6mm) (via_drill 0.3mm)
+      (microvia_diameter 0.3mm) (microvia_drill 0.1mm)
+      (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+      (tuning_profile none) (pcb_color default)
+      (wire_width 0.15mm) (bus_width 0.3mm)
+      (schematic_color default) (line_style solid))
+    (class USB_HS
+      (clearance inherit) (track_width 0.15mm)
+      (via_diameter inherit) (via_drill inherit)
+      (microvia_diameter 0.25mm) (microvia_drill inherit)
+      (diff_pair_width 0.15mm) (diff_pair_gap 0.18mm) (diff_pair_via_gap inherit)
+      (tuning_profile usb_hs) (pcb_color "#112233CC")
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color "#AABBCC") (line_style dash_dot))
+    (class POWER
+      (clearance 0.3mm) (track_width 0.5mm)
+      (via_diameter 0.8mm) (via_drill 0.4mm)
+      (microvia_diameter inherit) (microvia_drill inherit)
+      (diff_pair_width inherit) (diff_pair_gap inherit) (diff_pair_via_gap inherit)
+      (tuning_profile inherit) (pcb_color inherit)
+      (wire_width 0.2mm) (bus_width 0.4mm)
+      (schematic_color inherit) (line_style inherit))
+    (assign (pattern "USB_[PN]") (classes USB_HS))
+    (assign (pattern "/power/VBUS[0..3]") (classes POWER USB_HS))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE( compiled.ir["netClasses"].is_object() );
+    const nlohmann::json& netClasses = compiled.ir["netClasses"];
+    BOOST_REQUIRE_EQUAL( netClasses["classes"].size(), 3 );
+    BOOST_REQUIRE_EQUAL( netClasses["assignments"].size(), 2 );
+    BOOST_CHECK_EQUAL( netClasses["classes"][0]["name"].get<std::string>(), "Default" );
+    BOOST_CHECK_EQUAL( netClasses["classes"][0]["priority"].get<int64_t>(),
+                       std::numeric_limits<int32_t>::max() );
+    BOOST_CHECK_EQUAL( netClasses["classes"][1]["priority"].get<int64_t>(), 0 );
+    BOOST_CHECK_EQUAL( netClasses["classes"][2]["priority"].get<int64_t>(), 1 );
+    BOOST_CHECK( netClasses["classes"][1]["clearanceNm"].is_null() );
+    BOOST_CHECK_EQUAL( netClasses["classes"][1]["trackWidthNm"].get<int64_t>(), 150000 );
+    BOOST_CHECK_CLOSE( netClasses["classes"][1]["pcbColor"]["a"].get<double>(),
+                       204.0 / 255.0, 0.0001 );
+    BOOST_CHECK_EQUAL( netClasses["classes"][1]["lineStyle"].get<std::string>(),
+                       "dash_dot" );
+    BOOST_CHECK_EQUAL( netClasses["assignments"][1]["classes"].size(), 2 );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["netClasses"].get<size_t>(), 3 );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["netClassAssignments"].get<size_t>(), 2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsAmbiguousUnsafeOrNonNativeNetclasses )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project invalid_netclasses)
+  (net_classes
+    (class Fast
+      (clearance inherit) (track_width inherit)
+      (via_diameter 0.2mm) (via_drill 0.3mm)
+      (microvia_diameter inherit) (microvia_drill inherit)
+      (diff_pair_width inherit) (diff_pair_gap inherit) (diff_pair_via_gap inherit)
+      (tuning_profile inherit) (pcb_color inherit)
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color inherit) (line_style inherit))
+    (class Default
+      (clearance inherit) (track_width 0.2mm)
+      (via_diameter 0.6mm) (via_drill 0.3mm)
+      (microvia_diameter 0.1mm) (microvia_drill 0.2mm)
+      (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+      (tuning_profile inherit) (pcb_color inherit)
+      (wire_width 0.00015mm) (bus_width 0.3mm)
+      (schematic_color inherit) (line_style inherit))
+    (assign (pattern "BUS[0..999]") (classes Missing Fast Fast))
+    (class fast
+      (clearance inherit) (track_width inherit)
+      (via_diameter inherit) (via_drill inherit)
+      (microvia_diameter inherit) (microvia_drill inherit)
+      (diff_pair_width inherit) (diff_pair_gap inherit) (diff_pair_via_gap inherit)
+      (tuning_profile inherit) (pcb_color inherit)
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color inherit) (line_style inherit))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_CHECK( !compiled.ok );
+    const std::string diagnostics = compiled.diagnostics.dump();
+
+    for( const char* code : { "invalid_default_netclass", "duplicate_netclass",
+                              "noncanonical_netclass_order",
+                              "invalid_default_netclass_inheritance",
+                              "invalid_netclass_distance", "invalid_netclass_color",
+                              "invalid_netclass_tuning_profile", "invalid_netclass_pattern",
+                              "unknown_netclass_assignment",
+                              "duplicate_netclass_assignment" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+
+    const std::string geometrySource = R"KDS((kichad_design
+  (version 1)
+  (project invalid_netclass_geometry)
+  (net_classes
+    (class Default
+      (clearance 0.2mm) (track_width 0.2mm)
+      (via_diameter 0.6mm) (via_drill 0.3mm)
+      (microvia_diameter 0.3mm) (microvia_drill 0.1mm)
+      (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+      (tuning_profile none) (pcb_color default)
+      (wire_width 0.15mm) (bus_width 0.3mm)
+      (schematic_color default) (line_style solid))
+    (class Broken
+      (clearance inherit) (track_width inherit)
+      (via_diameter 0.2mm) (via_drill 0.3mm)
+      (microvia_diameter 0.1mm) (microvia_drill 0.2mm)
+      (diff_pair_width inherit) (diff_pair_gap inherit) (diff_pair_via_gap inherit)
+      (tuning_profile inherit) (pcb_color inherit)
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color inherit) (line_style inherit))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT geometry =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( geometrySource );
+    BOOST_CHECK( !geometry.ok );
+    BOOST_CHECK_NE( geometry.diagnostics.dump().find( "inconsistent_netclass_via_geometry" ),
+                    std::string::npos );
+    BOOST_CHECK_NE(
+            geometry.diagnostics.dump().find( "inconsistent_netclass_microvia_geometry" ),
+            std::string::npos );
 }
 
 

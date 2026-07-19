@@ -31,6 +31,8 @@
 #include <api/board/board_commands.pb.h>
 #include <api/board/board_types.pb.h>
 #include <api/common/commands/editor_commands.pb.h>
+#include <api/common/commands/project_commands.pb.h>
+#include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/field_mask_util.h>
 #include <google/protobuf/util/json_util.h>
 #include <wx/dir.h>
@@ -963,6 +965,54 @@ bool updatePcbRules( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& 
 }
 
 
+bool queryNetClassSettings(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        kiapi::common::project::NetClassSettings& aSettings, std::string& aError )
+{
+    kiapi::common::commands::GetNetClassSettings request;
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::common::commands::NetClassSettingsResponse settingsResponse;
+
+    if( !response.message().UnpackTo( &settingsResponse )
+        || !settingsResponse.has_settings() )
+    {
+        aError = "KiCad returned invalid netclass settings";
+        return false;
+    }
+
+    aSettings.CopyFrom( settingsResponse.settings() );
+    return true;
+}
+
+
+bool updateNetClassSettings(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        const kiapi::common::project::NetClassSettings& aSettings, std::string& aError )
+{
+    kiapi::common::commands::UpdateNetClassSettings request;
+    request.mutable_settings()->CopyFrom( aSettings );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::common::commands::NetClassSettingsResponse settingsResponse;
+
+    if( !response.message().UnpackTo( &settingsResponse )
+        || !settingsResponse.has_settings() )
+    {
+        aError = "KiCad returned invalid updated netclass settings";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool queryPcbFootprintInventory( const KICHAD_IPC_CLIENT& aClient,
                                  const KICHAD_IPC_TARGET& aTarget,
                                  const std::set<std::string>& aReferences,
@@ -1664,6 +1714,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             {
                 items.push_back( { { "action", "configure_global_board_rules" } } );
             }
+            else if( action == "update_net_classes" )
+            {
+                items.push_back(
+                        { { "action", "configure_net_classes" },
+                          { "classes", plannedOperation["settings"]["netClasses"].size() },
+                          { "assignments",
+                            plannedOperation["settings"]["assignments"].size() } } );
+            }
             else
             {
                 items.push_back( { { "action", "unsupported" },
@@ -1752,12 +1810,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         std::unique_ptr<kiapi::board::BoardStackup> desiredStackup;
         std::unique_ptr<kiapi::board::BoardDesignRules> desiredRules;
+        std::unique_ptr<kiapi::common::project::NetClassSettings> desiredNetClasses;
 
         for( const JSON& action : planned.operations )
         {
             const std::string plannedAction = action.value( "action", "" );
 
-            if( plannedAction != "update_stackup" && plannedAction != "update_rules" )
+            if( plannedAction != "update_stackup" && plannedAction != "update_rules"
+                && plannedAction != "update_net_classes" )
                 continue;
 
             google::protobuf::util::JsonParseOptions options;
@@ -1773,7 +1833,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "stackup" ).dump(), desiredStackup.get(), options );
             }
-            else
+            else if( plannedAction == "update_rules" )
             {
                 if( desiredRules )
                     return failure( "invalid_plan", "KDS planned more than one global rule set" );
@@ -1782,9 +1842,19 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "rules" ).dump(), desiredRules.get(), options );
             }
+            else
+            {
+                if( desiredNetClasses )
+                    return failure( "invalid_plan", "KDS planned more than one netclass table" );
+
+                desiredNetClasses =
+                        std::make_unique<kiapi::common::project::NetClassSettings>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "settings" ).dump(), desiredNetClasses.get(), options );
+            }
 
             if( !status.ok() )
-                return failure( "invalid_plan", "KDS produced invalid native board settings" );
+                return failure( "invalid_plan", "KDS produced invalid native design settings" );
         }
 
         const std::string sourceRelativePath = aArguments["path"].get<std::string>();
@@ -1858,12 +1928,19 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         kiapi::board::BoardStackup previousStackup;
         kiapi::board::BoardDesignRules previousRules;
+        kiapi::common::project::NetClassSettings previousNetClasses;
 
         if( desiredStackup && !queryPcbStackup( client, target, previousStackup, pathError ) )
             return failure( "stackup_inventory_failed", pathError );
 
         if( desiredRules && !queryPcbRules( client, target, previousRules, pathError ) )
             return failure( "rules_inventory_failed", pathError );
+
+        if( desiredNetClasses
+            && !queryNetClassSettings( client, target, previousNetClasses, pathError ) )
+        {
+            return failure( "netclass_inventory_failed", pathError );
+        }
 
         JSON liveInventory;
 
@@ -1945,6 +2022,25 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             applyJournal["previousRules"] = JSON::parse( serializedPrevious );
         }
 
+        if( desiredNetClasses )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousNetClasses, &serializedPrevious, options );
+
+            if( !status.ok() )
+            {
+                return failure( "journal_failed",
+                                "could not serialize the prior netclass settings" );
+            }
+
+            applyJournal["previousNetClassSettings"] = JSON::parse( serializedPrevious );
+        }
+
         if( !writeJsonAtomically( journalPath, applyJournal, pathError ) )
             return failure( "journal_failed", pathError );
 
@@ -1997,7 +2093,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             rulesApplied = true;
         }
 
-        auto rollbackSettings = [&]( std::string& aMessage )
+        auto rollbackBoardSettings = [&]( std::string& aMessage )
         {
             if( rulesApplied )
             {
@@ -2008,6 +2104,42 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             }
 
             rollbackStackup( aMessage );
+        };
+
+        bool netClassesApplied = false;
+
+        if( desiredNetClasses )
+        {
+            if( !updateNetClassSettings( client, target, *desiredNetClasses, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !updateNetClassSettings( client, target, previousNetClasses, rollbackError ) )
+                    message += "; netclass rollback also failed: " + rollbackError;
+
+                rollbackBoardSettings( message );
+                return failure( "netclass_apply_failed", message );
+            }
+
+            netClassesApplied = true;
+        }
+
+        auto rollbackSettings = [&]( std::string& aMessage )
+        {
+            if( netClassesApplied )
+            {
+                std::string rollbackError;
+
+                if( !updateNetClassSettings(
+                            client, target, previousNetClasses, rollbackError ) )
+                {
+                    aMessage += "; netclass rollback also failed: " + rollbackError;
+                }
+            }
+
+            rollbackBoardSettings( aMessage );
         };
 
         if( reconciled.actions.empty() )
@@ -2027,10 +2159,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "sourceSha256", compiled.sourceSha256 },
                              { "counts", reconciled.counts },
                              { "transaction",
-                               stackupApplied || rulesApplied ? "board settings applied"
-                                                             : "no board changes" },
+                               stackupApplied || rulesApplied || netClassesApplied
+                                       ? "design settings applied"
+                                       : "no board changes" },
                              { "stackupApplied", stackupApplied },
                              { "rulesApplied", rulesApplied },
+                             { "netClassesApplied", netClassesApplied },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -2098,6 +2232,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "transaction", "committed" },
                          { "stackupApplied", stackupApplied },
                          { "rulesApplied", rulesApplied },
+                         { "netClassesApplied", netClassesApplied },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };

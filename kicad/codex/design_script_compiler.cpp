@@ -21,6 +21,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <limits>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -171,6 +172,71 @@ bool parseDistance( const std::string& aText, int64_t& aNanometers )
     }
 
     aNanometers = static_cast<int64_t>( rounded );
+    return true;
+}
+
+
+bool parseHexColor( const std::string& aText, JSON& aColor )
+{
+    if( aText.size() != 7 && aText.size() != 9 )
+        return false;
+
+    if( aText.front() != '#' )
+        return false;
+
+    int channels[4] = { 0, 0, 0, 255 };
+
+    for( size_t channel = 0; channel < ( aText.size() - 1 ) / 2; ++channel )
+    {
+        const char* begin = aText.data() + 1 + channel * 2;
+        const char* end = begin + 2;
+        std::from_chars_result converted = std::from_chars( begin, end, channels[channel], 16 );
+
+        if( converted.ec != std::errc() || converted.ptr != end )
+            return false;
+    }
+
+    aColor = { { "r", channels[0] / 255.0 },
+               { "g", channels[1] / 255.0 },
+               { "b", channels[2] / 255.0 },
+               { "a", channels[3] / 255.0 } };
+    return true;
+}
+
+
+bool boundedBusRanges( const std::string& aPattern )
+{
+    size_t range = 0;
+
+    while( ( range = aPattern.find( "..", range ) ) != std::string::npos )
+    {
+        const size_t open = aPattern.rfind( '[', range );
+        const size_t close = aPattern.find( ']', range + 2 );
+
+        if( open != std::string::npos && close != std::string::npos )
+        {
+            int64_t first = 0;
+            int64_t last = 0;
+            const char* firstBegin = aPattern.data() + open + 1;
+            const char* firstEnd = aPattern.data() + range;
+            const char* lastBegin = aPattern.data() + range + 2;
+            const char* lastEnd = aPattern.data() + close;
+            std::from_chars_result firstResult =
+                    std::from_chars( firstBegin, firstEnd, first );
+            std::from_chars_result lastResult = std::from_chars( lastBegin, lastEnd, last );
+
+            if( firstResult.ec == std::errc() && firstResult.ptr == firstEnd
+                && lastResult.ec == std::errc() && lastResult.ptr == lastEnd
+                && std::fabs( static_cast<long double>( first )
+                              - static_cast<long double>( last ) ) > 255.0L )
+            {
+                return false;
+            }
+        }
+
+        range += 2;
+    }
+
     return true;
 }
 
@@ -700,6 +766,433 @@ JSON compileRules( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileNetClass( const DOCUMENT& aDocument, size_t aNode, size_t aPriority,
+                      KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    struct DISTANCE_FIELD
+    {
+        const char* sourceName;
+        const char* irName;
+        int64_t     minimum;
+        int64_t     maximum;
+        int64_t     quantum;
+    };
+
+    static constexpr DISTANCE_FIELD DISTANCES[] = {
+        { "clearance", "clearanceNm", 0, 500000000, 1 },
+        { "track_width", "trackWidthNm", 1, 25000000, 1 },
+        { "via_diameter", "viaDiameterNm", 1, 25000000, 1 },
+        { "via_drill", "viaDrillNm", 1, 25000000, 1 },
+        { "microvia_diameter", "microviaDiameterNm", 1, 10000000, 1 },
+        { "microvia_drill", "microviaDrillNm", 1, 10000000, 1 },
+        { "diff_pair_width", "diffPairWidthNm", 1, 25000000, 1 },
+        { "diff_pair_gap", "diffPairGapNm", 0, 100000000, 1 },
+        { "diff_pair_via_gap", "diffPairViaGapNm", 0, 100000000, 1 },
+        { "wire_width", "wireWidthNm", 100, 100000000, 100 },
+        { "bus_width", "busWidthNm", 100, 100000000, 100 }
+    };
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string name;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], name )
+        || name.empty() || name.size() > 256 )
+    {
+        diagnostic( aResult, "error", "invalid_netclass_name",
+                    "class requires a non-empty name of at most 256 bytes" );
+        name.clear();
+    }
+
+    const bool isDefault = name == "Default";
+    const std::set<std::string> allowed = {
+        "clearance",          "track_width",       "via_diameter",
+        "via_drill",          "microvia_diameter", "microvia_drill",
+        "diff_pair_width",    "diff_pair_gap",     "diff_pair_via_gap",
+        "tuning_profile",     "pcb_color",         "wire_width",
+        "bus_width",          "schematic_color",   "line_style"
+    };
+    std::map<std::string, size_t> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t fieldNode = node.children[index];
+        const std::string fieldName = aDocument.ListHead( fieldNode );
+
+        if( !allowed.contains( fieldName ) )
+        {
+            diagnostic( aResult, "error", "unknown_netclass_field",
+                        "class contains an unknown netclass field" );
+            continue;
+        }
+
+        if( !fields.emplace( fieldName, fieldNode ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_netclass_field",
+                        "netclass field '" + fieldName + "' occurs more than once" );
+        }
+    }
+
+    JSON netClass = { { "name", name },
+                      { "priority", isDefault ? std::numeric_limits<int32_t>::max()
+                                               : static_cast<int64_t>( aPriority ) } };
+
+    for( const DISTANCE_FIELD& specification : DISTANCES )
+    {
+        const auto found = fields.find( specification.sourceName );
+        std::string valueText;
+
+        if( found == fields.end()
+            || !parseSingleValueForm( aDocument, found->second, valueText ) )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_distance",
+                        std::string( "class " ) + specification.sourceName
+                                + " is required with one distance or inherit" );
+            netClass[specification.irName] = nullptr;
+            continue;
+        }
+
+        if( valueText == "inherit" )
+        {
+            if( isDefault )
+            {
+                diagnostic( aResult, "error", "invalid_default_netclass_inheritance",
+                            std::string( "Default class cannot inherit " )
+                                    + specification.sourceName );
+            }
+
+            netClass[specification.irName] = nullptr;
+            continue;
+        }
+
+        int64_t value = 0;
+
+        if( !parseDistance( valueText, value ) || value < specification.minimum
+            || value > specification.maximum || value % specification.quantum != 0 )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_distance",
+                        std::string( "class " ) + specification.sourceName
+                                + " is outside its exact native range or resolution" );
+        }
+
+        netClass[specification.irName] = value;
+    }
+
+    const auto parsePolicy = [&]( const char* aField, const char* aIrName,
+                                  const std::set<std::string>& aValues )
+    {
+        const auto found = fields.find( aField );
+        std::string value;
+
+        if( found == fields.end()
+            || !parseSingleValueForm( aDocument, found->second, value )
+            || !aValues.contains( value ) )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_policy",
+                        std::string( "class " ) + aField + " has an invalid semantic value" );
+            netClass[aIrName] = nullptr;
+            return;
+        }
+
+        if( value == "inherit" )
+        {
+            if( isDefault )
+            {
+                diagnostic( aResult, "error", "invalid_default_netclass_inheritance",
+                            std::string( "Default class cannot inherit " ) + aField );
+            }
+
+            netClass[aIrName] = nullptr;
+        }
+        else
+        {
+            netClass[aIrName] = value;
+        }
+    };
+
+    parsePolicy( "line_style", "lineStyle",
+                 { "inherit", "solid", "dash", "dot", "dash_dot", "dash_dot_dot" } );
+
+    const auto parseColor = [&]( const char* aField, const char* aIrName )
+    {
+        const auto found = fields.find( aField );
+        std::string value;
+        JSON color;
+
+        if( found == fields.end()
+            || !parseSingleValueForm( aDocument, found->second, value ) )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_color",
+                        std::string( "class " ) + aField
+                                + " requires default, inherit, or #RRGGBBAA" );
+            netClass[aIrName] = nullptr;
+        }
+        else if( ( isDefault && value == "default" )
+                 || ( !isDefault && value == "inherit" ) )
+        {
+            netClass[aIrName] = nullptr;
+        }
+        else if( ( isDefault && value == "inherit" ) || ( !isDefault && value == "default" )
+                 || !parseHexColor( value, color ) )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_color",
+                        std::string( "class " ) + aField
+                                + " uses a color policy that is invalid for this class" );
+            netClass[aIrName] = nullptr;
+        }
+        else
+        {
+            netClass[aIrName] = std::move( color );
+        }
+    };
+
+    parseColor( "pcb_color", "pcbColor" );
+    parseColor( "schematic_color", "schematicColor" );
+    const auto tuningField = fields.find( "tuning_profile" );
+    std::string tuningProfile;
+
+    if( tuningField == fields.end()
+        || !parseSingleValueForm( aDocument, tuningField->second, tuningProfile )
+        || tuningProfile.empty() || tuningProfile.size() > 256
+        || ( isDefault && tuningProfile == "inherit" )
+        || ( !isDefault && tuningProfile == "none" ) )
+    {
+        diagnostic( aResult, "error", "invalid_netclass_tuning_profile",
+                    "Default tuning_profile requires none or a name; other classes require "
+                    "inherit or a name" );
+        netClass["tuningProfile"] = nullptr;
+    }
+    else if( tuningProfile == "none" || tuningProfile == "inherit" )
+    {
+        netClass["tuningProfile"] = nullptr;
+    }
+    else
+    {
+        netClass["tuningProfile"] = tuningProfile;
+    }
+
+    return netClass;
+}
+
+
+JSON compileNetClasses( const DOCUMENT& aDocument, size_t aNode,
+                        KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    JSON classes = JSON::array();
+    JSON assignments = JSON::array();
+    std::set<std::string> foldedNames;
+    std::set<std::string> exactNames;
+    std::set<std::pair<std::string, std::string>> assignmentPairs;
+    bool sawAssignment = false;
+    size_t userPriority = 0;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( head == "class" )
+        {
+            if( sawAssignment )
+            {
+                diagnostic( aResult, "error", "noncanonical_netclass_order",
+                            "all class declarations must precede netclass assignments" );
+            }
+
+            JSON netClass = compileNetClass( aDocument, child, userPriority, aResult );
+            const std::string name = netClass.value( "name", "" );
+            wxString folded = wxString::FromUTF8( name ).Lower();
+            const wxScopedCharBuffer foldedBuffer = folded.ToUTF8();
+            const std::string foldedUtf8 = foldedBuffer.data() ? foldedBuffer.data() : "";
+
+            if( !name.empty() && !foldedNames.emplace( foldedUtf8 ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_netclass",
+                            "netclass names must be unique without regard to case" );
+            }
+
+            exactNames.emplace( name );
+
+            if( name != "Default" )
+                ++userPriority;
+
+            classes.emplace_back( std::move( netClass ) );
+            continue;
+        }
+
+        if( head != "assign" )
+        {
+            diagnostic( aResult, "error", "unknown_net_classes_form",
+                        "net_classes accepts only class and assign forms" );
+            continue;
+        }
+
+        sawAssignment = true;
+        const DOCUMENT::NODE& assignmentNode = aDocument.Nodes()[child];
+        std::map<std::string, size_t> fields;
+
+        for( size_t fieldIndex = 1; fieldIndex < assignmentNode.children.size(); ++fieldIndex )
+        {
+            const size_t fieldNode = assignmentNode.children[fieldIndex];
+            const std::string fieldName = aDocument.ListHead( fieldNode );
+
+            if( fieldName != "pattern" && fieldName != "classes" )
+            {
+                diagnostic( aResult, "error", "unknown_netclass_assignment_field",
+                            "assign supports only pattern and classes" );
+                continue;
+            }
+
+            if( !fields.emplace( fieldName, fieldNode ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_netclass_assignment_field",
+                            "netclass assignment fields may occur once" );
+            }
+        }
+
+        std::string pattern;
+        const auto patternField = fields.find( "pattern" );
+
+        if( patternField == fields.end()
+            || !parseSingleValueForm( aDocument, patternField->second, pattern )
+            || pattern.empty() || pattern.size() > 256 || !boundedBusRanges( pattern ) )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_pattern",
+                        "assign pattern must be non-empty, at most 256 bytes, and have bounded "
+                        "bus ranges" );
+        }
+
+        JSON classNames = JSON::array();
+        const auto classesField = fields.find( "classes" );
+
+        if( classesField == fields.end() )
+        {
+            diagnostic( aResult, "error", "invalid_netclass_assignment",
+                        "assign requires a non-empty classes list" );
+        }
+        else
+        {
+            const DOCUMENT::NODE& classesNode = aDocument.Nodes()[classesField->second];
+            std::set<std::string> seenClasses;
+
+            if( classesNode.children.size() < 2 )
+            {
+                diagnostic( aResult, "error", "invalid_netclass_assignment",
+                            "assign requires a non-empty classes list" );
+            }
+
+            for( size_t classIndex = 1; classIndex < classesNode.children.size(); ++classIndex )
+            {
+                std::string className;
+
+                if( !scalarText( aDocument, classesNode.children[classIndex], className )
+                    || className.empty() || className.size() > 256 )
+                {
+                    diagnostic( aResult, "error", "invalid_netclass_assignment",
+                                "assignment class names must be bounded scalar values" );
+                    continue;
+                }
+
+                if( className == "Default" || !exactNames.contains( className ) )
+                {
+                    diagnostic( aResult, "error", "unknown_netclass_assignment",
+                                "assignment references an unknown or redundant Default class" );
+                }
+
+                if( !seenClasses.emplace( className ).second
+                    || !assignmentPairs.emplace( pattern, className ).second )
+                {
+                    diagnostic( aResult, "error", "duplicate_netclass_assignment",
+                                "pattern/class assignments must be unique" );
+                }
+
+                classNames.emplace_back( className );
+            }
+        }
+
+        assignments.push_back( { { "pattern", pattern }, { "classes", std::move( classNames ) } } );
+    }
+
+    if( classes.empty() || classes.front().value( "name", "" ) != "Default"
+        || std::count_if( classes.begin(), classes.end(),
+                          []( const JSON& aClass )
+                          {
+                              return aClass.value( "name", "" ) == "Default";
+                          } ) != 1 )
+    {
+        diagnostic( aResult, "error", "invalid_default_netclass",
+                    "net_classes requires exactly one Default class as its first declaration" );
+    }
+
+    if( classes.size() > 256 )
+    {
+        diagnostic( aResult, "error", "too_many_netclasses",
+                    "net_classes supports at most 256 classes" );
+    }
+
+    if( assignmentPairs.size() > 1024 )
+    {
+        diagnostic( aResult, "error", "too_many_netclass_assignments",
+                    "net_classes supports at most 1024 pattern/class assignments" );
+    }
+
+    if( !classes.empty() && classes.front().value( "name", "" ) == "Default"
+        && classes.front()["viaDiameterNm"].is_number_integer()
+        && classes.front()["viaDrillNm"].is_number_integer()
+        && classes.front()["microviaDiameterNm"].is_number_integer()
+        && classes.front()["microviaDrillNm"].is_number_integer() )
+    {
+        const JSON& defaults = classes.front();
+
+        if( defaults["viaDiameterNm"].get<int64_t>()
+            < defaults["viaDrillNm"].get<int64_t>() )
+        {
+            diagnostic( aResult, "error", "inconsistent_netclass_via_geometry",
+                        "Default netclass via diameter cannot be smaller than its drill" );
+        }
+
+        if( defaults["microviaDiameterNm"].get<int64_t>()
+            < defaults["microviaDrillNm"].get<int64_t>() )
+        {
+            diagnostic( aResult, "error", "inconsistent_netclass_microvia_geometry",
+                        "Default netclass microvia diameter cannot be smaller than its drill" );
+        }
+
+        for( size_t index = 1; index < classes.size(); ++index )
+        {
+            const JSON& netClass = classes[index];
+            const int64_t viaDiameter = netClass["viaDiameterNm"].is_null()
+                                                ? defaults["viaDiameterNm"].get<int64_t>()
+                                                : netClass["viaDiameterNm"].get<int64_t>();
+            const int64_t viaDrill = netClass["viaDrillNm"].is_null()
+                                             ? defaults["viaDrillNm"].get<int64_t>()
+                                             : netClass["viaDrillNm"].get<int64_t>();
+            const int64_t microviaDiameter = netClass["microviaDiameterNm"].is_null()
+                                                     ? defaults["microviaDiameterNm"].get<int64_t>()
+                                                     : netClass["microviaDiameterNm"].get<int64_t>();
+            const int64_t microviaDrill = netClass["microviaDrillNm"].is_null()
+                                                  ? defaults["microviaDrillNm"].get<int64_t>()
+                                                  : netClass["microviaDrillNm"].get<int64_t>();
+
+            if( viaDiameter < viaDrill )
+            {
+                diagnostic( aResult, "error", "inconsistent_netclass_via_geometry",
+                            "effective netclass via diameter cannot be smaller than its drill" );
+            }
+
+            if( microviaDiameter < microviaDrill )
+            {
+                diagnostic( aResult, "error", "inconsistent_netclass_microvia_geometry",
+                            "effective netclass microvia diameter cannot be smaller than its drill" );
+            }
+        }
+    }
+
+    return { { "kind", "net_classes" },
+             { "classes", std::move( classes ) },
+             { "assignments", std::move( assignments ) } };
+}
+
+
 JSON compileNamedFacet( const DOCUMENT& aDocument, size_t aNode, const std::string& aFacet,
                         KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -831,6 +1324,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(use_height_for_length_calculations BOOL) (maximum_error D) "
                       "(allow_fillets_outside_zone_outline BOOL))" } },
                   { { "form",
+                      "(net_classes (class Default COMPLETE_FIELDS) "
+                      "(class NAME VALUE_OR_INHERIT_FIELDS) ... "
+                      "(assign (pattern PATTERN) (classes NAME ...)) ...)" } },
+                  { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "
                       "(quantity N))" } },
                   { { "form", "(check erc|drc|sourcing|footprints|fabrication)" } },
@@ -925,6 +1422,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "nets", JSON::array() } } },
         { "pcb", JSON::array() },
         { "rules", nullptr },
+        { "netClasses", nullptr },
         { "sourcing", JSON::array() },
         { "checks", JSON::array() },
         { "outputs", JSON::array() }
@@ -940,6 +1438,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    libraryIds;
     std::set<std::string>    sheetIds;
     bool                     sawRules = false;
+    bool                     sawNetClasses = false;
     std::set<std::string>    sourceIds;
     std::set<std::string>    checkKinds;
     std::set<std::string>    outputKinds;
@@ -1084,6 +1583,20 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
             sawRules = true;
         }
+        else if( form == "net_classes" )
+        {
+            if( sawNetClasses )
+            {
+                diagnostic( result, "error", "duplicate_net_classes",
+                            "net_classes occurs more than once" );
+            }
+            else
+            {
+                result.ir["netClasses"] = compileNetClasses( *document, formNode, result );
+            }
+
+            sawNetClasses = true;
+        }
         else if( form == "source" )
         {
             JSON source = compileSource( *document, formNode, result, referencedComponents );
@@ -1193,6 +1706,12 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "pinConnections", pinConnections },
             { "boardStatements", result.ir["pcb"].size() },
             { "rules", result.ir["rules"].is_object() ? 1 : 0 },
+            { "netClasses", result.ir["netClasses"].is_object()
+                                      ? result.ir["netClasses"]["classes"].size()
+                                      : 0 },
+            { "netClassAssignments", result.ir["netClasses"].is_object()
+                                               ? result.ir["netClasses"]["assignments"].size()
+                                               : 0 },
             { "sourcingRecords", result.ir["sourcing"].size() },
             { "checks", result.ir["checks"].size() },
             { "outputs", result.ir["outputs"].size() } } }

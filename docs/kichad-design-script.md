@@ -113,6 +113,24 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
     (use_height_for_length_calculations true)
     (maximum_error 0.005mm)
     (allow_fillets_outside_zone_outline false))
+  (net_classes
+    (class Default
+      (clearance 0.2mm) (track_width 0.2mm)
+      (via_diameter 0.6mm) (via_drill 0.3mm)
+      (microvia_diameter 0.3mm) (microvia_drill 0.1mm)
+      (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+      (tuning_profile none) (pcb_color default)
+      (wire_width 0.15mm) (bus_width 0.3mm)
+      (schematic_color default) (line_style solid))
+    (class LED_SIGNAL
+      (clearance inherit) (track_width 0.25mm)
+      (via_diameter inherit) (via_drill inherit)
+      (microvia_diameter inherit) (microvia_drill inherit)
+      (diff_pair_width inherit) (diff_pair_gap inherit) (diff_pair_via_gap inherit)
+      (tuning_profile inherit) (pcb_color "#22AA44")
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color inherit) (line_style inherit))
+    (assign (pattern LED_A) (classes LED_SIGNAL)))
   (source R1
     (manufacturer "Yageo")
     (mpn "RC0603FR-0710KL")
@@ -219,8 +237,55 @@ diameters must be large enough for the declared drill plus twice the minimum ann
 KiCad ranges are enforced before planning. `maximum_error` is the curve-to-segment approximation
 tolerance, while `allow_fillets_outside_zone_outline` controls KiCad's external zone smoothing.
 The former generic `(rule NAME ...)` form is invalid;
-global constraints have this one representation. Net classes and custom `.kicad_dru` conditional
-rules are different KiCad concepts and will receive their own non-overlapping KDS forms.
+global constraints have this one representation. Custom `.kicad_dru` conditional rules are a
+different KiCad concept and will receive their own non-overlapping KDS form.
+
+### Net classes form
+
+KDS has one complete net-class table. The `Default` class is declared first; every other class
+follows in descending precedence, so declaration order is the priority and there is no second
+numeric-priority spelling. All classes precede assignments.
+
+```scheme
+(net_classes
+  (class Default
+    (clearance 0.2mm) (track_width 0.2mm)
+    (via_diameter 0.6mm) (via_drill 0.3mm)
+    (microvia_diameter 0.3mm) (microvia_drill 0.1mm)
+    (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+    (tuning_profile none) (pcb_color default)
+    (wire_width 0.15mm) (bus_width 0.3mm)
+    (schematic_color default) (line_style solid))
+  (class USB_HS
+    (clearance inherit) (track_width 0.15mm)
+    (via_diameter inherit) (via_drill inherit)
+    (microvia_diameter inherit) (microvia_drill inherit)
+    (diff_pair_width 0.15mm) (diff_pair_gap 0.18mm) (diff_pair_via_gap inherit)
+    (tuning_profile usb_hs) (pcb_color "#1A66CCDD")
+    (wire_width inherit) (bus_width inherit)
+    (schematic_color "#22AA44") (line_style dash_dot))
+  (assign (pattern "USB_[PN]") (classes USB_HS))
+  (assign (pattern "/usb/D[PN]") (classes USB_HS)))
+```
+
+All fifteen class fields are required so omissions cannot silently acquire machine-local defaults.
+`Default` requires concrete distances, `default` colors, `none` or a named tuning profile, and an
+explicit line style. Other classes use either a concrete value or `inherit`; colors use `inherit`
+or `#RRGGBB`/`#RRGGBBAA`; line styles are `solid`, `dash`, `dot`, `dash_dot`, or `dash_dot_dot`.
+Wire and bus widths must be exactly representable in KiCad schematic units (100 nm). Via and
+microvia diameters cannot be smaller than their effective drills after inheritance.
+
+Each `assign` contains one bounded KiCad net-name pattern and one or more declared non-Default
+classes. Pattern/class pairs are unique. Bus ranges may contain at most 256 members per range and
+the complete table may expand to at most 4096 native assignments. Class names are unique without
+regard to case; exact spelling is used by assignments. The compiler limits the table to 256 classes
+and 1024 authored pattern/class pairs.
+
+Apply lowers this form to one typed `NetClassSettings` message. KiChad validates the complete table,
+priorities, native ranges, colors, padstacks, assignments, and physical cross-constraints before
+replacing any project setting. It journals the previous table and restores it on lost
+acknowledgements or any later pre-commit failure. The older partial merge API is not used by KDS;
+there is one source representation and one atomic replacement operation.
 
 ### Copper zone form
 
@@ -408,7 +473,7 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes physical board stackups, the complete global Board Setup
-constraint set, rectangular outlines, component placement, straight traces, arcs, vias, copper
+constraint set, complete net-class tables, rectangular outlines, component placement, straight traces, arcs, vias, copper
 zones, keepout rule areas, native board text, and all five native dimension styles. Stackup apply
 uses KiCad's native protobuf stackup message and editor
 endpoint; it validates the entire ordered structure before mutation, derives enabled physical
@@ -417,6 +482,8 @@ disabled. Removing a non-empty copper layer is rejected. The pre-apply stack is 
 apply journal and restored if a later settings or transactional item mutation fails. Global rules
 use a typed native protobuf endpoint, validate every field and physical cross-constraint before
 mutation, and are journaled and restored together with the stackup on any pre-commit failure. A
+complete net-class table uses a typed native project endpoint, is persisted with the project, and
+is journaled and restored after the global rules and before transactional PCB items. A
 zone explicitly declares
 its net, stable ID, one or more copper layers, bounded
 polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
@@ -441,7 +508,9 @@ same deterministic identities. It reads the stackup back from the live editor an
 impedance, bevel, plating, all nine ordered physical layers, thicknesses, material, color, loss,
 permittivity, and dielectric lock. It also reads back all global constraint fields, including the
 semantic legacy edge-clearance mode, and verifies the second apply updates the same settings. It
-then
+reads back the complete net-class table and assignments, including inherited fields, native
+schematic units, colors, line styles, via/microvia padstacks, and priorities; an invalid replacement
+must leave that table unchanged. It then
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
 and flipped child layers survive both applies. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
@@ -463,8 +532,9 @@ A form is documented as executable only after it has all of the following covera
 - relevant ERC, DRC, sourcing, and fabrication-output assertions.
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
-components, nets, sourcing, board statement kinds, global rules, checks, and outputs. Global rules
-and executable board forms have backend-specific type checking and rollback coverage. Nested sheet
+components, nets, sourcing, board statement kinds, global rules, net classes, checks, and outputs.
+Global rules, net classes, and executable board forms have backend-specific type checking and
+rollback coverage. Nested sheet
 and library payloads remain non-executable until their own typed backends and rollback tests land.
 Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

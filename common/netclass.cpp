@@ -24,6 +24,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <netclass.h>
 #include <macros.h>
 #include <base_units.h>
@@ -141,10 +142,15 @@ void NETCLASS::Serialize( google::protobuf::Any &aContainer ) const
     nc.set_name( m_Name.ToUTF8() );
     nc.set_priority( m_Priority );
 
-    nc.set_type( m_constituents.empty() ? project::NCT_EXPLICIT : project::NCT_IMPLICIT );
+    const bool explicitClass = m_constituents.empty()
+                               || ( m_constituents.size() == 1 && m_constituents.front() == this );
+    nc.set_type( explicitClass ? project::NCT_EXPLICIT : project::NCT_IMPLICIT );
 
-    for( NETCLASS* member : m_constituents )
-        nc.add_constituents( member->GetName() );
+    if( !explicitClass )
+    {
+        for( NETCLASS* member : m_constituents )
+            nc.add_constituents( member->GetName() );
+    }
 
     project::NetClassBoardSettings* board = nc.mutable_board();
 
@@ -177,6 +183,21 @@ void NETCLASS::Serialize( google::protobuf::Any &aContainer ) const
                      { *m_ViaDrill, *m_ViaDrill } );
     }
 
+    if( m_uViaDia )
+    {
+        kiapi::board::types::PadStackLayer* layer =
+                board->mutable_microvia_stack()->add_copper_layers();
+        layer->set_shape( kiapi::board::types::PSS_CIRCLE );
+        layer->set_layer( kiapi::board::types::BoardLayer::BL_F_Cu );
+        PackVector2( *layer->mutable_size(), { *m_uViaDia, *m_uViaDia } );
+    }
+
+    if( m_uViaDrill )
+    {
+        PackVector2( *board->mutable_microvia_stack()->mutable_drill()->mutable_diameter(),
+                     { *m_uViaDrill, *m_uViaDrill } );
+    }
+
     if( m_pcbColor != COLOR4D::UNSPECIFIED )
         PackColor( *board->mutable_color(), m_pcbColor );
 
@@ -186,19 +207,25 @@ void NETCLASS::Serialize( google::protobuf::Any &aContainer ) const
     project::NetClassSchematicSettings* schematic = nc.mutable_schematic();
 
     if( m_wireWidth )
-        schematic->mutable_wire_width()->set_value_nm( *m_wireWidth );
+        schematic->mutable_wire_width()->set_value_nm( static_cast<int64_t>( *m_wireWidth ) * 100 );
 
     if( m_busWidth )
-        schematic->mutable_bus_width()->set_value_nm( *m_busWidth );
+        schematic->mutable_bus_width()->set_value_nm( static_cast<int64_t>( *m_busWidth ) * 100 );
 
     if( m_schematicColor != COLOR4D::UNSPECIFIED )
         PackColor( *schematic->mutable_color(), m_schematicColor );
 
     if( m_lineStyle )
     {
-        // TODO(JE) resolve issues with moving to kicommon
-        // schematic->set_line_style( ToProtoEnum<LINE_STYLE, types::StrokeLineStyle>(
-        //         static_cast<LINE_STYLE>( *m_lineStyle ) ) );
+        switch( static_cast<LINE_STYLE>( *m_lineStyle ) )
+        {
+        case LINE_STYLE::DEFAULT:    schematic->set_line_style( types::SLS_DEFAULT );    break;
+        case LINE_STYLE::SOLID:      schematic->set_line_style( types::SLS_SOLID );      break;
+        case LINE_STYLE::DASH:       schematic->set_line_style( types::SLS_DASH );       break;
+        case LINE_STYLE::DOT:        schematic->set_line_style( types::SLS_DOT );        break;
+        case LINE_STYLE::DASHDOT:    schematic->set_line_style( types::SLS_DASHDOT );    break;
+        case LINE_STYLE::DASHDOTDOT: schematic->set_line_style( types::SLS_DASHDOTDOT ); break;
+        }
     }
 
     aContainer.PackFrom( nc );
@@ -220,7 +247,7 @@ bool NETCLASS::Deserialize( const google::protobuf::Any &aContainer )
     if( nc.type() == project::NCT_IMPLICIT )
         return false;
 
-    SetConstituentNetclasses( {} );
+    SetConstituentNetclasses( { this } );
 
     if( nc.board().has_clearance() )
         m_Clearance = nc.board().clearance().value_nm();
@@ -246,6 +273,15 @@ bool NETCLASS::Deserialize( const google::protobuf::Any &aContainer )
             m_ViaDrill = nc.board().via_stack().drill().diameter().x_nm();
     }
 
+    if( nc.board().has_microvia_stack() )
+    {
+        if( nc.board().microvia_stack().copper_layers_size() > 0 )
+            m_uViaDia = nc.board().microvia_stack().copper_layers().at( 0 ).size().x_nm();
+
+        if( nc.board().microvia_stack().has_drill() )
+            m_uViaDrill = nc.board().microvia_stack().drill().diameter().x_nm();
+    }
+
     if( nc.board().has_color() )
         m_pcbColor = UnpackColor( nc.board().color() );
 
@@ -253,17 +289,30 @@ bool NETCLASS::Deserialize( const google::protobuf::Any &aContainer )
         m_tuningProfile = wxString::FromUTF8( nc.board().tuning_profile() );
 
     if( nc.schematic().has_wire_width() )
-        m_wireWidth = nc.schematic().wire_width().value_nm();
+        m_wireWidth = static_cast<int>( std::llround(
+                static_cast<double>( nc.schematic().wire_width().value_nm() ) / 100.0 ) );
 
     if( nc.schematic().has_bus_width() )
-        m_busWidth = nc.schematic().bus_width().value_nm();
+        m_busWidth = static_cast<int>( std::llround(
+                static_cast<double>( nc.schematic().bus_width().value_nm() ) / 100.0 ) );
 
     if( nc.schematic().has_color() )
         m_schematicColor = UnpackColor( nc.schematic().color() );
 
-    // TODO(JE) resolve issues with moving to kicommon
-    // if( nc.schematic().has_line_style() )
-    //     m_lineStyle = static_cast<int>( FromProtoEnum<LINE_STYLE>( nc.schematic().line_style() ) );
+    if( nc.schematic().has_line_style() )
+    {
+        switch( nc.schematic().line_style() )
+        {
+        case types::SLS_DEFAULT:    m_lineStyle = static_cast<int>( LINE_STYLE::DEFAULT );    break;
+        case types::SLS_SOLID:      m_lineStyle = static_cast<int>( LINE_STYLE::SOLID );      break;
+        case types::SLS_DASH:       m_lineStyle = static_cast<int>( LINE_STYLE::DASH );       break;
+        case types::SLS_DOT:        m_lineStyle = static_cast<int>( LINE_STYLE::DOT );        break;
+        case types::SLS_DASHDOT:    m_lineStyle = static_cast<int>( LINE_STYLE::DASHDOT );    break;
+        case types::SLS_DASHDOTDOT: m_lineStyle = static_cast<int>( LINE_STYLE::DASHDOTDOT ); break;
+        case types::SLS_UNKNOWN:
+        default:                    return false;
+        }
+    }
 
     return true;
 }

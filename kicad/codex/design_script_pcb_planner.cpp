@@ -206,6 +206,110 @@ JSON planRules( const JSON& aRules )
 }
 
 
+JSON planNetClasses( const JSON& aNetClasses )
+{
+    const auto distance = []( int64_t aValue )
+    {
+        return JSON( { { "valueNm", std::to_string( aValue ) } } );
+    };
+    const auto padstack = [&]( const JSON& aDiameter, const JSON& aDrill )
+    {
+        JSON stack = JSON::object();
+
+        if( !aDiameter.is_null() )
+        {
+            const std::string value = std::to_string( aDiameter.get<int64_t>() );
+            stack["copperLayers"] = JSON::array(
+                    { { { "layer", "BL_F_Cu" },
+                        { "shape", "PSS_CIRCLE" },
+                        { "size", { { "xNm", value }, { "yNm", value } } } } } );
+        }
+
+        if( !aDrill.is_null() )
+        {
+            const std::string value = std::to_string( aDrill.get<int64_t>() );
+            stack["drill"] = { { "diameter", { { "xNm", value }, { "yNm", value } } },
+                               { "shape", "DS_CIRCLE" } };
+        }
+
+        return stack;
+    };
+    JSON settings = { { "netClasses", JSON::array() }, { "assignments", JSON::array() } };
+
+    for( const JSON& source : aNetClasses.at( "classes" ) )
+    {
+        JSON board = JSON::object();
+        JSON schematic = JSON::object();
+        const auto addDistance = [&]( JSON& aTarget, const char* aTargetName,
+                                      const char* aSourceName )
+        {
+            if( !source.at( aSourceName ).is_null() )
+                aTarget[aTargetName] = distance( source.at( aSourceName ).get<int64_t>() );
+        };
+
+        addDistance( board, "clearance", "clearanceNm" );
+        addDistance( board, "trackWidth", "trackWidthNm" );
+        addDistance( board, "diffPairTrackWidth", "diffPairWidthNm" );
+        addDistance( board, "diffPairGap", "diffPairGapNm" );
+        addDistance( board, "diffPairViaGap", "diffPairViaGapNm" );
+
+        if( !source.at( "viaDiameterNm" ).is_null() || !source.at( "viaDrillNm" ).is_null() )
+            board["viaStack"] = padstack( source.at( "viaDiameterNm" ),
+                                          source.at( "viaDrillNm" ) );
+
+        if( !source.at( "microviaDiameterNm" ).is_null()
+            || !source.at( "microviaDrillNm" ).is_null() )
+        {
+            board["microviaStack"] = padstack( source.at( "microviaDiameterNm" ),
+                                               source.at( "microviaDrillNm" ) );
+        }
+
+        if( !source.at( "pcbColor" ).is_null() )
+            board["color"] = source.at( "pcbColor" );
+
+        if( !source.at( "tuningProfile" ).is_null() )
+            board["tuningProfile"] = source.at( "tuningProfile" );
+
+        addDistance( schematic, "wireWidth", "wireWidthNm" );
+        addDistance( schematic, "busWidth", "busWidthNm" );
+
+        if( !source.at( "schematicColor" ).is_null() )
+            schematic["color"] = source.at( "schematicColor" );
+
+        if( !source.at( "lineStyle" ).is_null() )
+        {
+            static const std::map<std::string, std::string> LINE_STYLES = {
+                { "solid", "SLS_SOLID" },
+                { "dash", "SLS_DASH" },
+                { "dot", "SLS_DOT" },
+                { "dash_dot", "SLS_DASHDOT" },
+                { "dash_dot_dot", "SLS_DASHDOTDOT" }
+            };
+            schematic["lineStyle"] =
+                    LINE_STYLES.at( source.at( "lineStyle" ).get<std::string>() );
+        }
+
+        settings["netClasses"].push_back(
+                { { "name", source.at( "name" ) },
+                  { "priority", source.at( "priority" ) },
+                  { "board", std::move( board ) },
+                  { "schematic", std::move( schematic ) },
+                  { "type", "NCT_EXPLICIT" } } );
+    }
+
+    for( const JSON& source : aNetClasses.at( "assignments" ) )
+    {
+        for( const JSON& netClass : source.at( "classes" ) )
+        {
+            settings["assignments"].push_back(
+                    { { "pattern", source.at( "pattern" ) }, { "netClass", netClass } } );
+        }
+    }
+
+    return { { "action", "update_net_classes" }, { "settings", std::move( settings ) } };
+}
+
+
 std::string lockedEnum( const JSON& aStatement )
 {
     return aStatement.value( "locked", false ) ? "LS_LOCKED" : "LS_UNLOCKED";
@@ -722,6 +826,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 {
     RESULT result;
     result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
+                      { "netClasses", 0 }, { "netClassAssignments", 0 },
                       { "stackups", 0 }, { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -739,6 +844,14 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 
     try
     {
+        if( aCompilerIr.contains( "netClasses" ) && aCompilerIr["netClasses"].is_object() )
+        {
+            result.operations.emplace_back( planNetClasses( aCompilerIr["netClasses"] ) );
+            result.counts["netClasses"] = aCompilerIr["netClasses"]["classes"].size();
+            result.counts["netClassAssignments"] =
+                    aCompilerIr["netClasses"]["assignments"].size();
+        }
+
         if( aCompilerIr.contains( "rules" ) && aCompilerIr["rules"].is_object() )
         {
             result.operations.emplace_back( planRules( aCompilerIr["rules"] ) );
@@ -823,6 +936,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
         diagnostic( result, "error", "invalid_board_ir", error.what() );
         result.operations = JSON::array();
         result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
+                          { "netClasses", 0 }, { "netClassAssignments", 0 },
                           { "stackups", 0 }, { "unsupported", 0 } };
         return result;
     }

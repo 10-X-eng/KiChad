@@ -72,7 +72,9 @@ builds and test runs never invoke this mutating smoke test.
 `tools/smoke-kichad-kds-apply.sh --allow-mutation` is the self-contained compiler integration proof.
 It starts only its own build-tree PCB Editor, uses isolated settings and a temporary copy of the
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
-duplicate-free convergence. It verifies a deterministic managed copper zone is filled by KiCad's
+duplicate-free convergence. It applies the single complete KDS net-class table through the typed
+native project API, reads every class and assignment back, rejects an invalid atomic replacement,
+and verifies the prior table did not change. It verifies a deterministic managed copper zone is filled by KiCad's
 official zone engine after each transaction and a distinct managed keepout remains an unfilled,
 locked rule area with exact prohibited-item settings. It also creates deterministic native board
 text and all five native dimension styles, then reapplies each distinct oneof field mask and verifies

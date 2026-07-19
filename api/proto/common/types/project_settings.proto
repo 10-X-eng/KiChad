@@ -88,6 +88,20 @@ message NetClass
   repeated string constituents = 6;
 }
 
+message NetClassAssignment
+{
+  string pattern = 1;
+  string net_class = 2;
+}
+
+// The complete explicit netclass table and its ordered pattern assignments.
+// Label-derived assignments and implicit composite classes are intentionally not included.
+message NetClassSettings
+{
+  repeated NetClass net_classes = 1;
+  repeated NetClassAssignment assignments = 2;
+}
+
 message TextVariables
 {
   map<string, string> variables = 1;

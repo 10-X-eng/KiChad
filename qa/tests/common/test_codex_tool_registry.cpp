@@ -21,11 +21,15 @@
 #include <api/board/board_types.pb.h>
 #include <api/common/envelope.pb.h>
 #include <api/common/commands/editor_commands.pb.h>
+#include <api/common/commands/project_commands.pb.h>
+#include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/empty.pb.h>
 #include <kiid.h>
 #include <kinng.h>
 #include <filesystem>
+#include <limits>
 #include <map>
+#include <regex>
 #include <wx/ffile.h>
 #include <wx/filename.h>
 #include <wx/utils.h>
@@ -101,6 +105,18 @@ kiapi::board::BoardDesignRules mockBoardRules( int64_t aMinimumClearance )
     rules.mutable_maximum_error()->set_value_nm( 5000 );
     rules.set_allow_fillets_outside_zone_outline( false );
     return rules;
+}
+
+
+kiapi::common::project::NetClassSettings mockNetClassSettings( int64_t aClearance )
+{
+    kiapi::common::project::NetClassSettings settings;
+    auto* netClass = settings.add_net_classes();
+    netClass->set_name( "Default" );
+    netClass->set_priority( std::numeric_limits<int32_t>::max() );
+    netClass->set_type( kiapi::common::project::NCT_EXPLICIT );
+    netClass->mutable_board()->mutable_clearance()->set_value_nm( aClearance );
+    return settings;
 }
 
 
@@ -1191,6 +1207,172 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
 }
 
 
+BOOST_AUTO_TEST_CASE( AppliesAndRollsBackCanonicalNetclassSettingsAtomically )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName socketPath( fixture.Root(), wxS( "api-netclasses-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-netclasses-token";
+    int updateCount = 0;
+    bool rejectNextUpdateResponse = false;
+    kiapi::common::project::NetClassSettings currentSettings =
+            mockNetClassSettings( 100000 );
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetNetClassSettings>() )
+                {
+                    kiapi::common::commands::NetClassSettingsResponse settings;
+                    settings.mutable_settings()->CopyFrom( currentSettings );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( settings );
+                }
+                else if( request.message().Is<kiapi::common::commands::UpdateNetClassSettings>() )
+                {
+                    kiapi::common::commands::UpdateNetClassSettings update;
+
+                    if( request.message().UnpackTo( &update ) && update.has_settings() )
+                    {
+                        currentSettings.CopyFrom( update.settings() );
+                        ++updateCount;
+
+                        if( rejectNextUpdateResponse )
+                        {
+                            rejectNextUpdateResponse = false;
+                            response.mutable_status()->set_status( kiapi::common::AS_TIMEOUT );
+                            response.mutable_status()->set_error_message(
+                                    "injected lost netclass acknowledgement" );
+                        }
+                        else
+                        {
+                            kiapi::common::commands::NetClassSettingsResponse settings;
+                            settings.mutable_settings()->CopyFrom( currentSettings );
+                            response.mutable_status()->set_status( kiapi::common::AS_OK );
+                            response.mutable_message()->PackFrom( settings );
+                        }
+                    }
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; },
+                                  [&fixture]() { return fixture.Root(); } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project netclass_design)
+  (net_classes
+    (class Default
+      (clearance 0.2mm) (track_width 0.2mm)
+      (via_diameter 0.6mm) (via_drill 0.3mm)
+      (microvia_diameter 0.3mm) (microvia_drill 0.1mm)
+      (diff_pair_width 0.18mm) (diff_pair_gap 0.2mm) (diff_pair_via_gap 0.22mm)
+      (tuning_profile none) (pcb_color default)
+      (wire_width 0.15mm) (bus_width 0.3mm)
+      (schematic_color default) (line_style solid))
+    (class USB_HS
+      (clearance inherit) (track_width 0.15mm)
+      (via_diameter inherit) (via_drill inherit)
+      (microvia_diameter inherit) (microvia_drill inherit)
+      (diff_pair_width 0.15mm) (diff_pair_gap 0.18mm) (diff_pair_via_gap inherit)
+      (tuning_profile usb_hs) (pcb_color "#112233")
+      (wire_width inherit) (bus_width inherit)
+      (schematic_color "#AABBCC") (line_style dash_dot))
+    (assign (pattern "USB_[PN]") (classes USB_HS))))
+)KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "netclasses.kicad_kds" },
+                                                { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON preview = registry.Handle( "design", { { "operation", "preview" },
+                                                  { "path", "netclasses.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( preview.at( "success" ).get<bool>(), preview.dump() );
+    const JSON previewData = envelope( preview );
+    const JSON& previewItems = previewData["data"]["boardPlan"]["items"];
+    BOOST_REQUIRE_EQUAL( previewItems.size(), 1 );
+    BOOST_CHECK_EQUAL( previewItems[0]["action"].get<std::string>(),
+                       "configure_net_classes" );
+    BOOST_CHECK_EQUAL( previewItems[0]["classes"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( previewItems[0]["assignments"].get<int>(), 1 );
+
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", "netclasses.kicad_kds" },
+                                                  { "boardPath", "design.kicad_pcb" },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    BOOST_CHECK( envelope( applied )["data"]["netClassesApplied"].get<bool>() );
+    BOOST_REQUIRE_EQUAL( currentSettings.net_classes_size(), 2 );
+    BOOST_CHECK_EQUAL( currentSettings.net_classes( 0 ).board().clearance().value_nm(),
+                       200000 );
+    BOOST_CHECK_EQUAL( currentSettings.assignments_size(), 1 );
+    BOOST_CHECK_EQUAL( updateCount, 1 );
+
+    const std::string changed = std::regex_replace(
+            source, std::regex( "\\(clearance 0\\.2mm\\)" ), "(clearance 0.3mm)" );
+    saved = registry.Handle( "design", { { "operation", "save" },
+                                          { "path", "netclasses.kicad_kds" },
+                                          { "source", changed },
+                                          { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    rejectNextUpdateResponse = true;
+    JSON lost = registry.Handle( "design", { { "operation", "apply" },
+                                               { "path", "netclasses.kicad_kds" },
+                                               { "boardPath", "design.kicad_pcb" },
+                                               { "expectedSha256", hash } } );
+    BOOST_CHECK( !lost.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( lost )["error"]["code"].get<std::string>(),
+                       "netclass_apply_failed" );
+    BOOST_CHECK_EQUAL( currentSettings.net_classes( 0 ).board().clearance().value_nm(),
+                       200000 );
+    BOOST_CHECK_EQUAL( updateCount, 3 );
+    wxFileName statePath( fixture.Root(), wxS( "netclasses.kicad_kds_state" ) );
+    BOOST_REQUIRE( wxRemoveFile( statePath.GetFullPath() ) );
+    BOOST_REQUIRE( wxFileName::Mkdir(
+            statePath.GetFullPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
+
+    JSON stateFailure = registry.Handle( "design", { { "operation", "apply" },
+                                                       { "path", "netclasses.kicad_kds" },
+                                                       { "boardPath", "design.kicad_pcb" },
+                                                       { "expectedSha256", hash } } );
+    BOOST_CHECK( !stateFailure.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( stateFailure )["error"]["code"].get<std::string>(),
+                       "state_write_failed" );
+    BOOST_CHECK_EQUAL( currentSettings.net_classes( 0 ).board().clearance().value_nm(),
+                       200000 );
+    BOOST_CHECK_EQUAL( updateCount, 5 );
+    BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
+                                           wxS( "netclasses.kicad_kds_journal" ) )
+                                      .GetFullPath() ) );
+    server.Stop();
+}
+
+
 BOOST_AUTO_TEST_CASE( AppliesKdsPlacementAsNarrowSchematicFootprintUpdate )
 {
     TOOL_PROJECT_FIXTURE fixture;
@@ -1622,6 +1804,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
     BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
     BOOST_CHECK( firstData["rulesApplied"].get<bool>() );
+    BOOST_CHECK( firstData["netClassesApplied"].get<bool>() );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", sourceName },
@@ -1635,6 +1818,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK( repeatedData["stackupApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
+    BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
 
     KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.stackup", socketDirectory );
     KICHAD_IPC_TARGET ipcTarget;
@@ -1699,6 +1883,84 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     kiapi::board::commands::BoardDesignRulesResponse unchangedRulesResponse;
     BOOST_REQUIRE( unchangedRulesEnvelope.message().UnpackTo( &unchangedRulesResponse ) );
     BOOST_CHECK_EQUAL( unchangedRulesResponse.rules().minimum_via_diameter().value_nm(), 600000 );
+
+    kiapi::common::commands::GetNetClassSettings netClassesRequest;
+    kiapi::common::ApiResponse netClassesEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, netClassesRequest, netClassesEnvelope, ipcError ),
+            ipcError );
+    kiapi::common::commands::NetClassSettingsResponse netClassesResponse;
+    BOOST_REQUIRE( netClassesEnvelope.message().UnpackTo( &netClassesResponse ) );
+    const kiapi::common::project::NetClassSettings& netClasses =
+            netClassesResponse.settings();
+    BOOST_REQUIRE_EQUAL( netClasses.net_classes_size(), 2 );
+    BOOST_REQUIRE_EQUAL( netClasses.assignments_size(), 1 );
+    const kiapi::common::project::NetClass& defaultClass = netClasses.net_classes( 0 );
+    BOOST_CHECK_EQUAL( defaultClass.name(), "Default" );
+    BOOST_CHECK_EQUAL( defaultClass.priority(), std::numeric_limits<int32_t>::max() );
+    BOOST_CHECK_EQUAL( defaultClass.type(), kiapi::common::project::NCT_EXPLICIT );
+    BOOST_CHECK_EQUAL( defaultClass.constituents_size(), 0 );
+    BOOST_CHECK_EQUAL( defaultClass.board().clearance().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL( defaultClass.board().track_width().value_nm(), 200000 );
+    BOOST_CHECK_EQUAL(
+            defaultClass.board().via_stack().copper_layers( 0 ).size().x_nm(), 600000 );
+    BOOST_CHECK_EQUAL(
+            defaultClass.board().via_stack().drill().diameter().x_nm(), 300000 );
+    BOOST_CHECK_EQUAL(
+            defaultClass.board().microvia_stack().copper_layers( 0 ).size().x_nm(), 300000 );
+    BOOST_CHECK_EQUAL(
+            defaultClass.board().microvia_stack().drill().diameter().x_nm(), 100000 );
+    BOOST_CHECK_EQUAL( defaultClass.schematic().wire_width().value_nm(), 150000 );
+    BOOST_CHECK_EQUAL( defaultClass.schematic().bus_width().value_nm(), 300000 );
+    BOOST_CHECK_EQUAL( defaultClass.schematic().line_style(),
+                       kiapi::common::types::SLS_SOLID );
+    const kiapi::common::project::NetClass& signalClass = netClasses.net_classes( 1 );
+    BOOST_CHECK_EQUAL( signalClass.name(), "SIGNAL" );
+    BOOST_CHECK_EQUAL( signalClass.priority(), 0 );
+    BOOST_CHECK_EQUAL( signalClass.board().clearance().value_nm(), 250000 );
+    BOOST_CHECK_EQUAL( signalClass.board().track_width().value_nm(), 250000 );
+    BOOST_CHECK( !signalClass.board().has_via_stack() );
+    BOOST_CHECK_EQUAL( signalClass.board().tuning_profile(), "signal_quality" );
+    BOOST_CHECK_CLOSE( signalClass.board().color().r(), 26.0 / 255.0, 0.0001 );
+    BOOST_CHECK_CLOSE( signalClass.board().color().a(), 221.0 / 255.0, 0.0001 );
+    BOOST_CHECK( !signalClass.schematic().has_wire_width() );
+    BOOST_CHECK_EQUAL( signalClass.schematic().line_style(),
+                       kiapi::common::types::SLS_DASHDOT );
+    BOOST_CHECK_EQUAL( netClasses.assignments( 0 ).pattern(), "Net1" );
+    BOOST_CHECK_EQUAL( netClasses.assignments( 0 ).net_class(), "SIGNAL" );
+
+    kiapi::common::commands::UpdateNetClassSettings invalidNetClassesRequest;
+    invalidNetClassesRequest.mutable_settings()->CopyFrom( netClasses );
+    auto* invalidVia = invalidNetClassesRequest.mutable_settings()
+                               ->mutable_net_classes( 0 )
+                               ->mutable_board()
+                               ->mutable_via_stack()
+                               ->mutable_copper_layers( 0 )
+                               ->mutable_size();
+    invalidVia->set_x_nm( 200000 );
+    invalidVia->set_y_nm( 200000 );
+    kiapi::common::ApiResponse invalidNetClassesEnvelope;
+    BOOST_CHECK( !ipcClient.Call( ipcTarget, invalidNetClassesRequest,
+                                  invalidNetClassesEnvelope, ipcError ) );
+    BOOST_CHECK_NE( ipcError.find( "cannot be smaller" ), std::string::npos );
+    ipcError.clear();
+    kiapi::common::ApiResponse unchangedNetClassesEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, netClassesRequest, unchangedNetClassesEnvelope,
+                            ipcError ),
+            ipcError );
+    kiapi::common::commands::NetClassSettingsResponse unchangedNetClassesResponse;
+    BOOST_REQUIRE( unchangedNetClassesEnvelope.message().UnpackTo(
+            &unchangedNetClassesResponse ) );
+    BOOST_CHECK_EQUAL(
+            unchangedNetClassesResponse.settings()
+                    .net_classes( 0 )
+                    .board()
+                    .via_stack()
+                    .copper_layers( 0 )
+                    .size()
+                    .x_nm(),
+            600000 );
 
     auto getItems = [&]( const std::string& aItemType, size_t aExpectedCount )
     {
