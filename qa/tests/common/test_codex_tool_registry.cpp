@@ -1388,7 +1388,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                  { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
-    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 6 );
+    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 7 );
     BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
@@ -1400,7 +1400,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     JSON repeatedData = envelope( repeated )["data"];
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 6 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 7 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
 
@@ -1488,6 +1488,26 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( keepout["locked"].get<std::string>(), "LS_LOCKED" );
     BOOST_CHECK( !keepout.value( "filled", false ) );
     BOOST_REQUIRE_EQUAL( keepout["outline"]["polygons"][0]["outline"]["nodes"].size(), 4 );
+
+    JSON text = getOne( "text" );
+    BOOST_CHECK_EQUAL( text["id"]["value"].get<std::string>(),
+                       stableUuid( "text", "managed-note" ) );
+    BOOST_CHECK_EQUAL( text["layer"].get<std::string>(), "BL_F_SilkS" );
+    BOOST_CHECK_EQUAL( text["text"]["text"].get<std::string>(), "KiChad\nmanaged" );
+    BOOST_CHECK_EQUAL( text["text"]["position"]["xNm"].get<std::string>(), "23000000" );
+    BOOST_CHECK_EQUAL( text["text"]["attributes"]["horizontalAlignment"].get<std::string>(),
+                       "HA_LEFT" );
+    BOOST_CHECK_EQUAL( text["text"]["attributes"]["verticalAlignment"].get<std::string>(),
+                       "VA_TOP" );
+    BOOST_CHECK_EQUAL( text["text"]["attributes"]["strokeWidth"]["valueNm"].get<std::string>(),
+                       "200000" );
+    BOOST_CHECK( text["text"]["attributes"]["multiline"].get<bool>() );
+    BOOST_CHECK( text["text"]["attributes"]["bold"].get<bool>() );
+    BOOST_CHECK( text["text"]["attributes"]["italic"].get<bool>() );
+    BOOST_CHECK( text["text"]["attributes"]["keepUpright"].get<bool>() );
+    BOOST_CHECK_EQUAL( text["text"]["hyperlink"].get<std::string>(),
+                       "https://github.com/10-X-eng/KiChad" );
+    BOOST_CHECK_EQUAL( text["locked"].get<std::string>(), "LS_LOCKED" );
 
     JSON footprint = getOne( "footprint" );
     BOOST_CHECK_EQUAL( footprint["id"]["value"].get<std::string>(),

@@ -73,10 +73,10 @@ It starts only its own build-tree PCB Editor, uses isolated settings and a tempo
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
 duplicate-free convergence. It verifies a deterministic managed copper zone is filled by KiCad's
 official zone engine after each transaction and a distinct managed keepout remains an unfilled,
-locked rule area with exact prohibited-item settings. It also verifies reference-resolved placement
-through a narrow native footprint transform: the parent and pad UUIDs, schematic symbol path, and
-child geometry survive a front-to-back flip. Its cleanup targets only the process and directory it
-created.
+locked rule area with exact prohibited-item settings. It also creates deterministic native board
+text and verifies reference-resolved placement through a narrow native footprint transform: the
+parent and pad UUIDs, schematic symbol path, and child geometry survive a front-to-back flip. Its
+cleanup targets only the process and directory it created.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for

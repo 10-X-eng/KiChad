@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
   (board
     (stackup (copper_layers 4) (thickness 1.6mm))
     (place R1 (at 1mm 1mm))
-    (text "future annotation" (at 1mm 1mm))))
+    (dimension aligned (from 0mm 0mm) (to 1mm 1mm))))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
@@ -216,6 +216,60 @@ BOOST_AUTO_TEST_CASE( LowersExplicitKeepoutIntoRuleAreaProtobufJson )
     BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
                        KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
                                "rule_area_board", "rule_area", "no-routing" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersBoardTextIntoDeterministicProtobufJson )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project annotated_board)
+  (board
+    (text "Fab\nrevision B"
+      (id fab-note)
+      (layer F.Fab)
+      (at 4mm 6mm)
+      (size 1mm 1.5mm)
+      (stroke 0.2mm)
+      (angle -45deg)
+      (justify right bottom)
+      (font "Noto Sans")
+      (line_spacing 1.2)
+      (bold true)
+      (italic true)
+      (underlined true)
+      (mirrored true)
+      (keep_upright true)
+      (hyperlink "https://example.com/fab")
+      (knockout true)
+      (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemType"].get<std::string>(), "text" );
+    checkProtobufJson<kiapi::board::types::BoardText>( plan.operations[0]["item"] );
+    const nlohmann::json& item = plan.operations[0]["item"];
+    BOOST_CHECK_EQUAL( item["layer"].get<std::string>(), "BL_F_Fab" );
+    BOOST_CHECK_EQUAL( item["text"]["text"].get<std::string>(), "Fab\nrevision B" );
+    BOOST_CHECK_EQUAL( item["text"]["attributes"]["fontName"].get<std::string>(),
+                       "Noto Sans" );
+    BOOST_CHECK_EQUAL( item["text"]["attributes"]["horizontalAlignment"].get<std::string>(),
+                       "HA_RIGHT" );
+    BOOST_CHECK_EQUAL( item["text"]["attributes"]["verticalAlignment"].get<std::string>(),
+                       "VA_BOTTOM" );
+    BOOST_CHECK_EQUAL( item["text"]["attributes"]["strokeWidth"]["valueNm"].get<std::string>(),
+                       "200000" );
+    BOOST_CHECK( item["text"]["attributes"]["multiline"].get<bool>() );
+    BOOST_CHECK( item["knockout"].get<bool>() );
+    BOOST_CHECK_EQUAL( item["locked"].get<std::string>(), "LS_LOCKED" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
+                       KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                               "annotated_board", "text", "fab-note" ) );
 }
 
 

@@ -746,6 +746,8 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
         return "arc";
     if( aItem.Is<Via>() )
         return "via";
+    if( aItem.Is<BoardText>() )
+        return "text";
     if( aItem.Is<Zone>() )
     {
         Zone zone;

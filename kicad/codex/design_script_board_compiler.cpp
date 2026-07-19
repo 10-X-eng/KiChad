@@ -33,6 +33,9 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using RESULT = KICHAD::DESIGN_SCRIPT_BOARD_COMPILER::RESULT;
 
 constexpr size_t MAX_IDENTIFIER_BYTES = 128;
+constexpr size_t MAX_TEXT_BYTES = 64 * 1024;
+constexpr size_t MAX_FONT_NAME_BYTES = 256;
+constexpr size_t MAX_HYPERLINK_BYTES = 2048;
 constexpr size_t MAX_ZONE_NAME_BYTES = 256;
 constexpr size_t MAX_ZONE_POLYGONS = 32;
 constexpr size_t MAX_ZONE_HOLES_PER_POLYGON = 64;
@@ -341,6 +344,24 @@ bool parseRatioForm( const DOCUMENT& aDocument, size_t aNode, double& aValue )
 }
 
 
+bool parseNumberForm( const DOCUMENT& aDocument, size_t aNode, double& aValue )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string           text;
+
+    if( node.kind != DOCUMENT::NODE_KIND::LIST || node.children.size() != 2
+        || !scalarText( aDocument, node.children[1], text ) )
+    {
+        return false;
+    }
+
+    std::from_chars_result converted =
+            std::from_chars( text.data(), text.data() + text.size(), aValue );
+    return converted.ec == std::errc() && converted.ptr == text.data() + text.size()
+           && std::isfinite( aValue );
+}
+
+
 bool collectFields( const DOCUMENT& aDocument, size_t aNode, size_t aBegin,
                     const std::set<std::string>& aAllowed,
                     std::map<std::string, size_t>& aFields, RESULT& aResult,
@@ -386,6 +407,40 @@ bool copperLayer( const std::string& aLayer )
     const char* end = aLayer.data() + aLayer.size() - 3;
     std::from_chars_result converted = std::from_chars( begin, end, layer );
     return converted.ec == std::errc() && converted.ptr == end && layer >= 1 && layer <= 30;
+}
+
+
+bool boardLayer( const std::string& aLayer )
+{
+    if( copperLayer( aLayer ) )
+        return true;
+
+    static const std::set<std::string> FIXED_LAYERS = {
+        "B.Adhes", "F.Adhes", "B.Paste", "F.Paste", "B.SilkS", "F.SilkS",
+        "B.Mask", "F.Mask", "Dwgs.User", "Cmts.User", "Eco1.User", "Eco2.User",
+        "Edge.Cuts", "Margin", "B.CrtYd", "F.CrtYd", "B.Fab", "F.Fab"
+    };
+
+    if( FIXED_LAYERS.contains( aLayer ) )
+        return true;
+
+    if( !aLayer.starts_with( "User." ) )
+        return false;
+
+    int layer = 0;
+    const char* begin = aLayer.data() + 5;
+    const char* end = aLayer.data() + aLayer.size();
+    std::from_chars_result converted = std::from_chars( begin, end, layer );
+    return converted.ec == std::errc() && converted.ptr == end && layer >= 1 && layer <= 45;
+}
+
+
+bool internalVector( const JSON& aVector )
+{
+    const int64_t x = aVector.value( "xNm", int64_t( 0 ) );
+    const int64_t y = aVector.value( "yNm", int64_t( 0 ) );
+    return x >= std::numeric_limits<int>::min() && x <= std::numeric_limits<int>::max()
+           && y >= std::numeric_limits<int>::min() && y <= std::numeric_limits<int>::max();
 }
 
 
@@ -639,6 +694,16 @@ void validateStackupLayers( const JSON& aStatements, RESULT& aResult )
             {
                 diagnostic( aResult, "error", "route_layer_outside_stackup",
                             "route layer " + layer + " is not present in the declared stackup" );
+            }
+        }
+        else if( kind == "text" )
+        {
+            const std::string layer = statement.value( "layer", "" );
+
+            if( copperLayer( layer ) && copperLayerIndex( layer, copperLayers ) < 0 )
+            {
+                diagnostic( aResult, "error", "text_layer_outside_stackup",
+                            "text layer " + layer + " is not present in the declared stackup" );
             }
         }
         else if( kind == "via" )
@@ -1773,6 +1838,193 @@ JSON compileZone( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
 }
 
 
+JSON compileText( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
+                  std::set<std::string>& aLogicalIds )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string           value;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], value )
+        || value.empty() || value.size() > MAX_TEXT_BYTES
+        || value.find( '\0' ) != std::string::npos || value.find( '\r' ) != std::string::npos )
+    {
+        diagnostic( aResult, "error", "invalid_text_value",
+                    "text requires 1 through 65536 UTF-8 bytes and LF line endings" );
+    }
+
+    std::map<std::string, size_t> fields;
+    collectFields( aDocument, aNode, 2,
+                   { "id", "layer", "at", "size", "stroke", "angle", "justify",
+                     "font", "line_spacing", "bold", "italic", "underlined", "mirrored",
+                     "keep_upright", "hyperlink", "knockout", "locked" },
+                   fields, aResult, "text" );
+    std::string logicalId;
+    std::string layer;
+    JSON        position = JSON::object();
+    JSON        size = JSON::object();
+    int64_t     stroke = 0;
+    double      angle = 0.0;
+    std::string horizontal = "center";
+    std::string vertical = "center";
+    std::string fontName;
+    double      lineSpacing = 1.0;
+    bool        bold = false;
+    bool        italic = false;
+    bool        underlined = false;
+    bool        mirrored = false;
+    bool        keepUpright = false;
+    std::string hyperlink;
+    bool        knockout = false;
+    bool        locked = false;
+
+    if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
+        || !validIdentifier( logicalId ) )
+    {
+        diagnostic( aResult, "error", "invalid_board_id",
+                    "text requires a bounded (id LOGICAL_ID)" );
+    }
+    else if( !aLogicalIds.emplace( logicalId ).second )
+    {
+        diagnostic( aResult, "error", "duplicate_board_id",
+                    "board logical id " + logicalId + " occurs more than once" );
+    }
+
+    if( !fields.contains( "layer" ) || !parseScalarForm( aDocument, fields["layer"], layer )
+        || !boardLayer( layer ) )
+    {
+        diagnostic( aResult, "error", "invalid_text_layer",
+                    "text requires a named KiCad board layer" );
+    }
+
+    if( !fields.contains( "at" ) || !parseVectorForm( aDocument, fields["at"], position )
+        || !internalVector( position ) )
+    {
+        diagnostic( aResult, "error", "invalid_text_position",
+                    "text requires bounded (at X Y) coordinates with physical units" );
+    }
+
+    if( !fields.contains( "size" ) || !parseVectorForm( aDocument, fields["size"], size )
+        || size.value( "xNm", int64_t( 0 ) ) < 1000
+        || size.value( "xNm", int64_t( 0 ) ) > 250000000
+        || size.value( "yNm", int64_t( 0 ) ) < 1000
+        || size.value( "yNm", int64_t( 0 ) ) > 250000000 )
+    {
+        diagnostic( aResult, "error", "invalid_text_size",
+                    "text size requires width and height from 1um through 250mm" );
+    }
+
+    const int64_t maximumStroke =
+            std::min( size.value( "xNm", int64_t( 0 ) ),
+                      size.value( "yNm", int64_t( 0 ) ) )
+            / 4;
+
+    if( !fields.contains( "stroke" )
+        || !parseDistanceForm( aDocument, fields["stroke"], stroke ) || stroke <= 0
+        || stroke > maximumStroke )
+    {
+        diagnostic( aResult, "error", "invalid_text_stroke",
+                    "text stroke must be positive and at most one quarter of its smaller size" );
+    }
+
+    if( fields.contains( "angle" )
+        && !parseAngleForm( aDocument, fields["angle"], angle ) )
+    {
+        diagnostic( aResult, "error", "invalid_text_angle",
+                    "text angle must use an explicit deg suffix" );
+    }
+
+    if( fields.contains( "justify" ) )
+    {
+        const DOCUMENT::NODE& justify = aDocument.Nodes()[fields["justify"]];
+
+        if( justify.children.size() != 3
+            || !scalarText( aDocument, justify.children[1], horizontal )
+            || !scalarText( aDocument, justify.children[2], vertical )
+            || ( horizontal != "left" && horizontal != "center" && horizontal != "right" )
+            || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+        {
+            diagnostic( aResult, "error", "invalid_text_justification",
+                        "text justify requires left|center|right and top|center|bottom" );
+        }
+    }
+
+    if( fields.contains( "font" ) )
+    {
+        std::string font;
+
+        if( !parseScalarForm( aDocument, fields["font"], font ) || font.empty()
+            || font.size() > MAX_FONT_NAME_BYTES )
+        {
+            diagnostic( aResult, "error", "invalid_text_font",
+                        "text font must be stroke or a font name of at most 256 UTF-8 bytes" );
+        }
+        else if( font != "stroke" )
+        {
+            fontName = std::move( font );
+        }
+    }
+
+    if( fields.contains( "line_spacing" )
+        && ( !parseNumberForm( aDocument, fields["line_spacing"], lineSpacing )
+             || lineSpacing < 0.1 || lineSpacing > 10.0 ) )
+    {
+        diagnostic( aResult, "error", "invalid_text_line_spacing",
+                    "text line_spacing must be a number from 0.1 through 10" );
+    }
+
+    const auto parseTextBoolean = [&]( const char* aField, bool& aValue )
+    {
+        if( fields.contains( aField )
+            && !parseBooleanForm( aDocument, fields[aField], aValue ) )
+        {
+            diagnostic( aResult, "error", "invalid_text_boolean",
+                        std::string( "text " ) + aField + " must be true or false" );
+        }
+    };
+    parseTextBoolean( "bold", bold );
+    parseTextBoolean( "italic", italic );
+    parseTextBoolean( "underlined", underlined );
+    parseTextBoolean( "mirrored", mirrored );
+    parseTextBoolean( "keep_upright", keepUpright );
+    parseTextBoolean( "knockout", knockout );
+    parseTextBoolean( "locked", locked );
+
+    if( fields.contains( "hyperlink" )
+        && ( !parseScalarForm( aDocument, fields["hyperlink"], hyperlink )
+             || hyperlink.size() > MAX_HYPERLINK_BYTES
+             || hyperlink.find( '\0' ) != std::string::npos
+             || hyperlink.find( '\r' ) != std::string::npos
+             || hyperlink.find( '\n' ) != std::string::npos ) )
+    {
+        diagnostic( aResult, "error", "invalid_text_hyperlink",
+                    "text hyperlink must be a single line of at most 2048 UTF-8 bytes" );
+    }
+
+    return { { "kind", "text" },
+             { "logicalId", logicalId },
+             { "value", value },
+             { "layer", layer },
+             { "position", std::move( position ) },
+             { "size", std::move( size ) },
+             { "strokeNm", stroke },
+             { "angleDegrees", angle },
+             { "horizontalJustification", horizontal },
+             { "verticalJustification", vertical },
+             { "fontName", fontName },
+             { "lineSpacing", lineSpacing },
+             { "bold", bold },
+             { "italic", italic },
+             { "underlined", underlined },
+             { "mirrored", mirrored },
+             { "multiline", value.find( '\n' ) != std::string::npos },
+             { "keepUpright", keepUpright },
+             { "hyperlink", hyperlink },
+             { "knockout", knockout },
+             { "locked", locked },
+             { "typed", true } };
+}
+
+
 JSON compileKeepoutProhibitions( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult )
 {
     std::map<std::string, size_t> fields;
@@ -1980,6 +2232,10 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
         else if( head == "zone" )
         {
             result.statements.emplace_back( compileZone( aDocument, child, result, logicalIds ) );
+        }
+        else if( head == "text" )
+        {
+            result.statements.emplace_back( compileText( aDocument, child, result, logicalIds ) );
         }
         else if( head == "keepout" )
         {

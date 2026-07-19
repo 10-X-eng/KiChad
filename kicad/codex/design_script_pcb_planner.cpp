@@ -133,6 +133,57 @@ JSON planOutline( const JSON& aStatement, const std::string& aProject )
 }
 
 
+JSON planText( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "text", logicalId );
+    const std::map<std::string, std::string> horizontalEnums = {
+        { "left", "HA_LEFT" }, { "center", "HA_CENTER" }, { "right", "HA_RIGHT" }
+    };
+    const std::map<std::string, std::string> verticalEnums = {
+        { "top", "VA_TOP" }, { "center", "VA_CENTER" }, { "bottom", "VA_BOTTOM" }
+    };
+    JSON item = {
+        { "id", { { "value", itemId } } },
+        { "text",
+          { { "position", vectorProto( aStatement.at( "position" ) ) },
+            { "attributes",
+              { { "fontName", aStatement.at( "fontName" ) },
+                { "horizontalAlignment",
+                  horizontalEnums.at(
+                          aStatement.at( "horizontalJustification" ).get<std::string>() ) },
+                { "verticalAlignment",
+                  verticalEnums.at(
+                          aStatement.at( "verticalJustification" ).get<std::string>() ) },
+                { "angle", { { "valueDegrees", aStatement.at( "angleDegrees" ) } } },
+                { "lineSpacing", aStatement.at( "lineSpacing" ) },
+                { "strokeWidth",
+                  { { "valueNm",
+                      std::to_string( aStatement.at( "strokeNm" ).get<int64_t>() ) } } },
+                { "italic", aStatement.at( "italic" ) },
+                { "bold", aStatement.at( "bold" ) },
+                { "underlined", aStatement.at( "underlined" ) },
+                { "visible", true },
+                { "mirrored", aStatement.at( "mirrored" ) },
+                { "multiline", aStatement.at( "multiline" ) },
+                { "keepUpright", aStatement.at( "keepUpright" ) },
+                { "size", vectorProto( aStatement.at( "size" ) ) } } },
+            { "text", aStatement.at( "value" ) },
+            { "hyperlink", aStatement.at( "hyperlink" ) } } },
+        { "layer", layerEnum( aStatement.at( "layer" ).get<std::string>() ) },
+        { "knockout", aStatement.at( "knockout" ) },
+        { "locked", lockedEnum( aStatement ) }
+    };
+
+    return { { "action", "upsert" },
+             { "itemType", "text" },
+             { "logicalId", logicalId },
+             { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
+
 JSON planRoute( const JSON& aStatement, const std::string& aProject )
 {
     const std::string kind = aStatement.at( "kind" ).get<std::string>();
@@ -458,6 +509,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             else if( kind == "keepout" )
             {
                 result.operations.emplace_back( planKeepout( statement, project ) );
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "text" )
+            {
+                result.operations.emplace_back( planText( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
             else if( kind == "place" )

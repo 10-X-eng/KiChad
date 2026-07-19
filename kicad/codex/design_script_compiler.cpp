@@ -553,6 +553,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(outline (polygon (point X Y) ... (hole (point X Y) ...))) "
                       "(prohibit (copper BOOL) (vias BOOL) (tracks BOOL) "
                       "(pads BOOL) (footprints BOOL)))" } },
+                  { { "form",
+                      "(text VALUE (id ID) (layer LAYER) (at X Y) (size W H) "
+                      "(stroke D) (angle A) (justify HORIZONTAL VERTICAL) "
+                      "(font stroke|NAME) ...)" } },
                   { { "form", "(rule NAME ...)" } },
                   { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "

@@ -105,10 +105,10 @@ formatting and statement order do not affect those identities.
 
 Physical board quantities always carry explicit units (`mm`, `mil`, `um`, `nm`, or `in`), area
 thresholds use the corresponding square units (`mm2`, `mil2`, `um2`, `nm2`, or `in2`), and
-rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zones, and keepouts
-require logical `id` fields. Those IDs are stable across formatting and statement reordering and
-are the source identity used by transactional backends; component placement uses the already-unique
-reference.
+rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zones, keepouts, and
+board text require logical `id` fields. Those IDs are stable across formatting and statement
+reordering and are the source identity used by transactional backends; component placement uses the
+already-unique reference.
 
 ### Copper zone form
 
@@ -184,6 +184,41 @@ declared stackup and the same bounded, exact polygon topology contract as copper
 to KiCad's native `ZT_RULE_AREA` with placement-area behavior explicitly disabled; they are not
 copper zones and are never awaited as filled objects.
 
+### Board text form
+
+The canonical KDS version 1 board text form is:
+
+```scheme
+(text "CONTENT"
+  (id LOGICAL_ID)
+  (layer F.SilkS)
+  (at X Y)
+  (size WIDTH HEIGHT)
+  (stroke WIDTH)
+  (angle ANGLE)
+  (justify left|center|right top|center|bottom)
+  (font stroke|"INSTALLED FONT NAME")
+  (line_spacing RATIO)
+  (bold true|false)
+  (italic true|false)
+  (underlined true|false)
+  (mirrored true|false)
+  (keep_upright true|false)
+  (hyperlink "OPTIONAL URI")
+  (knockout true|false)
+  (locked true|false))
+```
+
+`id`, `layer`, `at`, `size`, and `stroke` are required. Text is bounded to 64 KiB and uses LF line
+endings; whether it is multiline is derived from the content instead of represented twice. Size is
+bounded to KiCad's native 1 um through 250 mm range, stroke is capped at one quarter of the smaller
+text dimension, and coordinates must fit KiCad's internal board coordinate range. Angle defaults to
+0 degrees, justification to centered, font to KiCad's portable stroke font, line spacing to 1, and
+all style, knockout, and lock booleans to false. Named fonts are preserved exactly and must be
+installed anywhere the design is rendered. All normal KiCad copper, technical, fabrication, and
+user board layers are accepted; copper layers are checked against the declared stackup and the
+target board must have the authored layer enabled.
+
 ## Compiler pipeline
 
 1. Parse bounded, lossless s-expressions.
@@ -206,12 +241,13 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes rectangular outlines, component placement, straight traces,
-arcs, vias, copper zones, and keepout rule areas. A zone explicitly declares its net, stable ID, one or more copper
-layers, bounded polygon/hole geometry, clearance, minimum thickness, connection and thermal policy,
-island policy, solid or hatched fill, priority, border display, and lock state. No manufacturing
-setting is inherited silently. Zone creation and updates are committed through KiCad 10 IPC, after
-which KiCad's official refill operation is polled until every desired zone reports filled. Refill
-failure retains the recovery journal and aborts the apply result rather than claiming success.
+arcs, vias, copper zones, keepout rule areas, and native board text. A zone explicitly declares its
+net, stable ID, one or more copper layers, bounded polygon/hole geometry, clearance, minimum
+thickness, connection and thermal policy, island policy, solid or hatched fill, priority, border
+display, and lock state. No manufacturing setting is inherited silently. Zone creation and updates
+are committed through KiCad 10 IPC, after which KiCad's official refill operation is polled until
+every desired zone reports filled. Refill failure retains the recovery journal and aborts the apply
+result rather than claiming success.
 Keepouts use a separate deterministic ownership type and exact `rule_area_settings` update mask, so
 their unfilled state is never confused with a failed copper refill.
 
@@ -219,16 +255,17 @@ Placement requires exactly one live footprint with the KDS component reference a
 an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
 state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
 existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
-The backend still refuses stackup, text, dimensions, or any structurally retained form before
+The backend still refuses stackup, dimensions, or any structurally retained form before
 mutation until that form has its own typed backend and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
-an isolated temporary project, starts its own build-tree PCB Editor, applies six managed items, and
+an isolated temporary project, starts its own build-tree PCB Editor, applies seven managed items, and
 reapplies the unchanged source to verify updates reuse the same deterministic identities. It also
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
 and flipped child layers survive both applies. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
-keepout with exact prohibited-item policy.
+keepout with exact prohibited-item policy. The seventh is multiline native board text with exact
+position, layer, typography, hyperlink, and lock state.
 
 ## Production support rule
 

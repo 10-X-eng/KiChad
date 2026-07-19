@@ -86,7 +86,7 @@ bool uuid( const std::string& aText )
 bool managedType( const std::string& aType )
 {
     return aType == "shape" || aType == "trace" || aType == "arc" || aType == "via"
-           || aType == "zone" || aType == "rule_area";
+           || aType == "zone" || aType == "rule_area" || aType == "text";
 }
 
 
@@ -128,6 +128,9 @@ JSON updateFields( const std::string& aType )
                               "priority", "filled", "filled_polygons", "border", "locked",
                               "layer_properties" } );
     }
+
+    if( aType == "text" )
+        return JSON::array( { "text", "layer", "knockout", "locked" } );
 
     return JSON::array( { "position", "pad_stack", "locked", "net", "type" } );
 }

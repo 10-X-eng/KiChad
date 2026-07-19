@@ -349,6 +349,84 @@ BOOST_AUTO_TEST_CASE( CompilesExplicitKeepoutPoliciesAndRejectsAmbiguousIntent )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesBoundedBoardTextAndRejectsUnsafeTypography )
+{
+    const std::string valid = R"KDS((kichad_design
+  (version 1)
+  (project annotated_board)
+  (board
+    (stackup (copper_layers 4) (thickness 1.6mm))
+    (text "Assembly\nrevision A"
+      (id assembly-note)
+      (layer F.SilkS)
+      (at 12mm 8mm)
+      (size 1.5mm 2mm)
+      (stroke 0.2mm)
+      (angle 90deg)
+      (justify left top)
+      (font stroke)
+      (line_spacing 1.25)
+      (bold true)
+      (italic true)
+      (underlined true)
+      (mirrored true)
+      (keep_upright true)
+      (hyperlink "https://example.com/revision-a")
+      (knockout true)
+      (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( valid );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( compiled.ir["pcb"].size(), 2 );
+    const nlohmann::json& text = compiled.ir["pcb"][1];
+    BOOST_CHECK_EQUAL( text["kind"].get<std::string>(), "text" );
+    BOOST_CHECK_EQUAL( text["logicalId"].get<std::string>(), "assembly-note" );
+    BOOST_CHECK_EQUAL( text["value"].get<std::string>(), "Assembly\nrevision A" );
+    BOOST_CHECK_EQUAL( text["layer"].get<std::string>(), "F.SilkS" );
+    BOOST_CHECK_EQUAL( text["size"]["xNm"].get<int64_t>(), 1500000 );
+    BOOST_CHECK_EQUAL( text["strokeNm"].get<int64_t>(), 200000 );
+    BOOST_CHECK_EQUAL( text["horizontalJustification"].get<std::string>(), "left" );
+    BOOST_CHECK_EQUAL( text["verticalJustification"].get<std::string>(), "top" );
+    BOOST_CHECK_CLOSE( text["lineSpacing"].get<double>(), 1.25, 0.0001 );
+    BOOST_CHECK( text["multiline"].get<bool>() );
+    BOOST_CHECK( text["bold"].get<bool>() );
+    BOOST_CHECK( text["knockout"].get<bool>() );
+    BOOST_CHECK( compiled.plan["boardFullyTyped"].get<bool>() );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project invalid_text)
+  (board
+    (stackup (copper_layers 2) (thickness 1.6mm))
+    (text "Bad\rtext"
+      (id unsafe-note)
+      (layer In1.Cu)
+      (at 3000mm 0mm)
+      (size 0.5mm 0.5mm)
+      (stroke 0.2mm)
+      (justify sideways top)
+      (font "")
+      (line_spacing 0)
+      (bold maybe)
+      (hyperlink "line\nbreak"))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT rejected =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !rejected.ok );
+    const std::string diagnostics = rejected.diagnostics.dump();
+
+    for( const char* code : { "invalid_text_value", "invalid_text_position",
+                              "invalid_text_stroke", "invalid_text_justification",
+                              "invalid_text_font", "invalid_text_line_spacing",
+                              "invalid_text_boolean", "invalid_text_hyperlink",
+                              "text_layer_outside_stackup" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCopperZoneGeometryBeforePlanning )
 {
     std::string oversized = R"KDS((kichad_design
@@ -528,6 +606,7 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK_NE( description.dump().find( "thermal_spoke_width" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "hatch_offsets" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "prohibit" ), std::string::npos );
+    BOOST_CHECK_NE( description.dump().find( "font stroke|NAME" ), std::string::npos );
 }
 
 
