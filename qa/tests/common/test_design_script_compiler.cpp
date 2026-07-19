@@ -12,6 +12,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <limits>
+#include <map>
+#include <set>
 
 #include <kicad/codex/design_script_compiler.h>
 
@@ -1622,6 +1624,66 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
                     description["example"].get<std::string>() );
     BOOST_CHECK_MESSAGE( example.ok, example.diagnostics.dump() );
+}
+
+
+BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutASecondFormat )
+{
+    const nlohmann::json description = KICHAD::DESIGN_SCRIPT_COMPILER::Describe();
+    BOOST_REQUIRE( description.contains( "capabilityCoverage" ) );
+    const nlohmann::json& coverage = description["capabilityCoverage"];
+    BOOST_CHECK( coverage["authoritative"].get<bool>() );
+    BOOST_CHECK_EQUAL( coverage["target"]["kicad"].get<std::string>(), "10.0.4" );
+    BOOST_CHECK_EQUAL( coverage["target"]["kds"].get<int>(), 1 );
+    BOOST_CHECK( !coverage["complete"].get<bool>() );
+    BOOST_CHECK_NE( coverage["representation"].get<std::string>().find(
+                            ".kicad_kds remains the single authored design representation" ),
+                    std::string::npos );
+    BOOST_REQUIRE( coverage["qualification"].is_array() );
+    BOOST_CHECK_EQUAL( coverage["qualification"].size(), 9 );
+    BOOST_REQUIRE( coverage["facets"].is_array() );
+    BOOST_CHECK_GE( coverage["facets"].size(), 80 );
+
+    const std::set<std::string> expectedDomains = {
+        "language", "project", "schematic", "symbols", "simulation", "pcb",
+        "footprints", "manufacturing", "interchange", "editor", "auxiliary"
+    };
+    const std::set<std::string> allowedStates = {
+        "qualified", "partial", "unrepresented"
+    };
+    std::set<std::string> ids;
+    std::set<std::string> domains;
+    std::map<std::string, size_t> counts;
+
+    for( const nlohmann::json& facet : coverage["facets"] )
+    {
+        BOOST_REQUIRE( facet.is_object() );
+        const std::string id = facet["id"].get<std::string>();
+        const std::string domain = facet["domain"].get<std::string>();
+        const std::string state = facet["state"].get<std::string>();
+        BOOST_CHECK( ids.emplace( id ).second );
+        BOOST_CHECK( expectedDomains.contains( domain ) );
+        BOOST_CHECK( allowedStates.contains( state ) );
+        BOOST_CHECK( facet["kdsForms"].is_array() );
+        BOOST_CHECK( !facet["controls"].get<std::string>().empty() );
+        BOOST_CHECK( facet["gaps"].is_array() );
+
+        if( state == "qualified" )
+            BOOST_CHECK( facet["gaps"].empty() );
+        else
+            BOOST_CHECK( !facet["gaps"].empty() );
+
+        domains.emplace( domain );
+        ++counts[state];
+    }
+
+    BOOST_CHECK( domains == expectedDomains );
+
+    for( const std::string& state : allowedStates )
+        BOOST_CHECK_EQUAL( coverage["counts"][state].get<size_t>(), counts[state] );
+
+    BOOST_CHECK_EQUAL( coverage["complete"].get<bool>(),
+                       counts["partial"] == 0 && counts["unrepresented"] == 0 );
 }
 
 

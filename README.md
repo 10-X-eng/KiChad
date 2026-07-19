@@ -86,6 +86,10 @@ sidecar declares libraries, components, nets, board intent, rules, sourcing, che
 outputs, while ordinary KiCad files remain the compiler artifacts. The format, grammar, safety rules,
 and production support criteria are documented in
 [docs/kichad-design-script.md](docs/kichad-design-script.md).
+The native `design.describe` operation also returns the authoritative AI-readable coverage catalog:
+every design, verification, manufacturing, interchange, editor, and auxiliary-application facet is
+marked `qualified`, `partial`, or `unrepresented` with explicit remaining gaps. The catalog is
+compiler introspection, not a second design representation.
 
 For an opt-in transaction proof, first open a disposable project copy in the installed PCB Editor,
 then run `tools/smoke-kichad-live-ipc.sh --allow-mutation PROJECT_DIRECTORY BOARD_FILE`.  The smoke

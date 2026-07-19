@@ -992,6 +992,13 @@ unchanged local UI settings before deleting the disposable project.
 
 ## Production support rule
 
+`design.describe` returns the authoritative machine-readable `capabilityCoverage` inventory. It
+enumerates authorable design state, execution and verification, manufacturing, interchange, editor
+control surfaces, and KiCad's bundled auxiliary applications as `qualified`, `partial`, or
+`unrepresented`, with the exact remaining gaps attached to every incomplete facet. This inventory
+is compiler introspection for an AI model; it is not another design file or another representation
+of a design. The `.kicad_kds` sidecar remains the only authored source.
+
 A form is documented as executable only after it has all of the following coverage:
 
 - parser and type-checker unit tests, including malformed and bounded-input cases;

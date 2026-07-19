@@ -23,6 +23,7 @@ include_directories(
 set( KICAD_SRCS
     codex/codex_app_server_client.cpp
     codex/design_script_board_compiler.cpp
+    codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp

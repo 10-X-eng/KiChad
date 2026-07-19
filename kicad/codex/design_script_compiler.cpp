@@ -11,6 +11,8 @@
 
 #include "design_script_compiler.h"
 
+#include "design_script_capabilities.h"
+
 #include "design_script_board_compiler.h"
 #include "lossless_sexpr_document.h"
 
@@ -2964,7 +2966,7 @@ namespace KICHAD
 
 DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
 {
-    return {
+    JSON description = {
         { "language", "kichad-design" },
         { "version", LANGUAGE_VERSION },
         { "syntax", "s-expression" },
@@ -3095,6 +3097,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
           "  (check drc)\n"
           "  (output gerbers))" }
     };
+    description["capabilityCoverage"] = DesignScriptCapabilities();
+    return description;
 }
 
 
