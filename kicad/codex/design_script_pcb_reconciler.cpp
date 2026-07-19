@@ -15,9 +15,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 
 namespace
@@ -87,6 +89,20 @@ bool managedType( const std::string& aType )
 }
 
 
+bool componentReference( const std::string& aReference )
+{
+    return boundedText( aReference, 128 )
+           && std::all_of( aReference.begin(), aReference.end(),
+                           []( unsigned char aCharacter )
+                           {
+                               return std::isalnum( aCharacter ) || aCharacter == '_'
+                                      || aCharacter == '-' || aCharacter == '+'
+                                      || aCharacter == '.' || aCharacter == '/'
+                                      || aCharacter == '#';
+                           } );
+}
+
+
 JSON updateFields( const std::string& aType )
 {
     if( aType == "shape" )
@@ -109,6 +125,63 @@ struct MANAGED_ITEM
     std::string itemId;
     JSON        item = JSON::object();
 };
+
+
+struct PLACEMENT
+{
+    std::string component;
+    int64_t     xNm = 0;
+    int64_t     yNm = 0;
+    double      rotationDegrees = 0.0;
+    std::string side;
+    bool        locked = false;
+};
+
+
+struct LIVE_FOOTPRINT
+{
+    std::string itemId;
+    bool        schematicLinked = false;
+};
+
+
+bool readPlacement( const JSON& aJson, PLACEMENT& aPlacement, RESULT& aResult )
+{
+    if( !aJson.is_object() || aJson.value( "action", "" ) != "place_by_reference"
+        || !aJson.contains( "component" ) || !aJson["component"].is_string()
+        || !aJson.contains( "position" ) || !aJson["position"].is_object()
+        || !aJson["position"].contains( "xNm" )
+        || !aJson["position"]["xNm"].is_number_integer()
+        || !aJson["position"].contains( "yNm" )
+        || !aJson["position"]["yNm"].is_number_integer()
+        || !aJson.contains( "rotationDegrees" )
+        || !aJson["rotationDegrees"].is_number()
+        || !aJson.contains( "side" ) || !aJson["side"].is_string()
+        || !aJson.contains( "locked" ) || !aJson["locked"].is_boolean() )
+    {
+        diagnostic( aResult, "invalid_placement", "planned component placement is malformed" );
+        return false;
+    }
+
+    aPlacement.component = aJson["component"].get<std::string>();
+    aPlacement.xNm = aJson["position"]["xNm"].get<int64_t>();
+    aPlacement.yNm = aJson["position"]["yNm"].get<int64_t>();
+    aPlacement.rotationDegrees = aJson["rotationDegrees"].get<double>();
+    aPlacement.side = aJson["side"].get<std::string>();
+    aPlacement.locked = aJson["locked"].get<bool>();
+
+    if( !componentReference( aPlacement.component )
+        || !std::isfinite( aPlacement.rotationDegrees )
+        || std::abs( aPlacement.rotationDegrees ) > 360000.0
+        || ( aPlacement.side != "front" && aPlacement.side != "back" ) )
+    {
+        diagnostic( aResult, "invalid_placement",
+                    "planned component placement contains an invalid value" );
+        return false;
+    }
+
+    return true;
+}
 
 
 bool validateContext( const CONTEXT& aContext, RESULT& aResult )
@@ -257,7 +330,8 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
         const JSON& aLiveInventory, const CONTEXT& aContext )
 {
     RESULT result;
-    result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 } };
+    result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
+                      { "placement", 0 } };
     validateContext( aContext, result );
 
     std::map<std::string, MANAGED_ITEM> previous;
@@ -265,6 +339,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
 
     std::map<std::string, MANAGED_ITEM> desired;
     std::set<std::string>               desiredLogicalIds;
+    std::map<std::string, PLACEMENT>    placements;
 
     if( !aDesiredOperations.is_array() || aDesiredOperations.size() > MAX_MANAGED_ITEMS )
     {
@@ -275,10 +350,29 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
     {
         for( const JSON& operation : aDesiredOperations )
         {
-            if( !operation.is_object() || operation.value( "action", "" ) != "upsert" )
+            const std::string action = operation.is_object()
+                                               ? operation.value( "action", "" )
+                                               : "";
+
+            if( action == "place_by_reference" )
+            {
+                PLACEMENT placement;
+
+                if( readPlacement( operation, placement, result )
+                    && !placements.emplace( placement.component, placement ).second )
+                {
+                    diagnostic( result, "duplicate_component_placement",
+                                "component " + placement.component
+                                        + " has more than one planned placement" );
+                }
+
+                continue;
+            }
+
+            if( action != "upsert" )
             {
                 diagnostic( result, "unsupported_desired_operation",
-                            "apply currently accepts only fully lowered PCB upserts" );
+                            "apply received an unsupported lowered PCB operation" );
                 continue;
             }
 
@@ -300,6 +394,8 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
     }
 
     std::map<std::string, std::string> live;
+    std::map<std::string, std::vector<LIVE_FOOTPRINT>> liveFootprints;
+    std::set<std::string> liveFootprintIds;
 
     if( !aLiveInventory.is_array() || aLiveInventory.size() > MAX_LIVE_ITEMS )
     {
@@ -329,6 +425,23 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
             {
                 diagnostic( result, "invalid_live_inventory",
                             "live PCB inventory contains conflicting item types" );
+            }
+
+            if( itemType == "footprint" )
+            {
+                if( !entry.contains( "reference" ) || !entry["reference"].is_string()
+                    || !componentReference( entry["reference"].get<std::string>() )
+                    || !entry.contains( "schematicLinked" )
+                    || !entry["schematicLinked"].is_boolean()
+                    || !liveFootprintIds.emplace( itemId ).second )
+                {
+                    diagnostic( result, "invalid_live_inventory",
+                                "live footprint inventory contains an invalid identity" );
+                    continue;
+                }
+
+                liveFootprints[entry["reference"].get<std::string>()].push_back(
+                        { itemId, entry["schematicLinked"].get<bool>() } );
             }
         }
     }
@@ -402,10 +515,55 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
         ++result.counts["delete"].get_ref<int64_t&>();
     }
 
+    for( const auto& [component, placement] : placements )
+    {
+        auto footprints = liveFootprints.find( component );
+
+        if( footprints == liveFootprints.end() )
+        {
+            diagnostic( result, "missing_component_footprint",
+                        "no live PCB footprint has reference " + component );
+            continue;
+        }
+
+        if( footprints->second.size() != 1 )
+        {
+            diagnostic( result, "ambiguous_component_footprint",
+                        "more than one live PCB footprint has reference " + component );
+            continue;
+        }
+
+        const LIVE_FOOTPRINT& footprint = footprints->second.front();
+
+        if( !footprint.schematicLinked )
+        {
+            diagnostic( result, "unlinked_component_footprint",
+                        "PCB footprint " + component + " is not linked to a schematic symbol" );
+            continue;
+        }
+
+        JSON item = { { "id", { { "value", footprint.itemId } } },
+                      { "position", { { "xNm", std::to_string( placement.xNm ) },
+                                      { "yNm", std::to_string( placement.yNm ) } } },
+                      { "orientation", { { "valueDegrees", placement.rotationDegrees } } },
+                      { "layer", placement.side == "front" ? "BL_F_Cu" : "BL_B_Cu" },
+                      { "locked", placement.locked ? "LS_LOCKED" : "LS_UNLOCKED" } };
+
+        result.actions.push_back(
+                { { "action", "update" },
+                  { "component", component },
+                  { "itemType", "footprint" },
+                  { "itemId", footprint.itemId },
+                  { "fieldMask", JSON::array( { "position", "orientation", "layer", "locked" } ) },
+                  { "item", std::move( item ) } } );
+        ++result.counts["placement"].get_ref<int64_t&>();
+    }
+
     if( !result.diagnostics.empty() )
     {
         result.actions = JSON::array();
-        result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 } };
+        result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
+                          { "placement", 0 } };
         return result;
     }
 

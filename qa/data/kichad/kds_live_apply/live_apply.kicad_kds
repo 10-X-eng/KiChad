@@ -11,6 +11,7 @@
     (footprint "Resistor_SMD:R_0603_1608Metric"))
   (net Net1 (pin R1 1) (pin R2 1))
   (board
+    (place R1 (at 30mm 40mm) (rotation 135deg) (side back) (locked true))
     (outline (rect (id board-edge) (at 20mm 20mm) (size 40mm 30mm)))
     (route Net1 (id first-trace) (from 25mm 25mm) (to 35mm 25mm)
       (width 0.25mm) (layer F.Cu))

@@ -20,7 +20,7 @@
 namespace KICHAD
 {
 
-/** Plans collision-safe idempotent changes for PCB items managed by a KDS sidecar. */
+/** Plans collision-safe managed PCB changes and UUID-preserving footprint placements. */
 class DESIGN_SCRIPT_PCB_RECONCILER
 {
 public:
@@ -46,7 +46,7 @@ public:
     /**
      * @param aDesiredOperations deterministic operations returned by the PCB planner
      * @param aPreviousState null for a first apply, otherwise the prior managed-state manifest
-     * @param aLiveInventory objects containing itemId and itemType for every relevant live UUID
+     * @param aLiveInventory managed UUID inventory plus referenced live footprint identities
      * @param aContext identifies the source, board, project, and exact source revision
      */
     static RESULT Reconcile( const JSON& aDesiredOperations, const JSON& aPreviousState,

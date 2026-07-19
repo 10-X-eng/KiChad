@@ -71,7 +71,9 @@ builds and test runs never invoke this mutating smoke test.
 `tools/smoke-kichad-kds-apply.sh --allow-mutation` is the self-contained compiler integration proof.
 It starts only its own build-tree PCB Editor, uses isolated settings and a temporary copy of the
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
-duplicate-free convergence. Its cleanup targets only the process and directory it created.
+duplicate-free convergence. It also verifies reference-resolved placement through a narrow native
+footprint transform: the parent and pad UUIDs, schematic symbol path, and child geometry survive a
+front-to-back flip. Its cleanup targets only the process and directory it created.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for
@@ -91,7 +93,9 @@ KDS is the only external representation of design intent. Internal JSON IR, tran
 managed-state records, and protobuf messages are compiler implementation details. The hidden
 `*.kicad_kds_state` file records only deterministic ownership identities needed for idempotent
 reconciliation; a short-lived `*.kicad_kds_journal` safely carries ownership across an interrupted
-apply. Both are project-confined and included in whole-turn local history snapshots.
+apply. Existing schematic-linked footprints are resolved uniquely by reference and transformed in
+place; they are never added to KDS ownership state. Both state files are project-confined and
+included in whole-turn local history snapshots.
 
 The complete tool surface is capped at nine host functions. Each function accepts schema-validated
 requests and returns structured results; functionality is added to these tools

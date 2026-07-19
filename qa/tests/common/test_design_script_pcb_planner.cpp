@@ -109,6 +109,31 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
 }
 
 
+BOOST_AUTO_TEST_CASE( FullyLowersTypedComponentPlacement )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project placed_board)
+  (component U1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (board (place U1 (at 12.5mm 7.5mm) (rotation 37.5deg) (side back) (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.counts["placements"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"].get<std::string>(),
+                       "place_by_reference" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["position"]["xNm"].get<int64_t>(), 12500000 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["rotationDegrees"].get<double>(), 37.5 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["side"].get<std::string>(), "back" );
+    BOOST_CHECK( plan.operations[0]["locked"].get<bool>() );
+}
+
+
 BOOST_AUTO_TEST_CASE( RejectsMalformedCompilerIrWithoutThrowing )
 {
     KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT missing =

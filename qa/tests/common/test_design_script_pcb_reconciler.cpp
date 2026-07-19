@@ -146,7 +146,7 @@ BOOST_FIXTURE_TEST_CASE( RefusesUnmanagedCollisionsAndManagedTypeDrift, FIXTURE 
 }
 
 
-BOOST_FIXTURE_TEST_CASE( RejectsCorruptStateScopeAndNonPcbOperations, FIXTURE )
+BOOST_FIXTURE_TEST_CASE( RejectsCorruptStateScopeAndMalformedOperations, FIXTURE )
 {
     RECONCILER::RESULT first =
             RECONCILER::Reconcile( operations, nullptr, JSON::array(), Context() );
@@ -175,7 +175,86 @@ BOOST_FIXTURE_TEST_CASE( RejectsCorruptStateScopeAndNonPcbOperations, FIXTURE )
     RECONCILER::RESULT unsupported =
             RECONCILER::Reconcile( placement, nullptr, JSON::array(), Context() );
     BOOST_CHECK( !unsupported.ok );
-    BOOST_CHECK_NE( unsupported.diagnostics.dump().find( "unsupported_desired_operation" ),
+    BOOST_CHECK_NE( unsupported.diagnostics.dump().find( "invalid_placement" ),
+                    std::string::npos );
+}
+
+
+BOOST_FIXTURE_TEST_CASE( ResolvesSchematicFootprintPlacementWithoutTakingOwnership, FIXTURE )
+{
+    const std::string footprintId = "11111111-1111-8111-8111-111111111111";
+    JSON desired = operations;
+    desired.push_back( { { "action", "place_by_reference" },
+                         { "component", "R1" },
+                         { "position", { { "xNm", 12500000 }, { "yNm", 7500000 } } },
+                         { "rotationDegrees", 37.5 },
+                         { "side", "back" },
+                         { "locked", true } } );
+    JSON inventory = JSON::array( {
+            { { "itemId", footprintId }, { "itemType", "footprint" },
+              { "reference", "R1" }, { "schematicLinked", true } }
+    } );
+    RECONCILER::RESULT placed =
+            RECONCILER::Reconcile( desired, nullptr, inventory, Context() );
+    BOOST_REQUIRE_MESSAGE( placed.ok, placed.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( placed.counts["create"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( placed.counts["placement"].get<int>(), 1 );
+    BOOST_REQUIRE_EQUAL( placed.nextState["managedPcbItems"].size(), 3 );
+    BOOST_REQUIRE_EQUAL( placed.actions.size(), 4 );
+    const JSON& action = placed.actions.back();
+    BOOST_CHECK_EQUAL( action["action"].get<std::string>(), "update" );
+    BOOST_CHECK_EQUAL( action["itemType"].get<std::string>(), "footprint" );
+    BOOST_CHECK_EQUAL( action["itemId"].get<std::string>(), footprintId );
+    BOOST_CHECK_EQUAL( action["item"]["id"]["value"].get<std::string>(), footprintId );
+    BOOST_CHECK_EQUAL( action["item"]["position"]["xNm"].get<std::string>(), "12500000" );
+    BOOST_CHECK_EQUAL( action["item"]["layer"].get<std::string>(), "BL_B_Cu" );
+    BOOST_CHECK_EQUAL( action["item"]["locked"].get<std::string>(), "LS_LOCKED" );
+    BOOST_CHECK_EQUAL( action["fieldMask"].dump(),
+                       R"(["position","orientation","layer","locked"])" );
+}
+
+
+BOOST_FIXTURE_TEST_CASE( RefusesMissingAmbiguousAndUnlinkedFootprintPlacements, FIXTURE )
+{
+    JSON placement = JSON::array( {
+            { { "action", "place_by_reference" }, { "component", "R1" },
+              { "position", { { "xNm", 1 }, { "yNm", 2 } } },
+              { "rotationDegrees", 0.0 }, { "side", "front" }, { "locked", false } }
+    } );
+    RECONCILER::RESULT missing =
+            RECONCILER::Reconcile( placement, nullptr, JSON::array(), Context() );
+    BOOST_CHECK( !missing.ok );
+    BOOST_CHECK_NE( missing.diagnostics.dump().find( "missing_component_footprint" ),
+                    std::string::npos );
+
+    JSON unlinkedInventory = JSON::array( {
+            { { "itemId", "11111111-1111-8111-8111-111111111111" },
+              { "itemType", "footprint" }, { "reference", "R1" },
+              { "schematicLinked", false } }
+    } );
+    RECONCILER::RESULT unlinked =
+            RECONCILER::Reconcile( placement, nullptr, unlinkedInventory, Context() );
+    BOOST_CHECK( !unlinked.ok );
+    BOOST_CHECK_NE( unlinked.diagnostics.dump().find( "unlinked_component_footprint" ),
+                    std::string::npos );
+
+    JSON ambiguousInventory = unlinkedInventory;
+    ambiguousInventory[0]["schematicLinked"] = true;
+    ambiguousInventory.push_back(
+            { { "itemId", "22222222-2222-8222-8222-222222222222" },
+              { "itemType", "footprint" }, { "reference", "R1" },
+              { "schematicLinked", true } } );
+    RECONCILER::RESULT ambiguous =
+            RECONCILER::Reconcile( placement, nullptr, ambiguousInventory, Context() );
+    BOOST_CHECK( !ambiguous.ok );
+    BOOST_CHECK_NE( ambiguous.diagnostics.dump().find( "ambiguous_component_footprint" ),
+                    std::string::npos );
+
+    placement.push_back( placement.front() );
+    RECONCILER::RESULT duplicate =
+            RECONCILER::Reconcile( placement, nullptr, ambiguousInventory, Context() );
+    BOOST_CHECK( !duplicate.ok );
+    BOOST_CHECK_NE( duplicate.diagnostics.dump().find( "duplicate_component_placement" ),
                     std::string::npos );
 }
 

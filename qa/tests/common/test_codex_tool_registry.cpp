@@ -961,6 +961,171 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
 }
 
 
+BOOST_AUTO_TEST_CASE( AppliesKdsPlacementAsNarrowSchematicFootprintUpdate )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName socketPath( fixture.Root(), wxS( "api-placement-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-placement-token";
+    const std::string commitId = "33333333-3333-8333-8333-333333333333";
+    const std::string footprintId = "11111111-1111-8111-8111-111111111111";
+    const std::string rootSheetId = "44444444-4444-8444-8444-444444444444";
+    const std::string symbolId = "55555555-5555-8555-8555-555555555555";
+    kiapi::board::types::FootprintInstance liveFootprint;
+    liveFootprint.mutable_id()->set_value( footprintId );
+    liveFootprint.mutable_position()->set_x_nm( 1000000 );
+    liveFootprint.mutable_position()->set_y_nm( 2000000 );
+    liveFootprint.mutable_orientation()->set_value_degrees( 0.0 );
+    liveFootprint.set_layer( kiapi::board::types::BL_F_Cu );
+    liveFootprint.set_locked( kiapi::common::types::LS_UNLOCKED );
+    liveFootprint.mutable_reference_field()->mutable_text()->mutable_text()->set_text( "R1" );
+    liveFootprint.mutable_attributes()->set_not_in_schematic( false );
+    liveFootprint.mutable_symbol_path()->add_path()->set_value( rootSheetId );
+    liveFootprint.mutable_symbol_path()->add_path()->set_value( symbolId );
+    bool sawFootprintInventory = false;
+    bool sawNarrowUpdate = false;
+    int  commitCount = 0;
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetItems>() )
+                {
+                    kiapi::common::commands::GetItems get;
+                    kiapi::common::commands::GetItemsResponse items;
+
+                    if( request.message().UnpackTo( &get ) && get.types_size() == 1
+                        && get.types( 0 ) == kiapi::common::types::KOT_PCB_FOOTPRINT )
+                    {
+                        sawFootprintInventory = true;
+                        items.add_items()->PackFrom( liveFootprint );
+                        items.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( items );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::BeginCommit>() )
+                {
+                    kiapi::common::commands::BeginCommitResponse begin;
+                    begin.mutable_id()->set_value( commitId );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( begin );
+                }
+                else if( request.message().Is<kiapi::common::commands::UpdateItems>() )
+                {
+                    kiapi::common::commands::UpdateItems update;
+                    kiapi::board::types::FootprintInstance placement;
+                    const std::set<std::string> expectedMask = {
+                        "position", "orientation", "layer", "locked"
+                    };
+                    std::set<std::string> actualMask;
+
+                    if( request.message().UnpackTo( &update ) )
+                    {
+                        actualMask.insert( update.header().field_mask().paths().begin(),
+                                           update.header().field_mask().paths().end() );
+                    }
+
+                    if( update.items_size() == 1 && update.items( 0 ).UnpackTo( &placement )
+                        && placement.id().value() == footprintId
+                        && placement.position().x_nm() == 12500000
+                        && placement.position().y_nm() == 7500000
+                        && placement.orientation().value_degrees() == 37.5
+                        && placement.layer() == kiapi::board::types::BL_B_Cu
+                        && placement.locked() == kiapi::common::types::LS_LOCKED
+                        && placement.symbol_path().path_size() == 0
+                        && placement.definition().items_size() == 0
+                        && actualMask == expectedMask )
+                    {
+                        sawNarrowUpdate = true;
+                        kiapi::common::commands::UpdateItemsResponse updated;
+                        updated.mutable_header()->CopyFrom( update.header() );
+                        updated.set_status( kiapi::common::types::IRS_OK );
+                        auto* item = updated.add_updated_items();
+                        item->mutable_status()->set_code( kiapi::common::commands::ISC_OK );
+                        item->mutable_item()->PackFrom( liveFootprint );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( updated );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::EndCommit>() )
+                {
+                    kiapi::common::commands::EndCommit end;
+                    request.message().UnpackTo( &end );
+
+                    if( end.id().value() == commitId
+                        && end.action() == kiapi::common::commands::CMA_COMMIT )
+                    {
+                        ++commitCount;
+                    }
+
+                    kiapi::common::commands::EndCommitResponse ended;
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( ended );
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; },
+                                  [&fixture]() { return fixture.Root(); } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project placed_design)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (board (place R1 (at 12.5mm 7.5mm) (rotation 37.5deg) (side back) (locked true))))
+)KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "placed.kicad_kds" },
+                                                { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    const std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", "placed.kicad_kds" },
+                                                  { "boardPath", "design.kicad_pcb" },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    JSON data = envelope( applied )["data"];
+    BOOST_CHECK_EQUAL( data["counts"]["placement"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( data["managedItems"].get<int>(), 0 );
+    BOOST_CHECK( sawFootprintInventory );
+    BOOST_CHECK( sawNarrowUpdate );
+    BOOST_CHECK_EQUAL( commitCount, 1 );
+    server.Stop();
+}
+
+
 BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
 {
     wxString projectPath;
@@ -1007,6 +1172,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
     BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
@@ -1018,6 +1184,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 4 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
 
     auto getOne = [&]( const std::string& aItemType )
     {
@@ -1068,6 +1235,41 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( via["padStack"]["drill"]["diameter"]["xNm"].get<std::string>(),
                        "400000" );
     BOOST_CHECK_EQUAL( via["net"]["name"].get<std::string>(), "Net1" );
+
+    JSON footprint = getOne( "footprint" );
+    BOOST_CHECK_EQUAL( footprint["id"]["value"].get<std::string>(),
+                       "11111111-1111-8111-8111-111111111111" );
+    BOOST_CHECK_EQUAL( footprint["position"]["xNm"].get<std::string>(), "30000000" );
+    BOOST_CHECK_EQUAL( footprint["position"]["yNm"].get<std::string>(), "40000000" );
+    BOOST_CHECK_EQUAL( footprint["orientation"]["valueDegrees"].get<double>(), 135.0 );
+    BOOST_CHECK_EQUAL( footprint["layer"].get<std::string>(), "BL_B_Cu" );
+    BOOST_CHECK_EQUAL( footprint["locked"].get<std::string>(), "LS_LOCKED" );
+    BOOST_CHECK_EQUAL(
+            footprint["referenceField"]["text"]["text"]["text"].get<std::string>(),
+            "R1" );
+    BOOST_REQUIRE_EQUAL( footprint["symbolPath"]["path"].size(), 1 );
+    BOOST_CHECK_EQUAL( footprint["symbolPath"]["path"][0]["value"].get<std::string>(),
+                       "66666666-6666-8666-8666-666666666666" );
+
+    JSON pad;
+
+    for( const JSON& child : footprint["definition"]["items"] )
+    {
+        if( child.value( "@type", "" ).ends_with( ".Pad" )
+            && child.value( "number", "" ) == "1" )
+        {
+            pad = child;
+            break;
+        }
+    }
+
+    BOOST_REQUIRE_MESSAGE( !pad.is_null(), footprint.dump() );
+    BOOST_CHECK_EQUAL( pad["id"]["value"].get<std::string>(),
+                       "88888888-8888-8888-8888-888888888888" );
+    BOOST_REQUIRE_EQUAL( pad["padStack"]["layers"].size(), 3 );
+    BOOST_CHECK_EQUAL( pad["padStack"]["layers"][0].get<std::string>(), "BL_B_Cu" );
+    BOOST_CHECK_EQUAL( pad["padStack"]["layers"][1].get<std::string>(), "BL_B_Mask" );
+    BOOST_CHECK_EQUAL( pad["padStack"]["layers"][2].get<std::string>(), "BL_B_Paste" );
 }
 
 

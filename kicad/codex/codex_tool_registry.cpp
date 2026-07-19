@@ -50,6 +50,7 @@ constexpr size_t       MAX_PCB_ARGUMENT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_DESIGN_STATE_BYTES = 4 * 1024 * 1024;
+constexpr size_t       MAX_PCB_FOOTPRINTS = 10000;
 
 
 bool isInspectableExtension( const wxString& aExtension )
@@ -846,6 +847,71 @@ bool queryPcbInventory( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
 }
 
 
+bool queryPcbFootprintInventory( const KICHAD_IPC_CLIENT& aClient,
+                                 const KICHAD_IPC_TARGET& aTarget,
+                                 const std::set<std::string>& aReferences,
+                                 nlohmann::json& aInventory, std::string& aError )
+{
+    if( aReferences.empty() )
+        return true;
+
+    kiapi::common::commands::GetItems request;
+    request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+    request.add_types( kiapi::common::types::KOT_PCB_FOOTPRINT );
+
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::common::commands::GetItemsResponse items;
+
+    if( !response.message().UnpackTo( &items )
+        || items.status() != kiapi::common::types::IRS_OK
+        || items.items_size() > static_cast<int>( MAX_PCB_FOOTPRINTS ) )
+    {
+        aError = "KiCad returned an invalid or excessive footprint inventory";
+        return false;
+    }
+
+    std::set<std::string> returnedIds;
+
+    for( const google::protobuf::Any& packed : items.items() )
+    {
+        kiapi::board::types::FootprintInstance footprint;
+
+        if( !packed.UnpackTo( &footprint ) )
+        {
+            aError = "KiCad returned a non-footprint in the footprint inventory";
+            return false;
+        }
+
+        const std::string reference = footprint.reference_field().text().text().text();
+
+        if( !aReferences.contains( reference ) )
+            continue;
+
+        const std::string itemId = footprint.id().value();
+
+        if( !KIID::SniffTest( wxString::FromUTF8( itemId ) )
+            || !returnedIds.emplace( itemId ).second )
+        {
+            aError = "KiCad returned an invalid or duplicate footprint identity";
+            return false;
+        }
+
+        aInventory.push_back(
+                { { "itemId", itemId },
+                  { "itemType", "footprint" },
+                  { "reference", reference },
+                  { "schematicLinked", !footprint.attributes().not_in_schematic()
+                                                && footprint.symbol_path().path_size() > 0 } } );
+    }
+
+    return true;
+}
+
+
 bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
                                            kiapi::common::commands::ItemCreationResult>& aResults,
                                    const std::vector<const nlohmann::json*>& aActions,
@@ -1480,11 +1546,6 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     message += ": " + action.value( "reason", "unsupported statement" );
                     break;
                 }
-                else if( action.value( "action", "" ) == "place_by_reference" )
-                {
-                    message += ": component placement apply is not implemented";
-                    break;
-                }
             }
 
             return failure( "backend_incomplete", message );
@@ -1509,9 +1570,22 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "invalid_managed_state", pathError );
         }
 
+        JSON managedOperations = JSON::array();
+        std::set<std::string> placementReferences;
+
+        for( const JSON& plannedOperation : planned.operations )
+        {
+            const std::string action = plannedOperation.value( "action", "" );
+
+            if( action == "upsert" )
+                managedOperations.push_back( plannedOperation );
+            else if( action == "place_by_reference" )
+                placementReferences.emplace( plannedOperation["component"].get<std::string>() );
+        }
+
         KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::RESULT preflight =
                 KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
-                        planned.operations, previousState, JSON::array(), reconcileContext );
+                        managedOperations, previousState, JSON::array(), reconcileContext );
 
         if( !preflight.ok )
         {
@@ -1524,7 +1598,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         std::set<std::string> relevantIds;
 
-        for( const JSON& plannedOperation : planned.operations )
+        for( const JSON& plannedOperation : managedOperations )
             relevantIds.emplace( plannedOperation["itemId"].get<std::string>() );
 
         if( !previousState.is_null() )
@@ -1543,6 +1617,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         if( !queryPcbInventory( client, target, relevantIds, liveInventory, pathError ) )
             return failure( "inventory_failed", pathError );
+
+        if( !queryPcbFootprintInventory( client, target, placementReferences,
+                                         liveInventory, pathError ) )
+        {
+            return failure( "inventory_failed", pathError );
+        }
 
         KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::RESULT reconciled =
                 KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(

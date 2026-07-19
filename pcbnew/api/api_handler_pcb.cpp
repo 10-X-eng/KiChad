@@ -21,6 +21,9 @@
 #include <magic_enum.hpp>
 #include <properties/property.h>
 
+#include <cmath>
+#include <limits>
+
 #include <common.h>
 #include <api/api_handler_pcb.h>
 #include <api/api_pcb_utils.h>
@@ -170,6 +173,25 @@ bool mergeItemUpdate( const google::protobuf::Any& aUpdate,
     google::protobuf::util::FieldMaskUtil::MergeMessageTo(
             *update, aMask, options, existing.get() );
     aMerged.PackFrom( *existing );
+    return true;
+}
+
+
+bool isFootprintTransformMask( const google::protobuf::FieldMask& aMask )
+{
+    static const std::set<std::string> allowed = {
+        "position", "orientation", "layer", "locked"
+    };
+
+    if( aMask.paths().empty() )
+        return false;
+
+    for( const std::string& path : aMask.paths() )
+    {
+        if( !allowed.contains( path ) )
+            return false;
+    }
+
     return true;
 }
 
@@ -577,6 +599,107 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                 status.set_error_message( fmt::format( "an item with UUID {} does not exist",
                                                        id->AsStdString() ) );
                 aItemHandler( status, anyItem );
+                continue;
+            }
+
+            if( *type == PCB_FOOTPRINT_T && isFootprintTransformMask( aHeader.field_mask() ) )
+            {
+                if( ( *optItem )->Type() != PCB_FOOTPRINT_T )
+                {
+                    status.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+                    status.set_error_message(
+                            "the footprint update UUID belongs to a different board item type" );
+                    aItemHandler( status, anyItem );
+                    continue;
+                }
+
+                board::types::FootprintInstance update;
+
+                if( !anyItem.UnpackTo( &update ) )
+                {
+                    status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                    status.set_error_message( "the footprint transform could not be decoded" );
+                    aItemHandler( status, anyItem );
+                    continue;
+                }
+
+                bool valid = true;
+
+                for( const std::string& path : aHeader.field_mask().paths() )
+                {
+                    if( path == "position" )
+                    {
+                        valid = update.has_position()
+                                && update.position().x_nm() >= std::numeric_limits<int>::min()
+                                && update.position().x_nm() <= std::numeric_limits<int>::max()
+                                && update.position().y_nm() >= std::numeric_limits<int>::min()
+                                && update.position().y_nm() <= std::numeric_limits<int>::max();
+                    }
+                    else if( path == "orientation" )
+                    {
+                        valid = update.has_orientation()
+                                && std::isfinite( update.orientation().value_degrees() )
+                                && std::abs( update.orientation().value_degrees() ) <= 360000.0;
+                    }
+                    else if( path == "layer" )
+                    {
+                        valid = update.layer() == board::types::BoardLayer::BL_F_Cu
+                                || update.layer() == board::types::BoardLayer::BL_B_Cu;
+                    }
+                    else if( path == "locked" )
+                    {
+                        valid = update.locked() == common::types::LockedState::LS_LOCKED
+                                || update.locked() == common::types::LockedState::LS_UNLOCKED;
+                    }
+
+                    if( !valid )
+                        break;
+                }
+
+                if( !valid )
+                {
+                    status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                    status.set_error_message(
+                            "the footprint transform contains a missing or invalid field" );
+                    aItemHandler( status, anyItem );
+                    continue;
+                }
+
+                FOOTPRINT* footprint = static_cast<FOOTPRINT*>( *optItem );
+                commit->Modify( footprint );
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "layer", aHeader.field_mask() ) )
+                {
+                    footprint->SetLayerAndFlip(
+                            FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>(
+                                    update.layer() ) );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "position", aHeader.field_mask() ) )
+                {
+                    footprint->SetPosition( VECTOR2I( update.position().x_nm(),
+                                                      update.position().y_nm() ) );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "orientation", aHeader.field_mask() ) )
+                {
+                    footprint->SetOrientationDegrees( update.orientation().value_degrees() );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "locked", aHeader.field_mask() ) )
+                {
+                    footprint->SetLocked(
+                            update.locked() == common::types::LockedState::LS_LOCKED );
+                }
+
+                status.set_code( ItemStatusCode::ISC_OK );
+                google::protobuf::Any updatedItem;
+                footprint->Serialize( updatedItem );
+                aItemHandler( status, std::move( updatedItem ) );
                 continue;
             }
 

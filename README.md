@@ -69,8 +69,10 @@ transaction API; it is never run implicitly by the build.
 For the self-contained KDS transaction proof, run
 `tools/smoke-kichad-kds-apply.sh --allow-mutation`. It launches a disposable build-tree PCB Editor
 with an isolated configuration and project copy, applies the committed KDS fixture, and proves that
-a repeated apply updates the same four managed objects without duplicates. The harness never
-connects to or stops an existing KiChad process.
+a repeated apply updates the same four managed objects without duplicates. It also resolves and
+places an existing schematic-linked footprint on the back side while proving the footprint UUID,
+symbol path, pad UUID, and flipped pad layers are preserved. The harness never connects to or stops
+an existing KiChad process.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

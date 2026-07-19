@@ -116,13 +116,19 @@ missing ones are recreated, and only previously managed obsolete items are delet
 KiCad transaction. A project-confined apply journal makes an interrupted operation safely
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
-The apply backend currently executes rectangular outlines, straight traces, arcs, and vias. It
-refuses stackup, placement, zones, text, dimensions, keepouts, or any structurally retained form
-before mutation until that form has its own typed backend and rollback coverage.
+The apply backend currently executes rectangular outlines, component placement, straight traces,
+arcs, and vias. Placement requires exactly one live footprint with the KDS component reference and
+an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
+state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
+existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
+The backend still refuses stackup, zones, text, dimensions, keepouts, or any structurally retained
+form before mutation until that form has its own typed backend and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
 an isolated temporary project, starts its own build-tree PCB Editor, applies four managed items, and
-reapplies the unchanged source to verify updates reuse the same deterministic identities.
+reapplies the unchanged source to verify updates reuse the same deterministic identities. It also
+places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
+and flipped child layers survive both applies.
 
 ## Production support rule
 

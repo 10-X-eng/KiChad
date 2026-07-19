@@ -301,8 +301,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
     }
 
     result.fullyLowered = result.diagnostics.empty()
-                          && result.counts["unsupported"].get<int64_t>() == 0
-                          && result.counts["placements"].get<int64_t>() == 0;
+                          && result.counts["unsupported"].get<int64_t>() == 0;
     return result;
 }
 
