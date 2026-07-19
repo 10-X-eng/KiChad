@@ -256,6 +256,60 @@ BOOST_AUTO_TEST_CASE( LowersCanonicalNetclassesIntoOneCompleteNativeMessage )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersCanonicalCustomRulesIntoOneGeneratedNativeDocument )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project controlled_custom_rules)
+  (custom_rules
+    (rule usb_diff_pair
+      (condition "A.hasNetclass('USB_HS')")
+      (layer outer)
+      (severity error)
+      (constraint diff_pair_gap (min 0.15mm) (opt 0.2mm) (max 0.25mm))
+      (constraint skew (domain diff_pairs) (max 5ps)))
+    (rule assembly_policy
+      (condition always)
+      (layer all)
+      (severity warning)
+      (constraint disallow (items track through_via pad footprint))
+      (constraint assertion (test "A.Type != 'Footprint' || A.Orientation != 13deg"))
+      (constraint solder_paste_rel_margin (ratio -0.1)))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.counts["customRules"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["action"].get<std::string>(),
+                       "update_custom_rules" );
+    BOOST_CHECK( plan.operations[0]["customRules"]["present"].get<bool>() );
+    const std::string generated =
+            plan.operations[0]["customRules"]["source"].get<std::string>();
+    const std::string expected = R"DRU((version 1)
+
+(rule "usb_diff_pair"
+  (condition "A.hasNetclass('USB_HS')")
+  (layer outer)
+  (severity error)
+    (constraint diff_pair_gap (min 0.15mm) (opt 0.2mm) (max 0.25mm))
+    (constraint skew (max 5000fs) (within_diff_pairs))
+)
+
+(rule "assembly_policy"
+  (severity warning)
+    (constraint disallow track through_via pad footprint)
+    (constraint assertion "A.Type != 'Footprint' || A.Orientation != 13deg")
+    (constraint solder_paste_rel_margin (opt -100))
+)
+)DRU";
+    BOOST_CHECK_EQUAL( generated, expected );
+}
+
+
 BOOST_AUTO_TEST_CASE( LowersExplicitCopperZoneIntoDeterministicProtobufJson )
 {
     const std::string source = R"KDS((kichad_design

@@ -1373,6 +1373,162 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackCanonicalNetclassSettingsAtomically )
 }
 
 
+BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName socketPath( fixture.Root(), wxS( "api-custom-rules-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-custom-rules-token";
+    int updateCount = 0;
+    bool rejectNextUpdateResponse = false;
+    bool currentPresent = false;
+    std::string currentSource;
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else if( request.message().Is<kiapi::board::commands::GetBoardCustomRules>() )
+                {
+                    kiapi::board::commands::BoardCustomRulesResponse rules;
+                    rules.set_present( currentPresent );
+                    rules.set_source( currentSource );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( rules );
+                }
+                else if( request.message().Is<kiapi::board::commands::UpdateBoardCustomRules>() )
+                {
+                    kiapi::board::commands::UpdateBoardCustomRules update;
+
+                    if( request.message().UnpackTo( &update ) )
+                    {
+                        currentPresent = update.present();
+                        currentSource = update.source();
+                        ++updateCount;
+
+                        if( rejectNextUpdateResponse )
+                        {
+                            rejectNextUpdateResponse = false;
+                            response.mutable_status()->set_status( kiapi::common::AS_TIMEOUT );
+                            response.mutable_status()->set_error_message(
+                                    "injected lost custom-rules acknowledgement" );
+                        }
+                        else
+                        {
+                            kiapi::board::commands::BoardCustomRulesResponse rules;
+                            rules.set_present( currentPresent );
+                            rules.set_source( currentSource );
+                            response.mutable_status()->set_status( kiapi::common::AS_OK );
+                            response.mutable_message()->PackFrom( rules );
+                        }
+                    }
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; },
+                                  [&fixture]() { return fixture.Root(); } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project custom_rules_design)
+  (custom_rules
+    (rule signal_clearance
+      (condition "A.NetName == 'SIGNAL'")
+      (layer F.Cu)
+      (severity error)
+      (constraint clearance (min 0.2mm))
+      (constraint track_width (min 0.15mm) (opt 0.2mm) (max 0.4mm)))))
+)KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "custom_rules.kicad_kds" },
+                                                { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON preview = registry.Handle( "design", { { "operation", "preview" },
+                                                  { "path", "custom_rules.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( preview.at( "success" ).get<bool>(), preview.dump() );
+    const JSON previewData = envelope( preview );
+    const JSON& items = previewData["data"]["boardPlan"]["items"];
+    BOOST_REQUIRE_EQUAL( items.size(), 1 );
+    BOOST_CHECK_EQUAL( items[0]["action"].get<std::string>(),
+                       "configure_custom_board_rules" );
+    BOOST_CHECK_EQUAL( items[0]["rules"].get<int>(), 1 );
+
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", "custom_rules.kicad_kds" },
+                                                  { "boardPath", "design.kicad_pcb" },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    BOOST_CHECK( envelope( applied )["data"]["customRulesApplied"].get<bool>() );
+    BOOST_CHECK( currentPresent );
+    BOOST_CHECK_NE( currentSource.find( "(constraint clearance (min 0.2mm))" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( updateCount, 1 );
+    const std::string installedSource = currentSource;
+
+    const std::string changed = std::regex_replace(
+            source, std::regex( "clearance \\(min 0\\.2mm\\)" ),
+            "clearance (min 0.3mm)" );
+    saved = registry.Handle( "design", { { "operation", "save" },
+                                          { "path", "custom_rules.kicad_kds" },
+                                          { "source", changed },
+                                          { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    rejectNextUpdateResponse = true;
+    JSON lost = registry.Handle( "design", { { "operation", "apply" },
+                                               { "path", "custom_rules.kicad_kds" },
+                                               { "boardPath", "design.kicad_pcb" },
+                                               { "expectedSha256", hash } } );
+    BOOST_CHECK( !lost.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( lost )["error"]["code"].get<std::string>(),
+                       "custom_rules_apply_failed" );
+    BOOST_CHECK_EQUAL( currentSource, installedSource );
+    BOOST_CHECK_EQUAL( updateCount, 3 );
+
+    wxFileName statePath( fixture.Root(), wxS( "custom_rules.kicad_kds_state" ) );
+    BOOST_REQUIRE( wxRemoveFile( statePath.GetFullPath() ) );
+    BOOST_REQUIRE( wxFileName::Mkdir(
+            statePath.GetFullPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
+    JSON stateFailure = registry.Handle( "design", { { "operation", "apply" },
+                                                       { "path", "custom_rules.kicad_kds" },
+                                                       { "boardPath", "design.kicad_pcb" },
+                                                       { "expectedSha256", hash } } );
+    BOOST_CHECK( !stateFailure.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( stateFailure )["error"]["code"].get<std::string>(),
+                       "state_write_failed" );
+    BOOST_CHECK_EQUAL( currentSource, installedSource );
+    BOOST_CHECK_EQUAL( updateCount, 5 );
+    BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
+                                           wxS( "custom_rules.kicad_kds_journal" ) )
+                                      .GetFullPath() ) );
+    server.Stop();
+}
+
+
 BOOST_AUTO_TEST_CASE( AppliesKdsPlacementAsNarrowSchematicFootprintUpdate )
 {
     TOOL_PROJECT_FIXTURE fixture;
@@ -1805,6 +1961,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( firstData["stackupApplied"].get<bool>() );
     BOOST_CHECK( firstData["rulesApplied"].get<bool>() );
     BOOST_CHECK( firstData["netClassesApplied"].get<bool>() );
+    BOOST_CHECK( firstData["customRulesApplied"].get<bool>() );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", sourceName },
@@ -1819,6 +1976,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( repeatedData["stackupApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
+    BOOST_CHECK( repeatedData["customRulesApplied"].get<bool>() );
 
     KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.stackup", socketDirectory );
     KICHAD_IPC_TARGET ipcTarget;
@@ -1961,6 +2119,53 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                     .size()
                     .x_nm(),
             600000 );
+
+    const std::string expectedCustomRules = R"DRU((version 1)
+
+(rule "signal_policy"
+  (condition "A.NetName == 'Net1'")
+  (layer F.Cu)
+  (severity error)
+    (constraint clearance (min 0.25mm))
+    (constraint track_width (min 0.2mm) (opt 0.3mm) (max 0.6mm))
+)
+
+(rule "dangling_vias"
+  (severity warning)
+    (constraint via_dangling)
+)
+)DRU";
+    kiapi::board::commands::GetBoardCustomRules customRulesRequest;
+    customRulesRequest.mutable_board()->CopyFrom( ipcTarget.document );
+    kiapi::common::ApiResponse customRulesEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, customRulesRequest, customRulesEnvelope, ipcError ),
+            ipcError );
+    kiapi::board::commands::BoardCustomRulesResponse customRulesResponse;
+    BOOST_REQUIRE( customRulesEnvelope.message().UnpackTo( &customRulesResponse ) );
+    BOOST_CHECK( customRulesResponse.present() );
+    BOOST_CHECK_EQUAL( customRulesResponse.source(), expectedCustomRules );
+
+    kiapi::board::commands::UpdateBoardCustomRules invalidCustomRulesRequest;
+    invalidCustomRulesRequest.mutable_board()->CopyFrom( ipcTarget.document );
+    invalidCustomRulesRequest.set_present( true );
+    invalidCustomRulesRequest.set_source(
+            "(version 1)\n(rule \"invalid\" (constraint track_width (min 100nm)))\n" );
+    kiapi::common::ApiResponse invalidCustomRulesEnvelope;
+    BOOST_CHECK( !ipcClient.Call( ipcTarget, invalidCustomRulesRequest,
+                                  invalidCustomRulesEnvelope, ipcError ) );
+    BOOST_CHECK_NE( ipcError.find( "Syntax error" ), std::string::npos );
+    ipcError.clear();
+    kiapi::common::ApiResponse unchangedCustomRulesEnvelope;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, customRulesRequest, unchangedCustomRulesEnvelope,
+                            ipcError ),
+            ipcError );
+    kiapi::board::commands::BoardCustomRulesResponse unchangedCustomRulesResponse;
+    BOOST_REQUIRE( unchangedCustomRulesEnvelope.message().UnpackTo(
+            &unchangedCustomRulesResponse ) );
+    BOOST_CHECK( unchangedCustomRulesResponse.present() );
+    BOOST_CHECK_EQUAL( unchangedCustomRulesResponse.source(), expectedCustomRules );
 
     auto getItems = [&]( const std::string& aItemType, size_t aExpectedCount )
     {

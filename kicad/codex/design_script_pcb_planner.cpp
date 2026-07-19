@@ -310,6 +310,136 @@ JSON planNetClasses( const JSON& aNetClasses )
 }
 
 
+std::string customRuleLiteral( const JSON& aValue )
+{
+    const std::string domain = aValue.at( "domain" ).get<std::string>();
+
+    if( domain == "distance" )
+    {
+        const int64_t nanometers = aValue.at( "value" ).get<int64_t>();
+        const bool negative = nanometers < 0;
+        const uint64_t magnitude = negative
+                                           ? static_cast<uint64_t>( -( nanometers + 1 ) ) + 1
+                                           : static_cast<uint64_t>( nanometers );
+        const uint64_t whole = magnitude / 1'000'000;
+        const uint64_t remainder = magnitude % 1'000'000;
+        std::string result = negative ? "-" : "";
+        result += std::to_string( whole );
+
+        if( remainder != 0 )
+        {
+            std::ostringstream fraction;
+            fraction << std::setw( 6 ) << std::setfill( '0' ) << remainder;
+            std::string digits = fraction.str();
+
+            while( digits.back() == '0' )
+                digits.pop_back();
+
+            result += "." + digits;
+        }
+
+        return result + "mm";
+    }
+
+    if( domain == "time" )
+        return std::to_string( aValue.at( "value" ).get<int64_t>() ) + "fs";
+
+    if( domain == "angle" )
+    {
+        std::string literal = aValue.at( "value" ).dump();
+
+        if( literal.size() > 2 && literal.ends_with( ".0" ) )
+            literal.resize( literal.size() - 2 );
+
+        // KiCad's DRC parser classifies track_angle as unitless even though the value is
+        // semantically expressed in degrees.  Keep the KDS surface explicitly typed and lower
+        // to the bare numeric form accepted by the native parser.
+        return literal;
+    }
+
+    return std::to_string( aValue.at( "value" ).get<int64_t>() );
+}
+
+
+std::string planCustomConstraint( const JSON& aConstraint )
+{
+    const std::string type = aConstraint.at( "type" ).get<std::string>();
+    const std::string kind = aConstraint.at( "kind" ).get<std::string>();
+    std::ostringstream output;
+    output << "    (constraint " << type;
+
+    if( kind == "assertion" )
+    {
+        output << ' ' << JSON( aConstraint.at( "test" ).get<std::string>() ).dump();
+    }
+    else if( kind == "zone_connection" )
+    {
+        output << ' ' << aConstraint.at( "style" ).get<std::string>();
+    }
+    else if( kind == "disallow" )
+    {
+        for( const JSON& item : aConstraint.at( "items" ) )
+            output << ' ' << item.get<std::string>();
+    }
+    else if( kind == "count" )
+    {
+        output << ' ' << aConstraint.at( "value" ).get<int64_t>();
+    }
+    else if( kind == "ratio" )
+    {
+        // KiCad stores relative paste margin in per-mille and divides the parsed integer by 1000.
+        output << " (opt " << aConstraint.at( "valuePermille" ).get<int64_t>() << ')';
+    }
+    else if( kind == "range" )
+    {
+        const JSON& values = aConstraint.at( "values" );
+
+        for( const char* field : { "min", "opt", "max" } )
+        {
+            if( values.contains( field ) )
+                output << " (" << field << ' ' << customRuleLiteral( values.at( field ) ) << ')';
+        }
+
+        if( type == "skew" && aConstraint.at( "domain" ) == "diff_pairs" )
+            output << " (within_diff_pairs)";
+    }
+
+    output << ")\n";
+    return output.str();
+}
+
+
+JSON planCustomRules( const JSON& aCustomRules )
+{
+    std::ostringstream output;
+    output << "(version 1)\n";
+
+    for( const JSON& rule : aCustomRules.at( "rules" ) )
+    {
+        output << "\n(rule " << JSON( rule.at( "name" ).get<std::string>() ).dump() << "\n";
+
+        if( rule.at( "condition" ) != "always" )
+        {
+            output << "  (condition "
+                   << JSON( rule.at( "condition" ).get<std::string>() ).dump() << ")\n";
+        }
+
+        if( rule.at( "layer" ) != "all" )
+            output << "  (layer " << rule.at( "layer" ).get<std::string>() << ")\n";
+
+        output << "  (severity " << rule.at( "severity" ).get<std::string>() << ")\n";
+
+        for( const JSON& constraint : rule.at( "constraints" ) )
+            output << planCustomConstraint( constraint );
+
+        output << ")\n";
+    }
+
+    return { { "action", "update_custom_rules" },
+             { "customRules", { { "present", true }, { "source", output.str() } } } };
+}
+
+
 std::string lockedEnum( const JSON& aStatement )
 {
     return aStatement.value( "locked", false ) ? "LS_LOCKED" : "LS_UNLOCKED";
@@ -827,7 +957,8 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
     RESULT result;
     result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
                       { "netClasses", 0 }, { "netClassAssignments", 0 },
-                      { "stackups", 0 }, { "unsupported", 0 } };
+                      { "customRules", 0 }, { "stackups", 0 },
+                      { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
         || aCompilerIr.value( "version", 0 ) != 1 || !aCompilerIr.contains( "project" )
@@ -856,6 +987,13 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
         {
             result.operations.emplace_back( planRules( aCompilerIr["rules"] ) );
             ++result.counts["rules"].get_ref<int64_t&>();
+        }
+
+        if( aCompilerIr.contains( "customRules" )
+            && aCompilerIr["customRules"].is_object() )
+        {
+            result.operations.emplace_back( planCustomRules( aCompilerIr["customRules"] ) );
+            result.counts["customRules"] = aCompilerIr["customRules"]["rules"].size();
         }
 
         for( const JSON& statement : aCompilerIr["pcb"] )

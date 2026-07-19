@@ -101,6 +101,12 @@ private:
     HANDLER_RESULT<BoardDesignRulesResponse> handleUpdateBoardDesignRules(
             const HANDLER_CONTEXT<UpdateBoardDesignRules>& aCtx );
 
+    HANDLER_RESULT<BoardCustomRulesResponse> handleGetBoardCustomRules(
+            const HANDLER_CONTEXT<GetBoardCustomRules>& aCtx );
+
+    HANDLER_RESULT<BoardCustomRulesResponse> handleUpdateBoardCustomRules(
+            const HANDLER_CONTEXT<UpdateBoardCustomRules>& aCtx );
+
     HANDLER_RESULT<BoardEnabledLayersResponse> handleGetBoardEnabledLayers(
             const HANDLER_CONTEXT<GetBoardEnabledLayers>& aCtx );
 

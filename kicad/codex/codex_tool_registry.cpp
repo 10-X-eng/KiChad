@@ -965,6 +965,57 @@ bool updatePcbRules( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& 
 }
 
 
+bool queryPcbCustomRules( const KICHAD_IPC_CLIENT& aClient,
+                          const KICHAD_IPC_TARGET& aTarget, bool& aPresent,
+                          std::string& aSource, std::string& aError )
+{
+    kiapi::board::commands::GetBoardCustomRules request;
+    request.mutable_board()->CopyFrom( aTarget.document );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::board::commands::BoardCustomRulesResponse rulesResponse;
+
+    if( !response.message().UnpackTo( &rulesResponse ) )
+    {
+        aError = "KiCad returned invalid board custom rules";
+        return false;
+    }
+
+    aPresent = rulesResponse.present();
+    aSource = rulesResponse.source();
+    return true;
+}
+
+
+bool updatePcbCustomRules( const KICHAD_IPC_CLIENT& aClient,
+                           const KICHAD_IPC_TARGET& aTarget, bool aPresent,
+                           const std::string& aSource, std::string& aError )
+{
+    kiapi::board::commands::UpdateBoardCustomRules request;
+    request.mutable_board()->CopyFrom( aTarget.document );
+    request.set_present( aPresent );
+    request.set_source( aSource );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::board::commands::BoardCustomRulesResponse rulesResponse;
+
+    if( !response.message().UnpackTo( &rulesResponse )
+        || rulesResponse.present() != aPresent || rulesResponse.source() != aSource )
+    {
+        aError = "KiCad returned invalid updated board custom rules";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool queryNetClassSettings(
         const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
         kiapi::common::project::NetClassSettings& aSettings, std::string& aError )
@@ -1722,6 +1773,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                           { "assignments",
                             plannedOperation["settings"]["assignments"].size() } } );
             }
+            else if( action == "update_custom_rules" )
+            {
+                items.push_back(
+                        { { "action", "configure_custom_board_rules" },
+                          { "rules", planned.counts.value( "customRules", 0 ) } } );
+            }
             else
             {
                 items.push_back( { { "action", "unsupported" },
@@ -1811,14 +1868,47 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         std::unique_ptr<kiapi::board::BoardStackup> desiredStackup;
         std::unique_ptr<kiapi::board::BoardDesignRules> desiredRules;
         std::unique_ptr<kiapi::common::project::NetClassSettings> desiredNetClasses;
+        bool        hasDesiredCustomRules = false;
+        bool        desiredCustomRulesPresent = false;
+        std::string desiredCustomRulesSource;
 
         for( const JSON& action : planned.operations )
         {
             const std::string plannedAction = action.value( "action", "" );
 
             if( plannedAction != "update_stackup" && plannedAction != "update_rules"
-                && plannedAction != "update_net_classes" )
+                && plannedAction != "update_net_classes"
+                && plannedAction != "update_custom_rules" )
                 continue;
+
+            if( plannedAction == "update_custom_rules" )
+            {
+                if( hasDesiredCustomRules || !action.contains( "customRules" )
+                    || !action["customRules"].is_object()
+                    || !action["customRules"].contains( "present" )
+                    || !action["customRules"]["present"].is_boolean()
+                    || !action["customRules"].contains( "source" )
+                    || !action["customRules"]["source"].is_string()
+                    || action["customRules"]["source"].get_ref<const std::string&>().size()
+                               > MAX_DESIGN_SCRIPT_BYTES )
+                {
+                    return failure( "invalid_plan",
+                                    "KDS produced invalid native custom rules" );
+                }
+
+                hasDesiredCustomRules = true;
+                desiredCustomRulesPresent = action["customRules"]["present"].get<bool>();
+                desiredCustomRulesSource =
+                        action["customRules"]["source"].get<std::string>();
+
+                if( desiredCustomRulesPresent != !desiredCustomRulesSource.empty() )
+                {
+                    return failure( "invalid_plan",
+                                    "KDS produced inconsistent native custom rules" );
+                }
+
+                continue;
+            }
 
             google::protobuf::util::JsonParseOptions options;
             options.ignore_unknown_fields = false;
@@ -1929,6 +2019,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         kiapi::board::BoardStackup previousStackup;
         kiapi::board::BoardDesignRules previousRules;
         kiapi::common::project::NetClassSettings previousNetClasses;
+        bool        previousCustomRulesPresent = false;
+        std::string previousCustomRulesSource;
 
         if( desiredStackup && !queryPcbStackup( client, target, previousStackup, pathError ) )
             return failure( "stackup_inventory_failed", pathError );
@@ -1940,6 +2032,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             && !queryNetClassSettings( client, target, previousNetClasses, pathError ) )
         {
             return failure( "netclass_inventory_failed", pathError );
+        }
+
+        if( hasDesiredCustomRules
+            && !queryPcbCustomRules( client, target, previousCustomRulesPresent,
+                                     previousCustomRulesSource, pathError ) )
+        {
+            return failure( "custom_rules_inventory_failed", pathError );
         }
 
         JSON liveInventory;
@@ -2039,6 +2138,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             }
 
             applyJournal["previousNetClassSettings"] = JSON::parse( serializedPrevious );
+        }
+
+        if( hasDesiredCustomRules )
+        {
+            applyJournal["previousCustomRules"] = {
+                { "present", previousCustomRulesPresent },
+                { "source", previousCustomRulesSource }
+            };
         }
 
         if( !writeJsonAtomically( journalPath, applyJournal, pathError ) )
@@ -2142,13 +2249,53 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             rollbackBoardSettings( aMessage );
         };
 
+        bool customRulesApplied = false;
+
+        if( hasDesiredCustomRules )
+        {
+            if( !updatePcbCustomRules( client, target, desiredCustomRulesPresent,
+                                       desiredCustomRulesSource, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !updatePcbCustomRules( client, target, previousCustomRulesPresent,
+                                           previousCustomRulesSource, rollbackError ) )
+                {
+                    message += "; custom-rules rollback also failed: " + rollbackError;
+                }
+
+                rollbackSettings( message );
+                return failure( "custom_rules_apply_failed", message );
+            }
+
+            customRulesApplied = true;
+        }
+
+        auto rollbackAllSettings = [&]( std::string& aMessage )
+        {
+            if( customRulesApplied )
+            {
+                std::string rollbackError;
+
+                if( !updatePcbCustomRules( client, target, previousCustomRulesPresent,
+                                           previousCustomRulesSource, rollbackError ) )
+                {
+                    aMessage += "; custom-rules rollback also failed: " + rollbackError;
+                }
+            }
+
+            rollbackSettings( aMessage );
+        };
+
         if( reconciled.actions.empty() )
         {
             if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
             {
                 std::string message = pathError
                                       + "; the apply journal was retained for safe recovery";
-                rollbackSettings( message );
+                rollbackAllSettings( message );
                 return failure( "state_write_failed", message );
             }
 
@@ -2160,11 +2307,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "counts", reconciled.counts },
                              { "transaction",
                                stackupApplied || rulesApplied || netClassesApplied
+                                               || customRulesApplied
                                        ? "design settings applied"
                                        : "no board changes" },
                              { "stackupApplied", stackupApplied },
                              { "rulesApplied", rulesApplied },
                              { "netClassesApplied", netClassesApplied },
+                             { "customRulesApplied", customRulesApplied },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -2175,7 +2324,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             std::string message = pathError
                                   + "; the apply journal was retained for safe recovery";
-            rollbackSettings( message );
+            rollbackAllSettings( message );
             return failure( "transaction_failed", message );
         }
 
@@ -2188,7 +2337,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
 
-            rollbackSettings( message );
+            rollbackAllSettings( message );
 
             return failure( "apply_failed", message );
         }
@@ -2202,7 +2351,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
 
-            rollbackSettings( message );
+            rollbackAllSettings( message );
 
             return failure( "transaction_failed", message );
         }
@@ -2233,6 +2382,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "stackupApplied", stackupApplied },
                          { "rulesApplied", rulesApplied },
                          { "netClassesApplied", netClassesApplied },
+                         { "customRulesApplied", customRulesApplied },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };

@@ -77,7 +77,9 @@ Setup constraint set through a typed native rules endpoint, including physical v
 the semantic legacy copper-edge mode. It also applies and reads back the one canonical KDS net-class
 table—including explicit priority order, inherited fields, via and microvia geometry, schematic
 styles, colors, tuning profiles, and pattern assignments—then proves an invalid native replacement
-is rejected without mutation. It creates and fills a
+is rejected without mutation. It compiles the canonical KDS custom-rule set into one internal native
+rule document, loads all rule semantics through KiCad's real DRC engine, reads the exact document
+back, and proves malformed replacement input cannot change the active rules. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.

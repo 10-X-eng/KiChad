@@ -36,6 +36,7 @@
 #include <drc/rule_editor/drc_rule_editor_enums.h>
 #include <drc/rule_editor/drc_re_numeric_constraint_types.h> 
 #include <drc/drc_rule.h>
+#include <drc/drc_rule_parser.h>
 #include <drc/rule_editor/drc_re_base_constraint_data.h>
 #include <drc/rule_editor/drc_re_numeric_input_constraint_data.h>
 #include <drc/rule_editor/drc_re_bool_input_constraint_data.h>
@@ -2507,6 +2508,72 @@ BOOST_AUTO_TEST_CASE( RuleLoaderPermittedLayersStandardLoadsStructured )
     BOOST_REQUIRE( layerData );
     BOOST_CHECK( layerData->GetTopLayerEnabled() );
     BOOST_CHECK( layerData->GetBottomLayerEnabled() );
+}
+
+
+BOOST_AUTO_TEST_CASE( GeneratedKdsDocumentParsesEveryNativeConstraintType )
+{
+    const wxString source = wxString::FromUTF8( R"DRU((version 1)
+
+(rule "production_constraints"
+  (severity error)
+  (constraint assertion "A.Type != 'Footprint' || A.Orientation != 13deg")
+  (constraint clearance (min -0.01mm))
+  (constraint creepage (min 1mm))
+  (constraint hole_clearance (min 0.2mm))
+  (constraint edge_clearance (min 0.3mm))
+  (constraint hole_size (min 0.2mm) (opt 0.3mm) (max 1mm))
+  (constraint hole_to_hole (min 0.25mm))
+  (constraint courtyard_clearance (min 0.1mm))
+  (constraint silk_clearance (min -0.05mm))
+  (constraint text_height (min 0.8mm) (max 3mm))
+  (constraint text_thickness (min 0.08mm) (max 0.5mm))
+  (constraint track_width (min 0.15mm) (opt 0.2mm) (max 2mm))
+  (constraint track_angle (min 45) (max 135))
+  (constraint track_segment_length (min 0.1mm) (max 100mm))
+  (constraint connection_width (min 0.15mm))
+  (constraint annular_width (min 0.1mm) (max 0.5mm))
+  (constraint via_diameter (min 0.4mm) (opt 0.6mm) (max 2mm))
+  (constraint via_dangling)
+  (constraint zone_connection thermal_reliefs)
+  (constraint thermal_relief_gap (min 0.2mm))
+  (constraint thermal_spoke_width (opt 0.3mm))
+  (constraint min_resolved_spokes 2)
+  (constraint solder_mask_expansion (opt 0.05mm))
+  (constraint solder_mask_sliver (min 0.08mm))
+  (constraint solder_paste_abs_margin (opt -0.03mm))
+  (constraint solder_paste_rel_margin (opt -100))
+  (constraint disallow track through_via blind_via buried_via micro_via pad zone text graphic hole footprint)
+  (constraint length (min 10000fs) (opt 12000fs) (max 14000fs))
+  (constraint skew (min -5000fs) (opt 0fs) (max 5000fs) (within_diff_pairs))
+  (constraint via_count (min 0) (max 20))
+  (constraint diff_pair_gap (min 0.15mm) (opt 0.2mm) (max 0.3mm))
+  (constraint diff_pair_uncoupled (max 5mm))
+  (constraint physical_clearance (min 0.2mm))
+  (constraint physical_hole_clearance (min 0.25mm))
+  (constraint bridged_mask)
+)
+)DRU" );
+    std::vector<std::shared_ptr<DRC_RULE>> rules;
+    DRC_RULES_PARSER parser( source, wxS( "generated KDS custom rules" ) );
+
+    try
+    {
+        parser.Parse( rules, nullptr );
+    }
+    catch( PARSE_ERROR& error )
+    {
+        BOOST_FAIL( error.What().ToStdString() );
+    }
+
+    BOOST_REQUIRE_EQUAL( rules.size(), 1 );
+    BOOST_CHECK_EQUAL( rules[0]->m_Constraints.size(), 35 );
+    BOOST_CHECK_EQUAL( rules[0]->m_Constraints.front().m_Type, ASSERTION_CONSTRAINT );
+    BOOST_CHECK_EQUAL( rules[0]->m_Constraints.back().m_Type, BRIDGED_MASK_CONSTRAINT );
+    std::optional<DRC_CONSTRAINT> pasteRatio =
+            rules[0]->FindConstraint( SOLDER_PASTE_REL_MARGIN_CONSTRAINT );
+    BOOST_REQUIRE( pasteRatio.has_value() );
+    BOOST_CHECK_EQUAL( pasteRatio->m_Value.Opt(), -100 );
 }
 
 BOOST_AUTO_TEST_SUITE_END()

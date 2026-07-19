@@ -131,6 +131,18 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
       (wire_width inherit) (bus_width inherit)
       (schematic_color inherit) (line_style inherit))
     (assign (pattern LED_A) (classes LED_SIGNAL)))
+  (custom_rules
+    (rule led_clearance
+      (condition "A.NetName == 'LED_A'")
+      (layer F.Cu)
+      (severity error)
+      (constraint clearance (min 0.25mm))
+      (constraint track_width (min 0.2mm) (opt 0.25mm) (max 0.5mm)))
+    (rule dangling_vias
+      (condition always)
+      (layer all)
+      (severity warning)
+      (constraint via_dangling)))
   (source R1
     (manufacturer "Yageo")
     (mpn "RC0603FR-0710KL")
@@ -236,9 +248,9 @@ semantic value `legacy`; scripts never encode KiCad's internal negative sentinel
 diameters must be large enough for the declared drill plus twice the minimum annular width. Native
 KiCad ranges are enforced before planning. `maximum_error` is the curve-to-segment approximation
 tolerance, while `allow_fillets_outside_zone_outline` controls KiCad's external zone smoothing.
-The former generic `(rule NAME ...)` form is invalid;
-global constraints have this one representation. Custom `.kicad_dru` conditional rules are a
-different KiCad concept and will receive their own non-overlapping KDS form.
+The former generic top-level `(rule NAME ...)` form is invalid; global constraints have this one
+representation. Conditional custom rules are a separate KiCad concept and use the non-overlapping
+`custom_rules` form below.
 
 ### Net classes form
 
@@ -286,6 +298,73 @@ priorities, native ranges, colors, padstacks, assignments, and physical cross-co
 replacing any project setting. It journals the previous table and restores it on lost
 acknowledgements or any later pre-commit failure. The older partial merge API is not used by KDS;
 there is one source representation and one atomic replacement operation.
+
+### Custom rules form
+
+KDS authors the complete conditional custom-rule set once. There is no second KDS spelling and no
+authored `.kicad_dru` companion. The compiler deterministically lowers this form to KiCad's native
+rule document as an internal board artifact:
+
+```scheme
+(custom_rules
+  (rule usb_diff_pair
+    (condition "A.hasNetclass('USB_HS')")
+    (layer outer)
+    (severity error)
+    (constraint diff_pair_gap (min 0.15mm) (opt 0.2mm) (max 0.25mm))
+    (constraint skew (domain diff_pairs) (max 5ps)))
+  (rule assembly_policy
+    (condition always)
+    (layer all)
+    (severity warning)
+    (constraint disallow (items track through_via pad footprint))
+    (constraint assertion
+      (test "A.Type != 'Footprint' || A.Orientation != 13deg"))))
+```
+
+Every rule uses exactly this clause order: name, `condition`, `layer`, `severity`, then one or more
+constraints. Conditions are either `always` or one quoted native KiCad rule expression. Layers are
+`all`, `outer`, `inner`, or one bounded native layer/pattern such as `F.Cu` or `In*.Cu`.
+Severities are `ignore`, `warning`, `error`, or `exclusion`. Rule names are unique, a rule contains
+each constraint type at most once, and source containing an unresolved `${...}` expression is
+rejected. The native KiCad parser and expression compiler validate layer patterns and conditions
+again before the active board can change.
+
+KDS exposes all 35 KiCad 10 custom constraint types through structured values:
+
+- Bare flags: `(constraint via_dangling)` and `(constraint bridged_mask)`.
+- Assertion: `(constraint assertion (test "EXPRESSION"))`.
+- Zone connection: `(constraint zone_connection (style solid|thermal_reliefs|none))`.
+- Prohibition: `(constraint disallow (items ...))`, with unique items in canonical order:
+  `track`, `via`, `through_via`, `blind_via`, `buried_via`, `micro_via`, `pad`, `zone`, `text`,
+  `graphic`, `hole`, `footprint`. The aggregate `via` cannot be combined with individual via types.
+- Counts and ratios: `(constraint min_resolved_spokes (count 0..4))` and
+  `(constraint solder_paste_rel_margin (ratio -10..10))`; paste ratios have exact 0.001
+  resolution, so `-0.1` means a ten-percent reduction.
+- Distance ranges: `annular_width`, `clearance`, `creepage`, `connection_width`,
+  `courtyard_clearance`, `diff_pair_gap`, `diff_pair_uncoupled`, `edge_clearance`,
+  `hole_clearance`, `hole_size`, `hole_to_hole`, `physical_clearance`,
+  `physical_hole_clearance`, `silk_clearance`, `solder_mask_expansion`,
+  `solder_mask_sliver`, `solder_paste_abs_margin`, `text_height`, `text_thickness`,
+  `thermal_relief_gap`, `thermal_spoke_width`, `track_width`, `track_segment_length`, and
+  `via_diameter`.
+- Typed ranges: `track_angle` uses `deg`; `via_count` uses non-negative integers; `length` and
+  `skew` use either distances or `fs`/`ps` time values. A `skew` also requires
+  `(domain nets|diff_pairs)`.
+
+Range values use the supported `(min VALUE)`, `(opt VALUE)`, and `(max VALUE)` fields for that
+native constraint, occurring once in that order, with `min <= opt <= max`. Required native fields
+are enforced—for example, `clearance` requires `min`, `diff_pair_uncoupled` requires `max`, and
+paste/mask optimal-margin constraints require `opt`. A single range cannot mix distance and time.
+Values are bounded to KiCad's exact numeric domains before planning.
+
+The compiler emits one deterministic native document, normalizing physical distances losslessly to
+decimal millimetres, time to femtoseconds, and angles to the native unitless degree field. The PCB
+Editor endpoint limits the artifact to 1 MiB, 512 rules, 64 constraints per rule, and 4096 total
+constraints. It validates UTF-8, parses and compiles the complete document, installs it atomically,
+reloads the live DRC engine, and reads it back byte-for-byte. Failure restores both the previous
+file and previous engine rules. KDS journals that exact prior state and restores it on a lost
+acknowledgement or any later pre-commit failure.
 
 ### Copper zone form
 
@@ -473,8 +552,9 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes physical board stackups, the complete global Board Setup
-constraint set, complete net-class tables, rectangular outlines, component placement, straight traces, arcs, vias, copper
-zones, keepout rule areas, native board text, and all five native dimension styles. Stackup apply
+constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
+outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,
+native board text, and all five native dimension styles. Stackup apply
 uses KiCad's native protobuf stackup message and editor
 endpoint; it validates the entire ordered structure before mutation, derives enabled physical
 layers and board thickness, and preserves rather than deletes objects when technical layers are
@@ -483,8 +563,9 @@ apply journal and restored if a later settings or transactional item mutation fa
 use a typed native protobuf endpoint, validate every field and physical cross-constraint before
 mutation, and are journaled and restored together with the stackup on any pre-commit failure. A
 complete net-class table uses a typed native project endpoint, is persisted with the project, and
-is journaled and restored after the global rules and before transactional PCB items. A
-zone explicitly declares
+is journaled and restored after the global rules. Custom rules use a bounded native board endpoint,
+are compiled by KiCad's real DRC parser and engine, and are journaled and restored after net classes
+and before transactional PCB items. A zone explicitly declares
 its net, stable ID, one or more copper layers, bounded
 polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
 solid or hatched fill, priority, border display, and lock state. No manufacturing setting is
@@ -510,7 +591,9 @@ permittivity, and dielectric lock. It also reads back all global constraint fiel
 semantic legacy edge-clearance mode, and verifies the second apply updates the same settings. It
 reads back the complete net-class table and assignments, including inherited fields, native
 schematic units, colors, line styles, via/microvia padstacks, and priorities; an invalid replacement
-must leave that table unchanged. It then
+must leave that table unchanged. It also reads back the exact generated custom-rule document,
+reapplies it without duplication, and proves malformed native input leaves the active document
+unchanged. It then
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
 and flipped child layers survive both applies. It proves the fifth managed object is a filled
 net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
@@ -532,8 +615,8 @@ A form is documented as executable only after it has all of the following covera
 - relevant ERC, DRC, sourcing, and fabrication-output assertions.
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
-components, nets, sourcing, board statement kinds, global rules, net classes, checks, and outputs.
-Global rules, net classes, and executable board forms have backend-specific type checking and
+components, nets, sourcing, board statement kinds, global rules, net classes, custom rules, checks,
+and outputs. Global rules, net classes, custom rules, and executable board forms have backend-specific type checking and
 rollback coverage. Nested sheet
 and library payloads remain non-executable until their own typed backends and rollback tests land.
 Native backend

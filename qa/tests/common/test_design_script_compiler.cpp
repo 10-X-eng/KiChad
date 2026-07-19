@@ -274,6 +274,115 @@ BOOST_AUTO_TEST_CASE( CompilesOneCanonicalCompleteNetclassRepresentation )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesEveryNativeCustomRuleConstraintFromOneKdsRepresentation )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project custom_rule_design)
+  (custom_rules
+    (rule production_constraints
+      (condition always)
+      (layer all)
+      (severity error)
+      (constraint assertion (test "A.Type != 'Footprint' || A.Orientation != 13deg"))
+      (constraint clearance (min -0.01mm))
+      (constraint creepage (min 1mm))
+      (constraint hole_clearance (min 0.2mm))
+      (constraint edge_clearance (min 0.3mm))
+      (constraint hole_size (min 0.2mm) (opt 0.3mm) (max 1mm))
+      (constraint hole_to_hole (min 0.25mm))
+      (constraint courtyard_clearance (min 0.1mm))
+      (constraint silk_clearance (min -0.05mm))
+      (constraint text_height (min 0.8mm) (max 3mm))
+      (constraint text_thickness (min 0.08mm) (max 0.5mm))
+      (constraint track_width (min 0.15mm) (opt 0.2mm) (max 2mm))
+      (constraint track_angle (min 45deg) (max 135deg))
+      (constraint track_segment_length (min 0.1mm) (max 100mm))
+      (constraint connection_width (min 0.15mm))
+      (constraint annular_width (min 0.1mm) (max 0.5mm))
+      (constraint via_diameter (min 0.4mm) (opt 0.6mm) (max 2mm))
+      (constraint via_dangling)
+      (constraint zone_connection (style thermal_reliefs))
+      (constraint thermal_relief_gap (min 0.2mm))
+      (constraint thermal_spoke_width (opt 0.3mm))
+      (constraint min_resolved_spokes (count 2))
+      (constraint solder_mask_expansion (opt 0.05mm))
+      (constraint solder_mask_sliver (min 0.08mm))
+      (constraint solder_paste_abs_margin (opt -0.03mm))
+      (constraint solder_paste_rel_margin (ratio -0.1))
+      (constraint disallow (items track through_via blind_via buried_via micro_via pad zone
+        text graphic hole footprint))
+      (constraint length (min 10ps) (opt 12ps) (max 14ps))
+      (constraint skew (domain diff_pairs) (min -5ps) (opt 0ps) (max 5ps))
+      (constraint via_count (min 0) (max 20))
+      (constraint diff_pair_gap (min 0.15mm) (opt 0.2mm) (max 0.3mm))
+      (constraint diff_pair_uncoupled (max 5mm))
+      (constraint physical_clearance (min 0.2mm))
+      (constraint physical_hole_clearance (min 0.25mm))
+      (constraint bridged_mask))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE( compiled.ir["customRules"].is_object() );
+    BOOST_REQUIRE_EQUAL( compiled.ir["customRules"]["rules"].size(), 1 );
+    const nlohmann::json& rule = compiled.ir["customRules"]["rules"][0];
+    BOOST_CHECK_EQUAL( rule["name"].get<std::string>(), "production_constraints" );
+    BOOST_CHECK_EQUAL( rule["condition"].get<std::string>(), "always" );
+    BOOST_CHECK_EQUAL( rule["layer"].get<std::string>(), "all" );
+    BOOST_CHECK_EQUAL( rule["severity"].get<std::string>(), "error" );
+    BOOST_CHECK_EQUAL( rule["constraints"].size(), 35 );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["customRules"].get<size_t>(), 1 );
+    BOOST_CHECK_EQUAL( rule["constraints"][1]["values"]["min"]["value"].get<int64_t>(),
+                       -10000 );
+    BOOST_CHECK_EQUAL( rule["constraints"][27]["values"]["min"]["domain"].get<std::string>(),
+                       "time" );
+    BOOST_CHECK_EQUAL( rule["constraints"][28]["domain"].get<std::string>(), "diff_pairs" );
+    BOOST_CHECK_EQUAL( rule["constraints"][25]["valuePermille"].get<int64_t>(), -100 );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeCustomRulePrograms )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project invalid_custom_rules)
+  (custom_rules
+    (rule duplicate
+      (condition "${UNRESOLVED}")
+      (layer all)
+      (severity error)
+      (constraint clearance (min 0.3mm) (min 0.2mm))
+      (constraint clearance (min 0.1mm))
+      (constraint track_angle (min 135deg) (max 45deg))
+      (constraint skew (min 1mm) (max 2ps))
+      (constraint disallow (items via through_via)))
+    (rule duplicate
+      (condition always)
+      (severity warning)
+      (layer F.Cu)
+      (constraint solder_paste_rel_margin (ratio inf)))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_CHECK( !compiled.ok );
+    const std::string diagnostics = compiled.diagnostics.dump();
+
+    for( const char* code : { "invalid_custom_rule_condition",
+                              "noncanonical_custom_constraint_values",
+                              "unordered_custom_constraint_range",
+                              "duplicate_custom_constraint",
+                              "invalid_custom_skew_domain",
+                              "mixed_custom_constraint_domains",
+                              "redundant_custom_disallow", "duplicate_custom_rule",
+                              "invalid_custom_rule_layer", "invalid_custom_rule_severity",
+                              "invalid_custom_paste_ratio" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( RejectsAmbiguousUnsafeOrNonNativeNetclasses )
 {
     const std::string source = R"KDS((kichad_design

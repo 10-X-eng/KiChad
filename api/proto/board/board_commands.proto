@@ -71,6 +71,29 @@ message UpdateBoardDesignRules
   kiapi.board.BoardDesignRules rules = 2;
 }
 
+message GetBoardCustomRules
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+}
+
+// The exact generated .kicad_dru document associated with a board.  This transport message is an
+// internal backend artifact; KDS remains the single authored design representation.
+message BoardCustomRulesResponse
+{
+  bool present = 1;
+  string source = 2;
+}
+
+// Atomically replaces or removes the complete generated .kicad_dru document, validates it with
+// KiCad's native rule parser, and recompiles the live DRC engine.  A failed update restores both the
+// prior file and active rule engine.  Returns BoardCustomRulesResponse with the installed document.
+message UpdateBoardCustomRules
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  bool present = 2;
+  string source = 3;
+}
+
 message GetBoardEnabledLayers
 {
   kiapi.common.types.DocumentSpecifier board = 1;

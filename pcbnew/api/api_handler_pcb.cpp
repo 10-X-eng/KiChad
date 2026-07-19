@@ -22,6 +22,7 @@
 #include <properties/property.h>
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 #include <common.h>
@@ -46,6 +47,8 @@
 #include <pcbnew_id.h>
 #include <pcb_marker.h>
 #include <drc/drc_item.h>
+#include <drc/drc_engine.h>
+#include <drc/drc_rule_parser.h>
 #include <layer_ids.h>
 #include <project.h>
 #include <tool/tool_manager.h>
@@ -58,6 +61,7 @@
 #include <google/protobuf/util/field_mask_util.h>
 #include <widgets/appearance_controls.h>
 #include <widgets/report_severity.h>
+#include <wx/file.h>
 
 using namespace kiapi::common::commands;
 using types::CommandStatus;
@@ -67,6 +71,140 @@ using types::ItemRequestStatus;
 
 namespace
 {
+
+constexpr size_t MAX_CUSTOM_RULES_BYTES = 1024 * 1024;
+constexpr size_t MAX_CUSTOM_RULE_COUNT = 512;
+constexpr size_t MAX_CUSTOM_CONSTRAINTS_PER_RULE = 64;
+constexpr size_t MAX_CUSTOM_CONSTRAINT_COUNT = 4096;
+
+
+bool readCustomRulesFile( const wxFileName& aPath, bool& aPresent, std::string& aSource,
+                          std::string& aError )
+{
+    aPresent = aPath.FileExists();
+    aSource.clear();
+
+    if( !aPresent )
+        return true;
+
+    wxFile file( aPath.GetFullPath(), wxFile::read );
+
+    if( !file.IsOpened() )
+    {
+        aError = "could not open the board custom-rules file";
+        return false;
+    }
+
+    const wxFileOffset length = file.Length();
+
+    if( length < 0 || length > static_cast<wxFileOffset>( MAX_CUSTOM_RULES_BYTES ) )
+    {
+        aError = "board custom rules are limited to 1 MiB";
+        return false;
+    }
+
+    aSource.assign( static_cast<size_t>( length ), '\0' );
+
+    if( length > 0 && file.Read( aSource.data(), static_cast<size_t>( length ) ) != length )
+    {
+        aError = "could not read the complete board custom-rules file";
+        aSource.clear();
+        return false;
+    }
+
+    return true;
+}
+
+
+bool writeCustomRulesAtomically( const wxFileName& aPath, const std::string& aSource,
+                                 std::string& aError )
+{
+    const wxString temporaryPath =
+            aPath.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
+    wxFile temporary;
+
+    if( !temporary.Create( temporaryPath, true )
+        || temporary.Write( aSource.data(), aSource.size() ) != aSource.size()
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+        aError = "could not durably write the custom-rules temporary file";
+        return false;
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, aPath.GetFullPath(), true ) )
+    {
+        wxRemoveFile( temporaryPath );
+        aError = "could not atomically install the custom-rules file";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool validateCustomRulesSource( const std::string& aSource, std::string& aError )
+{
+    if( aSource.empty() || aSource.size() > MAX_CUSTOM_RULES_BYTES
+        || aSource.find( '\0' ) != std::string::npos )
+    {
+        aError = "board custom rules must contain 1 byte to 1 MiB of UTF-8 text";
+        return false;
+    }
+
+    const wxString decoded = wxString::FromUTF8( aSource.data(), aSource.size() );
+    const wxScopedCharBuffer reencoded = decoded.ToUTF8();
+
+    if( reencoded.length() != aSource.size()
+        || std::memcmp( reencoded.data(), aSource.data(), aSource.size() ) != 0 )
+    {
+        aError = "board custom rules must be valid UTF-8";
+        return false;
+    }
+
+    try
+    {
+        std::vector<std::shared_ptr<DRC_RULE>> rules;
+        DRC_RULES_PARSER parser( decoded, wxS( "API custom rules" ) );
+        parser.Parse( rules, nullptr );
+
+        if( rules.size() > MAX_CUSTOM_RULE_COUNT )
+        {
+            aError = "board custom rules support at most 512 rules";
+            return false;
+        }
+
+        size_t constraintCount = 0;
+
+        for( const std::shared_ptr<DRC_RULE>& rule : rules )
+        {
+            if( rule->m_Constraints.size() > MAX_CUSTOM_CONSTRAINTS_PER_RULE )
+            {
+                aError = "each board custom rule supports at most 64 constraints";
+                return false;
+            }
+
+            constraintCount += rule->m_Constraints.size();
+
+            if( constraintCount > MAX_CUSTOM_CONSTRAINT_COUNT )
+            {
+                aError = "board custom rules support at most 4096 constraints";
+                return false;
+            }
+        }
+    }
+    catch( const PARSE_ERROR& error )
+    {
+        aError = error.what();
+        return false;
+    }
+
+    return true;
+}
+
 
 std::unique_ptr<google::protobuf::Message> unpackAnyMessage(
         const google::protobuf::Any& aAny )
@@ -430,6 +568,10 @@ API_HANDLER_PCB::API_HANDLER_PCB( PCB_EDIT_FRAME* aFrame ) :
             &API_HANDLER_PCB::handleGetBoardDesignRules );
     registerHandler<UpdateBoardDesignRules, BoardDesignRulesResponse>(
             &API_HANDLER_PCB::handleUpdateBoardDesignRules );
+    registerHandler<GetBoardCustomRules, BoardCustomRulesResponse>(
+            &API_HANDLER_PCB::handleGetBoardCustomRules );
+    registerHandler<UpdateBoardCustomRules, BoardCustomRulesResponse>(
+            &API_HANDLER_PCB::handleUpdateBoardCustomRules );
     registerHandler<GetBoardEnabledLayers, BoardEnabledLayersResponse>(
         &API_HANDLER_PCB::handleGetBoardEnabledLayers );
     registerHandler<SetBoardEnabledLayers, BoardEnabledLayersResponse>(
@@ -1642,6 +1784,169 @@ HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleUpdateBoardDesig
 
     BoardDesignRulesResponse response;
     response.mutable_rules()->CopyFrom( encodeBoardDesignRules( settings ) );
+    return response;
+}
+
+
+HANDLER_RESULT<BoardCustomRulesResponse> API_HANDLER_PCB::handleGetBoardCustomRules(
+        const HANDLER_CONTEXT<GetBoardCustomRules>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    const wxFileName rulesPath( frame()->GetDesignRulesPath() );
+    bool             present = false;
+    std::string      source;
+    std::string      readError;
+
+    if( !readCustomRulesFile( rulesPath, present, source, readError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        error.set_error_message( readError );
+        return tl::unexpected( error );
+    }
+
+    BoardCustomRulesResponse response;
+    response.set_present( present );
+    response.set_source( source );
+    return response;
+}
+
+
+HANDLER_RESULT<BoardCustomRulesResponse> API_HANDLER_PCB::handleUpdateBoardCustomRules(
+        const HANDLER_CONTEXT<UpdateBoardCustomRules>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( ( aCtx.Request.present() && aCtx.Request.source().empty() )
+        || ( !aCtx.Request.present() && !aCtx.Request.source().empty() ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message(
+                "custom-rules source must be non-empty exactly when present is true" );
+        return tl::unexpected( error );
+    }
+
+    std::string validationError;
+
+    if( aCtx.Request.present()
+        && !validateCustomRulesSource( aCtx.Request.source(), validationError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( validationError );
+        return tl::unexpected( error );
+    }
+
+    const wxFileName rulesPath( frame()->GetDesignRulesPath() );
+    bool             previousPresent = false;
+    std::string      previousSource;
+    std::string      fileError;
+
+    if( !readCustomRulesFile( rulesPath, previousPresent, previousSource, fileError ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        error.set_error_message( fileError );
+        return tl::unexpected( error );
+    }
+
+    if( previousPresent == aCtx.Request.present()
+        && previousSource == aCtx.Request.source() )
+    {
+        BoardCustomRulesResponse response;
+        response.set_present( previousPresent );
+        response.set_source( previousSource );
+        return response;
+    }
+
+    auto restorePrevious = [&]() -> std::string
+    {
+        std::string restoreError;
+
+        if( previousPresent )
+        {
+            if( !writeCustomRulesAtomically( rulesPath, previousSource, restoreError ) )
+                return restoreError;
+        }
+        else if( rulesPath.FileExists() && !wxRemoveFile( rulesPath.GetFullPath() ) )
+        {
+            return "could not remove the custom-rules file while restoring prior state";
+        }
+
+        try
+        {
+            frame()->GetBoard()->GetDesignSettings().m_DRCEngine->InitEngine( rulesPath );
+        }
+        catch( const PARSE_ERROR& error )
+        {
+            return std::string( "could not restore the prior DRC engine: " ) + error.what();
+        }
+
+        return {};
+    };
+
+    if( aCtx.Request.present() )
+    {
+        if( !writeCustomRulesAtomically( rulesPath, aCtx.Request.source(), fileError ) )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_UNHANDLED );
+            error.set_error_message( fileError );
+            return tl::unexpected( error );
+        }
+    }
+    else if( rulesPath.FileExists() && !wxRemoveFile( rulesPath.GetFullPath() ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        error.set_error_message( "could not remove the board custom-rules file" );
+        return tl::unexpected( error );
+    }
+
+    try
+    {
+        frame()->GetBoard()->GetDesignSettings().m_DRCEngine->InitEngine( rulesPath );
+    }
+    catch( const PARSE_ERROR& error )
+    {
+        const std::string restoreError = restorePrevious();
+        ApiResponseStatus responseError;
+        responseError.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        responseError.set_error_message( std::string( "custom rules did not compile: " )
+                                         + error.what()
+                                         + ( restoreError.empty()
+                                                     ? ""
+                                                     : "; rollback failed: " + restoreError ) );
+        return tl::unexpected( responseError );
+    }
+
+    bool        installedPresent = false;
+    std::string installedSource;
+
+    if( !readCustomRulesFile( rulesPath, installedPresent, installedSource, fileError )
+        || installedPresent != aCtx.Request.present()
+        || installedSource != aCtx.Request.source() )
+    {
+        const std::string restoreError = restorePrevious();
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        error.set_error_message(
+                "custom-rules verification failed after installation"
+                + ( restoreError.empty() ? std::string() : "; rollback failed: " + restoreError ) );
+        return tl::unexpected( error );
+    }
+
+    BoardCustomRulesResponse response;
+    response.set_present( installedPresent );
+    response.set_source( installedSource );
     return response;
 }
 

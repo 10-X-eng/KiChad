@@ -176,6 +176,72 @@ bool parseDistance( const std::string& aText, int64_t& aNanometers )
 }
 
 
+bool parseTime( const std::string& aText, int64_t& aFemtoseconds )
+{
+    long double value = 0.0L;
+    std::from_chars_result converted =
+            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+
+    if( converted.ec != std::errc() || converted.ptr == aText.data()
+        || !std::isfinite( value ) )
+    {
+        return false;
+    }
+
+    const std::string_view unit( converted.ptr,
+                                 static_cast<size_t>( aText.data() + aText.size()
+                                                      - converted.ptr ) );
+    long double scale = 0.0L;
+
+    if( unit == "fs" )
+        scale = 1.0L;
+    else if( unit == "ps" )
+        scale = 1000.0L;
+    else
+        return false;
+
+    const long double rounded = std::round( value * scale );
+
+    if( !std::isfinite( rounded ) || rounded < -9223372036854775808.0L
+        || rounded >= 9223372036854775808.0L )
+    {
+        return false;
+    }
+
+    aFemtoseconds = static_cast<int64_t>( rounded );
+    return true;
+}
+
+
+bool parseFiniteDecimal( const std::string& aText, double& aValue,
+                         const std::string_view aRequiredSuffix = {} )
+{
+    std::from_chars_result converted =
+            std::from_chars( aText.data(), aText.data() + aText.size(), aValue );
+
+    if( converted.ec != std::errc() || converted.ptr == aText.data()
+        || !std::isfinite( aValue ) )
+    {
+        return false;
+    }
+
+    return std::string_view( converted.ptr,
+                             static_cast<size_t>( aText.data() + aText.size()
+                                                  - converted.ptr ) ) == aRequiredSuffix;
+}
+
+
+bool parseBoundedInteger( const std::string& aText, int64_t aMinimum, int64_t aMaximum,
+                          int64_t& aValue )
+{
+    const char* begin = aText.data();
+    const char* end = begin + aText.size();
+    std::from_chars_result converted = std::from_chars( begin, end, aValue );
+    return converted.ec == std::errc() && converted.ptr == end
+           && aValue >= aMinimum && aValue <= aMaximum;
+}
+
+
 bool parseHexColor( const std::string& aText, JSON& aColor )
 {
     if( aText.size() != 7 && aText.size() != 9 )
@@ -1193,6 +1259,514 @@ JSON compileNetClasses( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileCustomRuleValue( const std::string& aText, const std::string& aDomain,
+                             KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
+                             const std::string& aConstraint )
+{
+    if( aDomain == "distance" || aDomain == "distance_or_time" )
+    {
+        int64_t nanometers = 0;
+
+        if( parseDistance( aText, nanometers )
+            && nanometers >= -10000000000LL && nanometers <= 10000000000LL )
+        {
+            return { { "domain", "distance" }, { "value", nanometers } };
+        }
+
+        if( aDomain == "distance_or_time" )
+        {
+            int64_t femtoseconds = 0;
+
+            if( parseTime( aText, femtoseconds )
+                && femtoseconds >= -1000000000000000LL
+                && femtoseconds <= 1000000000000000LL )
+            {
+                return { { "domain", "time" }, { "value", femtoseconds } };
+            }
+        }
+
+        diagnostic( aResult, "error", "invalid_custom_rule_value",
+                    "custom rule constraint " + aConstraint
+                            + " requires a bounded distance"
+                            + ( aDomain == "distance_or_time" ? " or time" : "" )
+                            + " literal" );
+        return JSON::object();
+    }
+
+    if( aDomain == "integer" )
+    {
+        int64_t value = 0;
+
+        if( !parseBoundedInteger( aText, 0, 1000000, value ) )
+        {
+            diagnostic( aResult, "error", "invalid_custom_rule_value",
+                        "custom rule constraint " + aConstraint
+                                + " requires an integer from 0 through 1000000" );
+        }
+
+        return { { "domain", "integer" }, { "value", value } };
+    }
+
+    double degrees = 0.0;
+
+    if( !parseFiniteDecimal( aText, degrees, "deg" ) || degrees < 0.0 || degrees > 180.0 )
+    {
+        diagnostic( aResult, "error", "invalid_custom_rule_value",
+                    "custom rule track_angle values require 0deg through 180deg" );
+    }
+
+    return { { "domain", "angle" }, { "value", degrees } };
+}
+
+
+JSON compileCustomConstraint( const DOCUMENT& aDocument, size_t aNode,
+                              KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string           type;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], type ) )
+    {
+        diagnostic( aResult, "error", "invalid_custom_constraint",
+                    "custom rule constraints require a supported type" );
+        return JSON::object();
+    }
+
+    if( type == "via_dangling" || type == "bridged_mask" )
+    {
+        if( node.children.size() != 2 )
+        {
+            diagnostic( aResult, "error", "invalid_custom_constraint",
+                        type + " does not accept values" );
+        }
+
+        return { { "type", type }, { "kind", "flag" } };
+    }
+
+    if( type == "assertion" )
+    {
+        std::string test;
+
+        if( node.children.size() != 3 || aDocument.ListHead( node.children[2] ) != "test"
+            || !parseSingleValueForm( aDocument, node.children[2], test ) || test.empty()
+            || test.size() > 8192 || test.find( "${" ) != std::string::npos )
+        {
+            diagnostic( aResult, "error", "invalid_custom_assertion",
+                        "assertion requires one bounded (test EXPRESSION)" );
+        }
+
+        return { { "type", type }, { "kind", "assertion" }, { "test", test } };
+    }
+
+    if( type == "zone_connection" )
+    {
+        std::string style;
+
+        if( node.children.size() != 3 || aDocument.ListHead( node.children[2] ) != "style"
+            || !parseSingleValueForm( aDocument, node.children[2], style )
+            || ( style != "solid" && style != "thermal_reliefs" && style != "none" ) )
+        {
+            diagnostic( aResult, "error", "invalid_custom_zone_connection",
+                        "zone_connection requires (style solid|thermal_reliefs|none)" );
+        }
+
+        return { { "type", type }, { "kind", "zone_connection" }, { "style", style } };
+    }
+
+    if( type == "disallow" )
+    {
+        static const std::vector<std::string> ORDER = {
+            "track", "via", "through_via", "blind_via", "buried_via", "micro_via",
+            "pad", "zone", "text", "graphic", "hole", "footprint"
+        };
+        JSON items = JSON::array();
+        std::set<std::string> seen;
+        size_t previousRank = 0;
+        bool haveRank = false;
+
+        if( node.children.size() != 3 || aDocument.ListHead( node.children[2] ) != "items" )
+        {
+            diagnostic( aResult, "error", "invalid_custom_disallow",
+                        "disallow requires one non-empty (items TYPE ...) list" );
+            return { { "type", type }, { "kind", "disallow" }, { "items", items } };
+        }
+
+        const DOCUMENT::NODE& itemsNode = aDocument.Nodes()[node.children[2]];
+
+        if( itemsNode.children.size() < 2 )
+        {
+            diagnostic( aResult, "error", "invalid_custom_disallow",
+                        "disallow items cannot be empty" );
+        }
+
+        for( size_t index = 1; index < itemsNode.children.size(); ++index )
+        {
+            std::string item;
+
+            if( !scalarText( aDocument, itemsNode.children[index], item ) )
+            {
+                diagnostic( aResult, "error", "invalid_custom_disallow",
+                            "disallow items must be scalar object types" );
+                continue;
+            }
+
+            const auto found = std::find( ORDER.begin(), ORDER.end(), item );
+
+            if( found == ORDER.end() || !seen.emplace( item ).second )
+            {
+                diagnostic( aResult, "error", "invalid_custom_disallow",
+                            "disallow contains an unknown or duplicate object type" );
+                continue;
+            }
+
+            const size_t rank = static_cast<size_t>( found - ORDER.begin() );
+
+            if( haveRank && rank <= previousRank )
+            {
+                diagnostic( aResult, "error", "noncanonical_custom_disallow_order",
+                            "disallow items must use canonical object-type order" );
+            }
+
+            previousRank = rank;
+            haveRank = true;
+            items.emplace_back( item );
+        }
+
+        if( seen.contains( "via" )
+            && ( seen.contains( "through_via" ) || seen.contains( "blind_via" )
+                 || seen.contains( "buried_via" ) || seen.contains( "micro_via" ) ) )
+        {
+            diagnostic( aResult, "error", "redundant_custom_disallow",
+                        "disallow via cannot be combined with individual via types" );
+        }
+
+        return { { "type", type }, { "kind", "disallow" }, { "items", items } };
+    }
+
+    if( type == "min_resolved_spokes" )
+    {
+        std::string valueText;
+        int64_t     value = 0;
+
+        if( node.children.size() != 3 || aDocument.ListHead( node.children[2] ) != "count"
+            || !parseSingleValueForm( aDocument, node.children[2], valueText )
+            || !parseBoundedInteger( valueText, 0, 4, value ) )
+        {
+            diagnostic( aResult, "error", "invalid_custom_spoke_count",
+                        "min_resolved_spokes requires (count 0..4)" );
+        }
+
+        return { { "type", type }, { "kind", "count" }, { "value", value } };
+    }
+
+    if( type == "solder_paste_rel_margin" )
+    {
+        std::string valueText;
+        double      value = 0.0;
+        int64_t     valuePermille = 0;
+
+        if( node.children.size() != 3 || aDocument.ListHead( node.children[2] ) != "ratio"
+            || !parseSingleValueForm( aDocument, node.children[2], valueText )
+            || !parseFiniteDecimal( valueText, value ) || value < -10.0 || value > 10.0
+            || std::abs( value * 1000.0 - std::round( value * 1000.0 ) ) > 1e-9 )
+        {
+            diagnostic( aResult, "error", "invalid_custom_paste_ratio",
+                        "solder_paste_rel_margin requires a finite (ratio VALUE) from -10 to 10 "
+                        "at 0.001 resolution" );
+        }
+        else
+        {
+            valuePermille = static_cast<int64_t>( std::llround( value * 1000.0 ) );
+        }
+
+        return { { "type", type },
+                 { "kind", "ratio" },
+                 { "valuePermille", valuePermille } };
+    }
+
+    struct RANGE_SPEC
+    {
+        const char*            domain;
+        std::set<std::string>  allowed;
+        std::set<std::string>  required;
+    };
+    static const std::map<std::string, RANGE_SPEC> SPECS = {
+        { "annular_width", { "distance", { "min", "max" }, {} } },
+        { "clearance", { "distance", { "min" }, { "min" } } },
+        { "creepage", { "distance", { "min" }, { "min" } } },
+        { "connection_width", { "distance", { "min" }, { "min" } } },
+        { "courtyard_clearance", { "distance", { "min" }, { "min" } } },
+        { "diff_pair_gap", { "distance", { "min", "opt", "max" }, {} } },
+        { "diff_pair_uncoupled", { "distance", { "max" }, { "max" } } },
+        { "edge_clearance", { "distance", { "min" }, { "min" } } },
+        { "hole_clearance", { "distance", { "min" }, { "min" } } },
+        { "hole_size", { "distance", { "min", "opt", "max" }, {} } },
+        { "hole_to_hole", { "distance", { "min" }, { "min" } } },
+        { "length", { "distance_or_time", { "min", "opt", "max" }, {} } },
+        { "physical_clearance", { "distance", { "min" }, { "min" } } },
+        { "physical_hole_clearance", { "distance", { "min" }, { "min" } } },
+        { "silk_clearance", { "distance", { "min" }, { "min" } } },
+        { "skew", { "distance_or_time", { "min", "opt", "max" }, {} } },
+        { "solder_mask_expansion", { "distance", { "opt" }, { "opt" } } },
+        { "solder_mask_sliver", { "distance", { "min" }, { "min" } } },
+        { "solder_paste_abs_margin", { "distance", { "opt" }, { "opt" } } },
+        { "text_height", { "distance", { "min", "max" }, {} } },
+        { "text_thickness", { "distance", { "min", "max" }, {} } },
+        { "thermal_relief_gap", { "distance", { "min" }, { "min" } } },
+        { "thermal_spoke_width", { "distance", { "opt" }, { "opt" } } },
+        { "track_width", { "distance", { "min", "opt", "max" }, {} } },
+        { "track_angle", { "angle", { "min", "max" }, {} } },
+        { "track_segment_length", { "distance", { "min", "max" }, {} } },
+        { "via_count", { "integer", { "min", "max" }, {} } },
+        { "via_diameter", { "distance", { "min", "opt", "max" }, {} } }
+    };
+    const auto specification = SPECS.find( type );
+
+    if( specification == SPECS.end() )
+    {
+        diagnostic( aResult, "error", "unknown_custom_constraint",
+                    "unsupported custom rule constraint '" + type + "'" );
+        return JSON::object();
+    }
+
+    JSON values = JSON::object();
+    std::string skewDomain;
+    int previousRank = -1;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t fieldNode = node.children[index];
+        const std::string field = aDocument.ListHead( fieldNode );
+
+        if( type == "skew" && field == "domain" )
+        {
+            if( !skewDomain.empty()
+                || !parseSingleValueForm( aDocument, fieldNode, skewDomain )
+                || ( skewDomain != "nets" && skewDomain != "diff_pairs" ) )
+            {
+                diagnostic( aResult, "error", "invalid_custom_skew_domain",
+                            "skew requires one (domain nets|diff_pairs)" );
+            }
+
+            continue;
+        }
+
+        const auto allowed = specification->second.allowed.find( field );
+        const int rank = field == "min" ? 0 : field == "opt" ? 1 : field == "max" ? 2 : -1;
+        std::string text;
+
+        if( allowed == specification->second.allowed.end() || rank < 0
+            || !parseSingleValueForm( aDocument, fieldNode, text ) )
+        {
+            diagnostic( aResult, "error", "invalid_custom_constraint_field",
+                        "constraint " + type + " contains an unsupported value field" );
+            continue;
+        }
+
+        if( values.contains( field ) || rank <= previousRank )
+        {
+            diagnostic( aResult, "error", "noncanonical_custom_constraint_values",
+                        "constraint values must occur once in min, opt, max order" );
+        }
+
+        previousRank = rank;
+        values[field] = compileCustomRuleValue( text, specification->second.domain,
+                                                aResult, type );
+    }
+
+    if( values.empty() )
+    {
+        diagnostic( aResult, "error", "missing_custom_constraint_value",
+                    "constraint " + type + " requires at least one value" );
+    }
+
+    for( const std::string& required : specification->second.required )
+    {
+        if( !values.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_custom_constraint_value",
+                        "constraint " + type + " requires " + required );
+        }
+    }
+
+    if( type == "skew" && skewDomain.empty() )
+    {
+        diagnostic( aResult, "error", "invalid_custom_skew_domain",
+                    "skew requires explicit (domain nets|diff_pairs)" );
+    }
+
+    std::string valueDomain;
+    long double minimum = 0.0L;
+    bool        haveMinimum = false;
+
+    for( const char* field : { "min", "opt", "max" } )
+    {
+        if( !values.contains( field ) || !values[field].is_object()
+            || !values[field].contains( "domain" ) )
+        {
+            continue;
+        }
+
+        const std::string domain = values[field]["domain"].get<std::string>();
+
+        if( valueDomain.empty() )
+            valueDomain = domain;
+        else if( domain != valueDomain )
+            diagnostic( aResult, "error", "mixed_custom_constraint_domains",
+                        "constraint " + type + " cannot mix distance and time values" );
+
+        if( domain == "distance" || domain == "time" || domain == "integer"
+            || domain == "angle" )
+        {
+            const long double current = domain == "angle"
+                                                ? values[field]["value"].get<double>()
+                                                : values[field]["value"].get<int64_t>();
+
+            if( haveMinimum && current < minimum )
+            {
+                diagnostic( aResult, "error", "unordered_custom_constraint_range",
+                            "constraint " + type + " requires min <= opt <= max" );
+            }
+
+            minimum = current;
+            haveMinimum = true;
+        }
+    }
+
+    JSON constraint = { { "type", type }, { "kind", "range" }, { "values", values } };
+
+    if( type == "skew" )
+        constraint["domain"] = skewDomain;
+
+    return constraint;
+}
+
+
+JSON compileCustomRules( const DOCUMENT& aDocument, size_t aNode,
+                         KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    JSON rules = JSON::array();
+    std::set<std::string> names;
+    size_t constraintCount = 0;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        const size_t ruleNode = node.children[index];
+        const DOCUMENT::NODE& ruleForm = aDocument.Nodes()[ruleNode];
+        std::string name;
+
+        if( aDocument.ListHead( ruleNode ) != "rule" || ruleForm.children.size() < 6
+            || !scalarText( aDocument, ruleForm.children[1], name ) || name.empty()
+            || name.size() > 256 )
+        {
+            diagnostic( aResult, "error", "invalid_custom_rule",
+                        "custom_rules entries require a bounded rule name, condition, layer, "
+                        "severity, and at least one constraint" );
+            continue;
+        }
+
+        if( !names.emplace( name ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_custom_rule",
+                        "custom rule names must be unique" );
+        }
+
+        std::string condition;
+        std::string layer;
+        std::string severity;
+
+        if( aDocument.ListHead( ruleForm.children[2] ) != "condition"
+            || !parseSingleValueForm( aDocument, ruleForm.children[2], condition )
+            || condition.empty() || condition.size() > 8192
+            || condition.find( "${" ) != std::string::npos )
+        {
+            diagnostic( aResult, "error", "invalid_custom_rule_condition",
+                        "custom rule condition must be always or one bounded native expression" );
+        }
+
+        auto validLayer = []( const std::string& aLayer )
+        {
+            return !aLayer.empty() && aLayer.size() <= 64
+                   && std::all_of( aLayer.begin(), aLayer.end(),
+                                   []( unsigned char aCharacter )
+                                   {
+                                       return std::isalnum( aCharacter ) || aCharacter == '_'
+                                              || aCharacter == '-' || aCharacter == '.'
+                                              || aCharacter == '*';
+                                   } );
+        };
+
+        if( aDocument.ListHead( ruleForm.children[3] ) != "layer"
+            || !parseSingleValueForm( aDocument, ruleForm.children[3], layer )
+            || !validLayer( layer ) )
+        {
+            diagnostic( aResult, "error", "invalid_custom_rule_layer",
+                        "custom rule layer must be all, outer, inner, or a bounded KiCad layer "
+                        "pattern" );
+        }
+
+        if( aDocument.ListHead( ruleForm.children[4] ) != "severity"
+            || !parseSingleValueForm( aDocument, ruleForm.children[4], severity )
+            || ( severity != "ignore" && severity != "warning" && severity != "error"
+                 && severity != "exclusion" ) )
+        {
+            diagnostic( aResult, "error", "invalid_custom_rule_severity",
+                        "custom rule severity must be ignore, warning, error, or exclusion" );
+        }
+
+        JSON constraints = JSON::array();
+        std::set<std::string> constraintTypes;
+
+        for( size_t constraintIndex = 5; constraintIndex < ruleForm.children.size();
+             ++constraintIndex )
+        {
+            const size_t constraintNode = ruleForm.children[constraintIndex];
+
+            if( aDocument.ListHead( constraintNode ) != "constraint" )
+            {
+                diagnostic( aResult, "error", "noncanonical_custom_rule_clause",
+                            "custom rule clauses must be condition, layer, severity, then "
+                            "constraints" );
+                continue;
+            }
+
+            JSON constraint = compileCustomConstraint( aDocument, constraintNode, aResult );
+            const std::string type = constraint.value( "type", "" );
+
+            if( !type.empty() && !constraintTypes.emplace( type ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_custom_constraint",
+                            "a custom rule may contain each constraint type once" );
+            }
+
+            constraints.emplace_back( std::move( constraint ) );
+            ++constraintCount;
+        }
+
+        if( constraints.size() > 64 )
+        {
+            diagnostic( aResult, "error", "too_many_custom_constraints",
+                        "a custom rule supports at most 64 constraints" );
+        }
+
+        rules.push_back( { { "name", name },
+                           { "condition", condition },
+                           { "layer", layer },
+                           { "severity", severity },
+                           { "constraints", std::move( constraints ) } } );
+    }
+
+    if( rules.size() > 512 || constraintCount > 4096 )
+    {
+        diagnostic( aResult, "error", "too_many_custom_rules",
+                    "custom_rules supports at most 512 rules and 4096 constraints" );
+    }
+
+    return { { "kind", "custom_rules" }, { "rules", std::move( rules ) } };
+}
+
+
 JSON compileNamedFacet( const DOCUMENT& aDocument, size_t aNode, const std::string& aFacet,
                         KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -1328,6 +1902,11 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(class NAME VALUE_OR_INHERIT_FIELDS) ... "
                       "(assign (pattern PATTERN) (classes NAME ...)) ...)" } },
                   { { "form",
+                      "(custom_rules (rule NAME (condition always|EXPRESSION) "
+                      "(layer all|outer|inner|LAYER) "
+                      "(severity ignore|warning|error|exclusion) "
+                      "(constraint TYPE TYPED_VALUES) ...))" } },
+                  { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "
                       "(quantity N))" } },
                   { { "form", "(check erc|drc|sourcing|footprints|fabrication)" } },
@@ -1423,6 +2002,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "pcb", JSON::array() },
         { "rules", nullptr },
         { "netClasses", nullptr },
+        { "customRules", nullptr },
         { "sourcing", JSON::array() },
         { "checks", JSON::array() },
         { "outputs", JSON::array() }
@@ -1439,6 +2019,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    sheetIds;
     bool                     sawRules = false;
     bool                     sawNetClasses = false;
+    bool                     sawCustomRules = false;
     std::set<std::string>    sourceIds;
     std::set<std::string>    checkKinds;
     std::set<std::string>    outputKinds;
@@ -1597,6 +2178,20 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
             sawNetClasses = true;
         }
+        else if( form == "custom_rules" )
+        {
+            if( sawCustomRules )
+            {
+                diagnostic( result, "error", "duplicate_custom_rules",
+                            "custom_rules occurs more than once" );
+            }
+            else
+            {
+                result.ir["customRules"] = compileCustomRules( *document, formNode, result );
+            }
+
+            sawCustomRules = true;
+        }
         else if( form == "source" )
         {
             JSON source = compileSource( *document, formNode, result, referencedComponents );
@@ -1684,6 +2279,9 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( !result.ir["pcb"].empty() )
         passes.emplace_back( "pcb" );
 
+    if( result.ir["customRules"].is_object() )
+        passes.emplace_back( "custom_rules" );
+
     if( !result.ir["sourcing"].empty() )
         passes.emplace_back( "sourcing" );
 
@@ -1712,6 +2310,9 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "netClassAssignments", result.ir["netClasses"].is_object()
                                                ? result.ir["netClasses"]["assignments"].size()
                                                : 0 },
+            { "customRules", result.ir["customRules"].is_object()
+                                     ? result.ir["customRules"]["rules"].size()
+                                     : 0 },
             { "sourcingRecords", result.ir["sourcing"].size() },
             { "checks", result.ir["checks"].size() },
             { "outputs", result.ir["outputs"].size() } } }

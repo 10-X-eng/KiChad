@@ -185,6 +185,18 @@
       (schematic_color "#22AA44")
       (line_style dash_dot))
     (assign (pattern Net1) (classes SIGNAL)))
+  (custom_rules
+    (rule signal_policy
+      (condition "A.NetName == 'Net1'")
+      (layer F.Cu)
+      (severity error)
+      (constraint clearance (min 0.25mm))
+      (constraint track_width (min 0.2mm) (opt 0.3mm) (max 0.6mm)))
+    (rule dangling_vias
+      (condition always)
+      (layer all)
+      (severity warning)
+      (constraint via_dangling)))
   (rules
     (minimum_clearance 0.2mm)
     (minimum_connection_width 0.15mm)

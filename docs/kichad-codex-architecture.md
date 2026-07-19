@@ -74,7 +74,10 @@ It starts only its own build-tree PCB Editor, uses isolated settings and a tempo
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
 duplicate-free convergence. It applies the single complete KDS net-class table through the typed
 native project API, reads every class and assignment back, rejects an invalid atomic replacement,
-and verifies the prior table did not change. It verifies a deterministic managed copper zone is filled by KiCad's
+and verifies the prior table did not change. It also lowers the single KDS custom-rule
+representation to one internal native document, installs it through a bounded board endpoint,
+reloads KiCad's DRC engine, verifies exact readback, and proves invalid input cannot mutate the
+active rules. It verifies a deterministic managed copper zone is filled by KiCad's
 official zone engine after each transaction and a distinct managed keepout remains an unfilled,
 locked rule area with exact prohibited-item settings. It also creates deterministic native board
 text and all five native dimension styles, then reapplies each distinct oneof field mask and verifies
@@ -100,7 +103,9 @@ KDS is the only external representation of design intent. Internal JSON IR, tran
 managed-state records, and protobuf messages are compiler implementation details. The hidden
 `*.kicad_kds_state` file records only deterministic ownership identities needed for idempotent
 reconciliation; a short-lived `*.kicad_kds_journal` safely carries ownership across an interrupted
-apply. Existing schematic-linked footprints are resolved uniquely by reference and transformed in
+apply. The generated `.kicad_dru` file is likewise an internal compiler artifact; conditional-rule
+intent is authored only in the exported `.kicad_kds` sidecar. Its exact prior presence and bytes are
+journaled so a failed apply restores both the file and live DRC engine. Existing schematic-linked footprints are resolved uniquely by reference and transformed in
 place; they are never added to KDS ownership state. Managed copper zones are committed unfilled,
 then KiCad's official refill command is polled until every desired zone is authoritatively present
 and filled. A rejected or timed-out refill retains the recovery journal, and the next apply safely
