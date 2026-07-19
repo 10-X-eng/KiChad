@@ -260,7 +260,9 @@ bool createFabricationVerificationSnapshot(
                             {
                                 return static_cast<char>( std::tolower( aCharacter ) );
                             } );
-            const bool selected = extension == ".kicad_sch" || extension == ".kicad_pro"
+            const bool selected = extension == ".kicad_sch" || extension == ".kicad_sym"
+                                  || extension == ".kicad_mod"
+                                  || extension == ".kicad_pro"
                                   || extension == ".kicad_prl"
                                   || extension == ".kicad_dru"
                                   || extension == ".kicad_wks"
@@ -1680,6 +1682,20 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     }
 
     JSON jobs = JSON::array();
+    std::set<std::string> bomReferences;
+    std::set<std::string> placementReferences;
+
+    for( const JSON& component : aIr.at( "schematic" ).at( "components" ) )
+    {
+        if( !component.contains( "footprint" ) || !component.at( "footprint" ).is_string() )
+            continue;
+
+        const std::string reference = component.at( "reference" ).get<std::string>();
+        bomReferences.emplace( reference );
+
+        if( !component.value( "dnp", false ) )
+            placementReferences.emplace( reference );
+    }
 
     for( const char* kind : OUTPUT_ORDER )
     {
@@ -1725,6 +1741,8 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
              { "issues", std::move( issues ) },
+             { "expectedBomReferences", bomReferences },
+             { "expectedPlacementReferences", placementReferences },
              { "jobs", std::move( jobs ) } };
 }
 
@@ -1874,6 +1892,87 @@ bool readFileEdges( const std::filesystem::path& aPath, std::string& aPrefix,
     aSuffix.resize( static_cast<size_t>( length - start ) );
     input.read( aSuffix.data(), static_cast<std::streamsize>( aSuffix.size() ) );
     return input.good() || input.eof();
+}
+
+
+bool readCsvReferences( const std::filesystem::path& aPath,
+                        std::set<std::string>& aReferences, std::string& aError )
+{
+    std::ifstream input( aPath, std::ios::binary );
+    std::string line;
+
+    if( !input || !std::getline( input, line ) )
+    {
+        aError = "could not read fabrication CSV header";
+        return false;
+    }
+
+    while( std::getline( input, line ) )
+    {
+        if( !line.empty() && line.back() == '\r' )
+            line.pop_back();
+
+        if( line.empty() )
+            continue;
+
+        std::string reference;
+
+        if( line.front() == '"' )
+        {
+            bool closed = false;
+
+            for( size_t index = 1; index < line.size(); ++index )
+            {
+                if( line[index] != '"' )
+                {
+                    reference.push_back( line[index] );
+                    continue;
+                }
+
+                if( index + 1 < line.size() && line[index + 1] == '"' )
+                {
+                    reference.push_back( '"' );
+                    ++index;
+                    continue;
+                }
+
+                closed = index + 1 < line.size() && line[index + 1] == ',';
+                break;
+            }
+
+            if( !closed )
+            {
+                aError = "fabrication CSV has a malformed quoted reference";
+                return false;
+            }
+        }
+        else
+        {
+            const size_t comma = line.find( ',' );
+
+            if( comma == std::string::npos )
+            {
+                aError = "fabrication CSV row has no reference column";
+                return false;
+            }
+
+            reference = line.substr( 0, comma );
+        }
+
+        if( reference.empty() || !aReferences.emplace( std::move( reference ) ).second )
+        {
+            aError = "fabrication CSV has an empty or duplicate reference";
+            return false;
+        }
+    }
+
+    if( input.bad() )
+    {
+        aError = "could not read the complete fabrication CSV";
+        return false;
+    }
+
+    return true;
 }
 
 
@@ -2222,6 +2321,75 @@ bool validateBoardFabricationIntent( const wxFileName& aBoard, const JSON& aIr,
         return false;
     }
 
+    std::map<std::string, std::string> expectedFootprints;
+
+    for( const JSON& component : aIr.at( "schematic" ).at( "components" ) )
+    {
+        if( component.contains( "footprint" ) && component.at( "footprint" ).is_string() )
+        {
+            expectedFootprints.emplace( component.at( "reference" ).get<std::string>(),
+                                        component.at( "footprint" ).get<std::string>() );
+        }
+    }
+
+    std::map<std::string, std::string> nativeFootprints;
+
+    for( size_t child : document->Nodes().at( root ).children )
+    {
+        if( document->Nodes().at( child ).kind
+                    != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+            || document->ListHead( child ) != "footprint" )
+        {
+            continue;
+        }
+
+        const auto& footprintNode = document->Nodes().at( child );
+        bool boardOnly = false;
+        std::string reference;
+
+        for( size_t footprintChild : footprintNode.children )
+        {
+            if( document->Nodes().at( footprintChild ).kind
+                != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST )
+            {
+                continue;
+            }
+
+            const std::string head = document->ListHead( footprintChild );
+            const auto& field = document->Nodes().at( footprintChild );
+
+            if( head == "attr" )
+            {
+                for( size_t value = 1; value < field.children.size(); ++value )
+                    boardOnly = boardOnly || document->AtomText( field.children[value] )
+                                                     == "board_only";
+            }
+            else if( head == "property" && field.children.size() >= 3
+                     && document->AtomText( field.children[1] ) == "Reference" )
+            {
+                reference = document->AtomText( field.children[2] );
+            }
+        }
+
+        if( boardOnly )
+            continue;
+
+        if( footprintNode.children.size() < 2 || reference.empty()
+            || !nativeFootprints
+                        .emplace( reference, document->AtomText( footprintNode.children[1] ) )
+                        .second )
+        {
+            aError = "native board has an unreferenced or duplicate schematic footprint";
+            return false;
+        }
+    }
+
+    if( nativeFootprints != expectedFootprints )
+    {
+        aError = "native board schematic-footprint inventory differs from compiled KDS";
+        return false;
+    }
+
     return true;
 }
 
@@ -2233,6 +2401,8 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
     std::map<std::string, size_t> counts;
     std::set<std::string> actualGerberFiles;
     std::set<std::string> jobGerberFiles;
+    std::set<std::string> bomReferences;
+    std::set<std::string> placementReferences;
     std::set<std::string> allowedDirectories;
     size_t files = 0;
     uintmax_t totalBytes = 0;
@@ -2422,6 +2592,9 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 aError = "position artifact has the wrong KiCad CSV schema";
                 return false;
             }
+
+            if( !readCsvReferences( iterator->path(), placementReferences, aError ) )
+                return false;
         }
         else if( path.starts_with( "assembly/" ) && path.ends_with( "-bom.csv" ) )
         {
@@ -2432,6 +2605,9 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 aError = "BOM artifact has the wrong KDS sourcing schema";
                 return false;
             }
+
+            if( !readCsvReferences( iterator->path(), bomReferences, aError ) )
+                return false;
         }
         else if( path.starts_with( "model/" ) && extension == ".step" )
         {
@@ -2484,6 +2660,22 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
     if( actualGerberFiles != jobGerberFiles )
     {
         aError = "Gerber job file does not enumerate the exact generated layer files";
+        return false;
+    }
+
+    std::set<std::string> expectedBomReferences;
+    std::set<std::string> expectedPlacementReferences;
+
+    for( const JSON& reference : aPlan.at( "expectedBomReferences" ) )
+        expectedBomReferences.emplace( reference.get<std::string>() );
+
+    for( const JSON& reference : aPlan.at( "expectedPlacementReferences" ) )
+        expectedPlacementReferences.emplace( reference.get<std::string>() );
+
+    if( bomReferences != expectedBomReferences
+        || placementReferences != expectedPlacementReferences )
+    {
+        aError = "fabrication BOM or placement references differ from compiled KDS";
         return false;
     }
 

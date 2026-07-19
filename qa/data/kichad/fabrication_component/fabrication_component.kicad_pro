@@ -1,0 +1,37 @@
+{
+  "board": {
+    "design_settings": {
+      "drc_exclusions": [],
+      "meta": {
+        "version": 2
+      },
+      "rule_severities": {
+        "footprint_filters_mismatch": "warning",
+        "footprint_type_mismatch": "warning",
+        "missing_courtyard": "warning",
+        "track_not_centered_on_via": "warning",
+        "tuning_profile_track_geometries": "warning"
+      },
+      "rules": {
+        "min_clearance": 0.0,
+        "min_track_width": 0.0
+      }
+    }
+  },
+  "erc": {
+    "erc_exclusions": [],
+    "meta": {
+      "version": 0
+    },
+    "rule_severities": {
+      "footprint_filter": "warning",
+      "four_way_junction": "warning",
+      "simulation_model_issue": "warning",
+      "single_global_label": "warning"
+    }
+  },
+  "meta": {
+    "filename": "fabrication_component.kicad_pro",
+    "version": 1
+  }
+}

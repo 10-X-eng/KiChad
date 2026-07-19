@@ -12,8 +12,11 @@
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <kicad/codex/codex_tool_registry.h>
+#include <kicad/codex/kicad_ipc_client.h>
 
 #include <algorithm>
+#include <api/common/commands/editor_commands.pb.h>
+#include <api/common/envelope.pb.h>
 #include <build_version.h>
 #include <filesystem>
 #include <fstream>
@@ -63,6 +66,18 @@ public:
                "  (generator \"eeschema\")\n"
                "  (generator_version \"10.0\")\n"
                ")\n" );
+        Write( wxS( "Project.kicad_sym" ),
+               "(kicad_symbol_lib (version 20251024)\n"
+               "  (generator \"kicad_symbol_editor\")\n"
+               "  (generator_version \"10.0\")\n"
+               ")\n" );
+        Write( wxS( "Project.pretty/Project.kicad_mod" ),
+               "(footprint \"Project\"\n"
+               "  (version 20260206)\n"
+               "  (generator \"pcbnew\")\n"
+               "  (generator_version \"10.0\")\n"
+               "  (layer \"F.Cu\")\n"
+               ")\n" );
         Write( wxS( "design.kicad_pcb" ),
                R"PCB((kicad_pcb
   (version 20260206)
@@ -96,7 +111,16 @@ public:
       (layer "B.SilkS" (type "Bottom Silk Screen")
         (color "White") (material "Epoxy ink"))
       (copper_finish "ENIG")
-      (dielectric_constraints no))))
+      (dielectric_constraints no)))
+  (footprint "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+    (layer "F.Cu")
+    (uuid "11111111-2222-4333-8444-555555555555")
+    (at 10 10)
+    (property "Reference" "U1"
+      (at 0 0 0)
+      (layer "F.SilkS")
+      (uuid "66666666-7777-4888-8999-aaaaaaaaaaaa")
+      (effects (font (size 1 1) (thickness 0.15))))))
 )PCB" );
     }
 
@@ -231,7 +255,8 @@ std::string nativeReport( const std::string& aCheck, const wxFileName& aPath,
 
 
 bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
-                           bool aMalformed, std::string& aError )
+                           bool aMalformed, bool aWrongPlacementReference,
+                           std::string& aError )
 {
     const std::filesystem::path root( aStaging.GetFullPath().ToStdString() );
     const auto write = [&]( const std::filesystem::path& aPath, const std::string& aText )
@@ -310,7 +335,9 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
         {
             if( !write( output,
                         "Ref,Val,Package,PosX,PosY,Rot,Side\n"
-                        "U1,LM358,SOIC-8,10.0,10.0,0.0,top\n" ) )
+                        + std::string( aWrongPlacementReference
+                                               ? "U2,LM358,SOIC-8,10.0,10.0,0.0,top\n"
+                                               : "U1,LM358,SOIC-8,10.0,10.0,0.0,top\n" ) ) )
             {
                 aError = "could not write fake position output";
                 return false;
@@ -400,6 +427,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
     BOOST_REQUIRE_EQUAL( data["jobs"].size(), 6 );
+    BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
+    BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
+    BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
+    BOOST_CHECK_EQUAL( data["expectedPlacementReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK( std::find( data["jobs"][0]["layers"].begin(),
                             data["jobs"][0]["layers"].end(), JSON( "F.Paste" ) )
                  != data["jobs"][0]["layers"].end() );
@@ -419,6 +450,22 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     BOOST_CHECK( !mismatchData["nativeBoardIntentValid"].get<bool>() );
     fixture.Write( wxS( "design.kicad_pcb" ), validBoard );
 
+    std::string mismatchedFootprint = validBoard;
+    const std::string expectedLibraryId =
+            "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm";
+    const size_t nativeFootprint = mismatchedFootprint.find( expectedLibraryId );
+    BOOST_REQUIRE_NE( nativeFootprint, std::string::npos );
+    mismatchedFootprint.replace( nativeFootprint, expectedLibraryId.size(),
+                                 "Package_SO:SOIC-8_Wrong" );
+    fixture.Write( wxS( "design.kicad_pcb" ), mismatchedFootprint );
+    JSON footprintMismatch = registry.Handle( "fabricate", arguments );
+    BOOST_REQUIRE_MESSAGE( footprintMismatch.at( "success" ).get<bool>(),
+                           footprintMismatch.dump() );
+    JSON footprintMismatchData = envelope( footprintMismatch )["data"];
+    BOOST_CHECK( !footprintMismatchData["productionReady"].get<bool>() );
+    BOOST_CHECK( !footprintMismatchData["nativeBoardIntentValid"].get<bool>() );
+    fixture.Write( wxS( "design.kicad_pcb" ), validBoard );
+
     fixture.Write( wxS( "design.kicad_pcb" ),
                    "(kicad_pcb (version 20240108) (generator \"pcbnew\"))\n" );
     JSON rejected = registry.Handle( "fabricate", arguments );
@@ -434,9 +481,11 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     std::string dirtyCheck;
     bool waiver = false;
     bool malformedArtifacts = false;
+    bool wrongPlacementReference = false;
     bool fabricationFailure = false;
     bool mutateLiveInputDuringExport = false;
     bool checksUsedSnapshot = true;
+    bool checksSawProjectLibraries = true;
     bool fabricationUsedSnapshot = true;
     int nativeCheckCalls = 0;
     int fabricationCalls = 0;
@@ -447,6 +496,13 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
             {
                 ++nativeCheckCalls;
                 checksUsedSnapshot = checksUsedSnapshot && aPath.GetPath() != fixture.Root();
+                const std::filesystem::path snapshotRoot( aPath.GetPath().ToStdString() );
+                checksSawProjectLibraries =
+                        checksSawProjectLibraries
+                        && std::filesystem::is_regular_file(
+                                snapshotRoot / "Project.kicad_sym" )
+                        && std::filesystem::is_regular_file(
+                                snapshotRoot / "Project.pretty/Project.kicad_mod" );
 
                 if( aCheck == "drc" )
                 {
@@ -480,7 +536,8 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                                    "  (generator_version \"10.0\"))\n" );
                 }
 
-                return writeNativeArtifacts( aPlan, aStaging, malformedArtifacts, aError );
+                return writeNativeArtifacts( aPlan, aStaging, malformedArtifacts,
+                                             wrongPlacementReference, aError );
             } );
     wxFileName liveBoardPath( fixture.Root(), wxS( "design.kicad_pcb" ) );
     const std::string liveBoardBefore = readText( liveBoardPath );
@@ -530,6 +587,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "20260206" );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 1 );
     BOOST_CHECK( checksUsedSnapshot );
+    BOOST_CHECK( checksSawProjectLibraries );
     BOOST_CHECK( fabricationUsedSnapshot );
     BOOST_CHECK_EQUAL( readText( wxFileName( fixture.Root(), wxS( "design.kicad_prl" ) ) ),
                        "original local settings\n" );
@@ -555,6 +613,18 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_CHECK_EQUAL( fabricationCalls, 3 );
 
     malformedArtifacts = false;
+    wrongPlacementReference = true;
+    JSON mismatchedAssembly = registry.HandleWithContext( "fabricate", arguments,
+                                                           fixture.Root(), true,
+                                                           wxString(), true );
+    BOOST_REQUIRE( !mismatchedAssembly.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( mismatchedAssembly )["error"]["code"].get<std::string>(),
+                       "artifact_validation_failed" );
+    BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
+    BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
+    BOOST_CHECK_EQUAL( fabricationCalls, 4 );
+
+    wrongPlacementReference = false;
     fabricationFailure = true;
     JSON failedExport = registry.HandleWithContext( "fabricate", arguments, fixture.Root(),
                                                     true, wxString(), true );
@@ -563,7 +633,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "export_failed" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 4 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 5 );
 
     fabricationFailure = false;
     mutateLiveInputDuringExport = true;
@@ -574,7 +644,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                        "stale_inputs" );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
     BOOST_CHECK( !hasHiddenFabricationTransaction( fixture.Root() ) );
-    BOOST_CHECK_EQUAL( fabricationCalls, 5 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
     fixture.Write( wxS( "design.kicad_pcb" ), liveBoardBefore );
     mutateLiveInputDuringExport = false;
 
@@ -584,7 +654,7 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_REQUIRE( !dirty.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( dirty )["error"]["code"].get<std::string>(),
                        "drc_gate_failed" );
-    BOOST_CHECK_EQUAL( fabricationCalls, 5 );
+    BOOST_CHECK_EQUAL( fabricationCalls, 6 );
     BOOST_CHECK_EQUAL( readText( manifestPath ), firstManifest );
 
     dirtyCheck.clear();
@@ -668,6 +738,144 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
                                + wxS( "fabrication/documentation/"
                                       "fabrication_clean.pdf" ) ) );
     BOOST_CHECK_EQUAL( readText( localSettingsPath ), localSettingsBefore );
+    BOOST_CHECK( !hasHiddenFabricationTransaction( project.GetFullPath() ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyRequested )
+{
+    wxString projectPath;
+
+    if( !wxGetEnv( wxS( "KICHAD_QA_FABRICATION_COMPONENT_PROJECT" ), &projectPath ) )
+    {
+        BOOST_TEST_MESSAGE( "Skipping opt-in KDS component fabrication test" );
+        return;
+    }
+
+    wxFileName project = wxFileName::DirName( projectPath );
+    project.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+    BOOST_REQUIRE( project.DirExists() );
+    const wxString projectName = wxS( "fabrication_component" );
+    const wxString boardName = projectName + wxS( ".kicad_pcb" );
+    const wxString schematicName = projectName + wxS( ".kicad_sch" );
+    const wxString sourceName = projectName + wxS( ".kicad_kds" );
+    wxFileName boardPath( project.GetFullPath(), boardName );
+    wxFileName schematicPath( project.GetFullPath(), schematicName );
+    wxFileName localSettingsPath( project.GetFullPath(),
+                                  projectName + wxS( ".kicad_prl" ) );
+    BOOST_REQUIRE( boardPath.FileExists() );
+    BOOST_REQUIRE( schematicPath.FileExists() );
+    BOOST_REQUIRE( localSettingsPath.FileExists() );
+    BOOST_REQUIRE_NE( readText( boardPath ).find( "(version 20260206)" ),
+                      std::string::npos );
+    BOOST_REQUIRE_NE( readText( schematicPath ).find( "(version 20260306)" ),
+                      std::string::npos );
+
+    wxString socketDirectory;
+    wxGetEnv( wxS( "KICHAD_QA_FABRICATION_COMPONENT_SOCKET_DIR" ), &socketDirectory );
+    CODEX_TOOL_REGISTRY registry( [project]() { return project.GetFullPath(); },
+                                  []() { return true; },
+                                  [socketDirectory]() { return socketDirectory; },
+                                  []( const wxFileName&, std::string& ) { return true; } );
+    JSON compiled = registry.Handle( "design", { { "operation", "compile" },
+                                                   { "path", sourceName.ToStdString() } } );
+    BOOST_REQUIRE_MESSAGE( compiled.at( "success" ).get<bool>(), compiled.dump() );
+    JSON compileData = envelope( compiled )["data"];
+    BOOST_REQUIRE( compileData["valid"].get<bool>() );
+    const std::string hash = compileData["sourceSha256"].get<std::string>();
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", sourceName.ToStdString() },
+                                                  { "boardPath", boardName.ToStdString() },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    JSON applyData = envelope( applied )["data"];
+    BOOST_CHECK_EQUAL( applyData["counts"]["placement"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( applyData["transaction"].get<std::string>(), "committed" );
+    BOOST_CHECK( applyData["stackupApplied"].get<bool>() );
+    BOOST_CHECK_EQUAL( applyData["libraryTablesApplied"].get<int>(), 2 );
+
+    KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.fabrication-component",
+                                socketDirectory );
+    KICHAD_IPC_TARGET ipcTarget;
+    std::string ipcError;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.FindOpenPcb( project.GetFullPath(), boardPath.GetFullPath(),
+                                   ipcTarget, ipcError ),
+            ipcError );
+    kiapi::common::commands::SaveDocument saveRequest;
+    saveRequest.mutable_document()->CopyFrom( ipcTarget.document );
+    kiapi::common::ApiResponse saveResponse;
+    BOOST_REQUIRE_MESSAGE( ipcClient.Call( ipcTarget, saveRequest, saveResponse, ipcError ),
+                           ipcError );
+
+    const std::string savedBoard = readText( boardPath );
+    BOOST_CHECK_NE( savedBoard.find( "(version 20260206)" ), std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find( "Resistor_SMD:R_0603_1608Metric" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find( "\"Reference\" \"R1\"" ), std::string::npos );
+    BOOST_CHECK_NE( savedBoard.find( "\"Reference\" \"R2\"" ), std::string::npos );
+
+    JSON nativeErc = registry.Handle(
+            "verify", { { "operation", "erc" },
+                          { "path", schematicName.ToStdString() } } );
+    BOOST_REQUIRE_MESSAGE( nativeErc.at( "success" ).get<bool>(), nativeErc.dump() );
+    JSON nativeErcData = envelope( nativeErc )["data"];
+    BOOST_REQUIRE_MESSAGE( nativeErcData["clean"].get<bool>(), nativeErc.dump( 2 ) );
+    BOOST_CHECK_EQUAL( nativeErcData["counts"]["total"].get<int>(), 0 );
+    BOOST_CHECK( !nativeErcData["waiversPresent"].get<bool>() );
+
+    JSON nativeDrc = registry.Handle(
+            "verify", { { "operation", "drc" }, { "path", boardName.ToStdString() } } );
+    BOOST_REQUIRE_MESSAGE( nativeDrc.at( "success" ).get<bool>(), nativeDrc.dump() );
+    JSON nativeDrcData = envelope( nativeDrc )["data"];
+    BOOST_REQUIRE_MESSAGE( nativeDrcData["clean"].get<bool>(), nativeDrc.dump( 2 ) );
+    BOOST_CHECK_EQUAL( nativeDrcData["counts"]["total"].get<int>(), 0 );
+    BOOST_CHECK( !nativeDrcData["waiversPresent"].get<bool>() );
+    const std::string localSettingsBeforeExport = readText( localSettingsPath );
+
+    JSON arguments = {
+        { "operation", "export" },
+        { "path", sourceName.ToStdString() },
+        { "boardPath", boardName.ToStdString() },
+        { "schematicPath", schematicName.ToStdString() },
+        { "expectedSha256", hash }
+    };
+    JSON exported = registry.HandleWithContext( "fabricate", arguments,
+                                                project.GetFullPath(), true,
+                                                wxString(), true );
+    BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
+    JSON data = envelope( exported )["data"];
+    BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 16 );
+
+    wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
+                             + wxS( "fabrication/manifest.json" ) );
+    wxFileName bomPath( project.GetFullPath() + wxFILE_SEP_PATH
+                        + wxS( "fabrication/assembly/fabrication_component-bom.csv" ) );
+    wxFileName positionsPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/assembly/fabrication_component-positions.csv" ) );
+    BOOST_REQUIRE( manifestPath.FileExists() );
+    BOOST_REQUIRE( bomPath.FileExists() );
+    BOOST_REQUIRE( positionsPath.FileExists() );
+    JSON manifest = JSON::parse( readText( manifestPath ) );
+    BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );
+    BOOST_CHECK( !manifest["checks"]["erc"]["waiversPresent"].get<bool>() );
+    BOOST_CHECK( !manifest["checks"]["drc"]["waiversPresent"].get<bool>() );
+    const std::string bom = readText( bomPath );
+    BOOST_CHECK_NE( bom.find( "\"R1\",\"10k\","
+                              "\"Resistor_SMD:R_0603_1608Metric\",1,"
+                              "\"KiChad QA Components\",\"KQA-0603-10K\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( bom.find( "\"R2\",\"10k\","
+                              "\"Resistor_SMD:R_0603_1608Metric\",1,"
+                              "\"KiChad QA Components\",\"KQA-0603-10K\"" ),
+                    std::string::npos );
+    const std::string positions = readText( positionsPath );
+    BOOST_CHECK_NE( positions.find( "R1" ), std::string::npos );
+    BOOST_CHECK_NE( positions.find( "R2" ), std::string::npos );
+    BOOST_CHECK_EQUAL( readText( localSettingsPath ), localSettingsBeforeExport );
     BOOST_CHECK( !hasHiddenFabricationTransaction( project.GetFullPath() ) );
 }
 

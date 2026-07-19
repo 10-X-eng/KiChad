@@ -53,11 +53,15 @@ profile. It accepts only the current KiCad 10.0.4 board and schematic formats, b
 the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
 Gerber, drill, placement, and BOM intent plus an explicit physical stackup. Export reruns the gates
 and the matching sibling `kicad-cli` from a private bounded project snapshot, so KiCad cannot rewrite
-live local settings while checking or plotting. A visible final-action confirmation is mandatory;
-ignored checks or exclusions also require explicit waiver approval. KiChad validates every native
-artifact, writes a hash manifest, and atomically replaces only `fabrication/`; any failure preserves
-the prior package. Native KiCad plot timestamps are retained, so the manifest records exact bytes
-for each run rather than claiming byte-identical Gerbers across separate runs.
+live local settings while checking or plotting. The snapshot includes project-local symbol and
+footprint libraries referenced by its native tables. A visible final-action confirmation is
+mandatory; ignored checks or exclusions also require explicit waiver approval. The native board's
+schematic-footprint reference/library-ID inventory must exactly match KDS, and the completed BOM and
+placement reference sets must exactly match the compiled physical and non-DNP component sets.
+KiChad validates every native artifact, writes a hash manifest, and atomically replaces only
+`fabrication/`; any failure preserves the prior package. Native KiCad plot timestamps are retained,
+so the manifest records exact bytes for each run rather than claiming byte-identical Gerbers across
+separate runs.
 
 KiChad forces the Codex app-server's built-in web search to live, high-context mode for new and
 resumed project conversations. The embedded agent instructions require current manufacturer,
@@ -133,6 +137,12 @@ For the real fabrication integration proof, build `qa_common` and `kicad-cli`, t
 disposable copy of the exact current-format fixture, runs native ERC/DRC and every production export,
 checks the installed manifest and artifacts, proves live `.kicad_prl` state is untouched, and removes
 the temporary project afterward.
+
+For the complete KDS-to-fabrication component proof, also build `pcbnew` and run
+`tools/smoke-kichad-fabrication-component.sh --allow-mutation`. It launches only a disposable PCB
+Editor, applies and saves a sourced two-resistor KDS design through official IPC, requires clean
+native ERC and DRC with zero ignored checks, and proves that the native board inventory, routed
+placement CSV, KDS BOM, and production manifest contain the same exact component references.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

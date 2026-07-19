@@ -275,21 +275,26 @@ compiled KDS SHA-256, a complete pre-turn project snapshot, and visible final co
 KiChad host. The plan rejects a native board whose enabled plot layers, ordered physical stack,
 thicknesses, materials, dielectric properties/locks, finish, impedance, edge-connector, or plating
 policy differs from compiled KDS. Only KiCad 10.0.4 board format `20260206` and schematic format
-`20260306` are accepted.
+`20260306` are accepted. Every native footprint not marked `board_only` must have a unique reference,
+and the exact reference-to-library-ID map must equal the footprint-bearing component inventory in
+compiled KDS.
 
-Export copies the required project inputs and local 3D models into a bounded private snapshot before
-running the real sibling KiCad CLI. Native ERC and DRC (including schematic parity) and the KDS
-sourcing gate must be clean. Exclusions or ignored checks stop release unless the user explicitly
-approves waivers and `allowWaivers` is set; the manifest then records release status `waived` rather
-than `clean`.
+Export copies the required project inputs, project-local `.kicad_sym`/`.kicad_mod` libraries, and
+local 3D models into a bounded private snapshot before running the real sibling KiCad CLI. Native
+ERC and DRC (including schematic parity) and the KDS sourcing gate must be clean. Exclusions or
+ignored checks stop release unless the user explicitly approves waivers and `allowWaivers` is set;
+the manifest then records release status `waived` rather than `clean`.
 
 The output is one project-side `fabrication/` directory containing Gerber layer files and a Gerber
 job, Excellon drill files plus PDF maps and report, placement CSV, a BOM derived directly from KDS
 sourcing forms, optional STEP/PDF files, and `manifest.json`. KiChad bounds and signature-validates
-every artifact, records exact byte counts and SHA-256 values, and installs the complete directory
-atomically. A gate, exporter, validation, stale-input, manifest, or installation failure leaves the
-previous fabrication directory intact. Native KiCad creation timestamps are preserved, so separate
-exports may have different artifact hashes even when their KDS and native design inputs are equal.
+every artifact. The BOM reference set must equal all footprint-bearing KDS components, while the
+native placement reference set must equal all non-DNP footprint-bearing KDS components; empty,
+duplicate, missing, or extra references reject the package. KiChad records exact byte counts and
+SHA-256 values and installs the complete directory atomically. A gate, exporter, validation,
+stale-input, manifest, or installation failure leaves the previous fabrication directory intact.
+Native KiCad creation timestamps are preserved, so separate exports may have different artifact
+hashes even when their KDS and native design inputs are equal.
 
 ### Schematic hierarchy
 
@@ -971,6 +976,14 @@ including complete physical coverage, exempt footprintless virtual components, l
 freshness, malformed input, and project confinement. Normal KDS apply does not automatically run
 declared checks; `fabricate.export` is the implemented production boundary that reruns ERC, DRC, and
 sourcing before it generates or installs a package.
+
+Run `tools/smoke-kichad-fabrication-component.sh --allow-mutation` for the complete component release
+proof. The isolated harness composes only exact 10.0.4 native fixtures, controls the date on clearly
+synthetic `.example.test` sourcing evidence, opens its own PCB Editor, applies and explicitly saves a routed
+two-resistor design through official IPC, then runs the production exporter beside the real
+`kicad-cli`. ERC and DRC must both be clean with no ignored checks, and the test verifies the exact
+native footprint inventory, placement references, KDS BOM rows/MPNs, manifest release status, and
+unchanged local UI settings before deleting the disposable project.
 
 ## Production support rule
 

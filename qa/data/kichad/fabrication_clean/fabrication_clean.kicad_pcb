@@ -16,6 +16,7 @@
 		(7 "B.SilkS" user "B.Silkscreen")
 		(1 "F.Mask" user)
 		(3 "B.Mask" user)
+		(31 "F.CrtYd" user "F.Courtyard")
 		(25 "Edge.Cuts" user)
 	)
 	(setup
@@ -90,6 +91,17 @@
 			(drill oval 2.2 1.6)
 			(layers "*.Mask")
 			(uuid "11111111-0000-0000-0000-000000000003")
+		)
+		(fp_rect
+			(start -1.2 -1.2)
+			(end 6.2 1.2)
+			(stroke
+				(width 0.05)
+				(type default)
+			)
+			(fill no)
+			(layer "F.CrtYd")
+			(uuid "11111111-0000-0000-0000-000000000004")
 		)
 	)
 	(gr_rect
