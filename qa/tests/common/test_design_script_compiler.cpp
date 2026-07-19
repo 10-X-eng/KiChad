@@ -165,6 +165,73 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
 }
 
 
+BOOST_AUTO_TEST_CASE( ValidatesStructuredSourcingEvidenceInKds )
+{
+    const std::string valid = R"KDS((kichad_design
+  (version 1)
+  (project sourcing)
+  (component R1
+    (symbol "Device:R") (value "10k") (footprint "Resistor:R_0603"))
+  (source R1
+    (manufacturer "Example Components")
+    (mpn "EX-0603-10K")
+    (datasheet "https://manufacturer.example.test/EX-0603-10K.pdf")
+    (lifecycle active)
+    (supplier "DigiKey")
+    (sku "EX-0603-10K-ND")
+    (product_url "https://distributor.example.test/EX-0603-10K")
+    (available 1234)
+    (verified_on 2026-07-19)
+    (quantity 1)
+    (unit_price "0.01 USD")
+    (notes "Stock and lifecycle checked with live web search"))
+  (check sourcing)
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( valid );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( compiled.ir["sourcing"].size(), 1 );
+    const KICHAD::DESIGN_SCRIPT_COMPILER::JSON& evidence = compiled.ir["sourcing"][0];
+    BOOST_CHECK_EQUAL( evidence["manufacturer"].get<std::string>(), "Example Components" );
+    BOOST_CHECK_EQUAL( evidence["mpn"].get<std::string>(), "EX-0603-10K" );
+    BOOST_CHECK_EQUAL( evidence["lifecycle"].get<std::string>(), "active" );
+    BOOST_CHECK_EQUAL( evidence["available"].get<int>(), 1234 );
+    BOOST_CHECK_EQUAL( evidence["verified_on"].get<std::string>(), "2026-07-19" );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project bad_sourcing)
+  (component R1
+    (symbol "Device:R") (value "10k") (footprint "Resistor:R_0603"))
+  (source R1
+    (manufacturer 7)
+    (mpn "")
+    (datasheet "http://manufacturer.example.test/part.pdf")
+    (lifecycle unknown)
+    (supplier "")
+    (sku "")
+    (product_url "https://")
+    (available -1)
+    (verified_on 2026-02-30)
+    (quantity 0)
+    (unit_price 12)
+    (notes ""))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT rejected =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !rejected.ok );
+    size_t invalidValues = 0;
+
+    for( const KICHAD::DESIGN_SCRIPT_COMPILER::JSON& diagnostic : rejected.diagnostics )
+    {
+        if( diagnostic.value( "code", "" ) == "invalid_source_value" )
+            ++invalidValues;
+    }
+
+    BOOST_CHECK_EQUAL( invalidValues, 12 );
+}
+
+
 BOOST_AUTO_TEST_CASE( CompilesOneExplicitLosslessStackupRepresentation )
 {
     const std::string source = R"KDS((kichad_design

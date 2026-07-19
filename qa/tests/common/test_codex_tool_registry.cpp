@@ -31,6 +31,7 @@
 #include <limits>
 #include <map>
 #include <regex>
+#include <wx/datetime.h>
 #include <wx/ffile.h>
 #include <wx/filename.h>
 #include <wx/utils.h>
@@ -226,9 +227,10 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( designOperations[5].get<std::string>(), "apply" );
     const JSON& verifyOperations =
             specs[4]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 2 );
+    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 3 );
     BOOST_CHECK_EQUAL( verifyOperations[0].get<std::string>(), "erc" );
     BOOST_CHECK_EQUAL( verifyOperations[1].get<std::string>(), "drc" );
+    BOOST_CHECK_EQUAL( verifyOperations[2].get<std::string>(), "sourcing" );
 }
 
 
@@ -343,6 +345,101 @@ BOOST_AUTO_TEST_CASE( RejectsNativeVerificationVersionMismatch )
     BOOST_REQUIRE( !result.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
                        "version_mismatch" );
+}
+
+
+BOOST_AUTO_TEST_CASE( VerifiesSingleRepresentationSourcingEvidence )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    const std::string today( wxDateTime::Today().FormatISODate().ToUTF8() );
+    const auto record = [&]( const std::string& aReference, const std::string& aLifecycle,
+                             int aAvailable, const std::string& aVerifiedOn )
+    {
+        return "  (source " + aReference + "\n"
+               "    (manufacturer \"Example Components\")\n"
+               "    (mpn \"EX-0603-10K\")\n"
+               "    (datasheet \"https://manufacturer.example.test/EX-0603-10K.pdf\")\n"
+               "    (lifecycle " + aLifecycle + ")\n"
+               "    (supplier \"DigiKey\")\n"
+               "    (sku \"EX-0603-10K-ND\")\n"
+               "    (product_url \"https://distributor.example.test/EX-0603-10K\")\n"
+               "    (available " + std::to_string( aAvailable ) + ")\n"
+               "    (verified_on " + aVerifiedOn + ")\n"
+               "    (quantity 1))\n";
+    };
+    const auto writeSidecar = [&]( const wxString& aName, const std::string& aSource )
+    {
+        wxFFile file( wxFileName( fixture.Root(), aName ).GetFullPath(), wxS( "wb" ) );
+        BOOST_REQUIRE( file.IsOpened() );
+        BOOST_REQUIRE_EQUAL( file.Write( aSource.data(), aSource.size() ), aSource.size() );
+    };
+    const std::string prefix =
+            "(kichad_design\n"
+            "  (version 1)\n"
+            "  (project sourcing)\n"
+            "  (component R1 (symbol \"Device:R\") (value \"10k\") "
+            "(footprint \"Resistor:R_0603\"))\n"
+            "  (component PWR1 (symbol \"power:GND\") (value \"GND\") "
+            "(footprint none))\n";
+    const std::string suffix = "  (check sourcing)\n)\n";
+    writeSidecar( wxS( "sourcing.kicad_kds" ), prefix + record( "R1", "active", 500, today )
+                                                     + suffix );
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); } );
+    JSON clean = registry.Handle( "verify", { { "operation", "sourcing" },
+                                                { "path", "sourcing.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( clean.at( "success" ).get<bool>(), clean.dump() );
+    JSON cleanData = envelope( clean )["data"];
+    BOOST_CHECK( cleanData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( cleanData["counts"]["total"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( cleanData["sourcing"]["requiredComponents"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( cleanData["sourcing"]["sourceRecords"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( cleanData["sourcing"]["completeComponents"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( cleanData["maxAgeDays"].get<int>(), 7 );
+    BOOST_CHECK_EQUAL( cleanData["verifiedOn"].get<std::string>(), today );
+
+    const std::string missing =
+            prefix
+            + "  (component R2 (symbol \"Device:R\") (value \"1k\") "
+              "(footprint \"Resistor:R_0603\"))\n"
+            + record( "R1", "active", 500, today ) + suffix;
+    writeSidecar( wxS( "missing-source.kicad_kds" ), missing );
+    JSON incomplete = registry.Handle(
+            "verify", { { "operation", "sourcing" },
+                         { "path", "missing-source.kicad_kds" },
+                         { "limit", 1 } } );
+    BOOST_REQUIRE_MESSAGE( incomplete.at( "success" ).get<bool>(), incomplete.dump() );
+    JSON incompleteData = envelope( incomplete )["data"];
+    BOOST_CHECK( !incompleteData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( incompleteData["counts"]["errors"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( incompleteData["violations"][0]["type"].get<std::string>(),
+                       "missing_source" );
+    BOOST_CHECK_EQUAL( incompleteData["violations"][0]["component"].get<std::string>(),
+                       "R2" );
+
+    writeSidecar( wxS( "stale-source.kicad_kds" ),
+                  prefix + record( "R1", "nrnd", 0, "2000-01-01" ) + suffix );
+    JSON stale = registry.Handle( "verify", { { "operation", "sourcing" },
+                                                { "path", "stale-source.kicad_kds" },
+                                                { "maxAgeDays", 30 } } );
+    BOOST_REQUIRE_MESSAGE( stale.at( "success" ).get<bool>(), stale.dump() );
+    JSON staleData = envelope( stale )["data"];
+    BOOST_CHECK( !staleData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( staleData["counts"]["total"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( staleData["counts"]["errors"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( staleData["counts"]["warnings"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( staleData["sourcing"]["completeComponents"].get<int>(), 0 );
+
+    const std::string tomorrow(
+            ( wxDateTime::Today() + wxDateSpan::Day() ).FormatISODate().ToUTF8() );
+    writeSidecar( wxS( "future-source.kicad_kds" ),
+                  prefix + record( "R1", "active", 500, tomorrow ) + suffix );
+    JSON future = registry.Handle( "verify", { { "operation", "sourcing" },
+                                                 { "path", "future-source.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( future.at( "success" ).get<bool>(), future.dump() );
+    JSON futureData = envelope( future )["data"];
+    BOOST_CHECK_EQUAL( futureData["counts"]["errors"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( futureData["violations"][0]["type"].get<std::string>(),
+                       "future_evidence" );
 }
 
 
@@ -735,6 +832,32 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedArgumentsAndDocuments )
     result = registry.Handle( "verify", { { "operation", "drc" },
                                             { "path", "design.kicad_pcb" },
                                             { "offset", "zero" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "invalid_arguments" );
+
+    result = registry.Handle( "verify", { { "operation", "drc" },
+                                            { "path", "design.kicad_pcb" },
+                                            { "maxAgeDays", 7 } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "invalid_arguments" );
+
+    result = registry.Handle( "verify", { { "operation", "sourcing" },
+                                            { "path", "malformed.kicad_kds" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "compile_failed" );
+
+    result = registry.Handle( "verify", { { "operation", "sourcing" },
+                                            { "path", "design.kicad_pcb" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "invalid_path" );
+
+    result = registry.Handle( "verify", { { "operation", "sourcing" },
+                                            { "path", "malformed.kicad_kds" },
+                                            { "maxAgeDays", 0 } } );
     BOOST_CHECK( !result.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
                        "invalid_arguments" );

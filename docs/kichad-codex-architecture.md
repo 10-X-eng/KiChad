@@ -19,9 +19,10 @@ apps, browser/computer use, image generation, plugins, and multi-agent features 
 cannot inherit broader tools or MCP connectors from the user's global Codex configuration. Codex
 web search is forced to `live` with high context for both new and resumed conversations. The agent
 instructions require it to verify the manufacturer, exact MPN, primary datasheet, lifecycle, and
-current distributor availability before accepting each component. Built-in web search is separate
-from GUI browser automation, remains enabled while `browser_use` is disabled, and cannot mutate the
-project.
+current distributor availability before accepting each component. The agent caches those exact
+facts in the component's KDS `source` form and invokes the native sourcing gate. Built-in web search
+is separate from GUI browser automation, remains enabled while `browser_use` is disabled, and
+cannot mutate the project by itself.
 
 Set `KICHAD_CODEX_EXECUTABLE` when `codex` is not on `PATH`.  The executable is an installation
 prerequisite, not a linked build dependency.  The owned child uses an isolated Codex home at
@@ -74,6 +75,17 @@ schema mismatch, and any report whose exact major/minor/patch version differs fr
 model receives complete severity and category counts, explicit ignored-check/waiver state, and a
 bounded pageable list with the volatile report date removed. The current backend verifies the
 on-disk artifact named by `path`; it does not silently save a dirty editor document.
+
+The same native `verify` function has a `sourcing` operation for a project-confined `.kicad_kds`.
+It compiles the exact sidecar, requires one complete source record for every footprint-bearing
+component, and rejects unavailable, non-active, future-dated, or stale evidence. Footprintless
+virtual and power symbols do not require distributor records. Evidence contains the manufacturer,
+exact MPN, HTTPS datasheet and distributor URLs, lifecycle, supplier, SKU, reported stock,
+verification date, and design quantity. Freshness defaults to seven days and can be tightened or
+relaxed from one through ninety days in the explicit call. The result uses the same AI-oriented
+shape as ERC/DRC: complete severity counts and a bounded pageable issue list. This deterministic
+gate validates the evidence cached by Codex's live search; it does not claim to re-fetch or
+independently attest third-party web content.
 
 `tools/smoke-kichad-live-ipc.sh` provides an explicit, opt-in integration proof against an already
 open disposable board copy.  It creates, commits, field-mask updates, commits, deletes, and commits a
@@ -188,16 +200,16 @@ instead of creating narrowly named one-off tools.
 1. `design` — load, save, compile, preview, and apply a versioned `.kicad_kds` sidecar.
 2. `project` — create/open projects, read context, set stackup/rules/net classes, and manage whole
    turn snapshots.
-3. `source_parts` — verify MPNs/datasheets, query live distributor availability, and maintain the
-   sourcing cache.
+3. `source_parts` — query distributor data and propose sourcing evidence updates. KDS remains the
+   only persistent sourcing record; this function must not create a parallel cache.
 4. `library` — inspect or create verified KLC-compliant symbols, footprints, and model mappings.
 5. `schematic` — losslessly inspect and mutate schematics, connectivity, hierarchy, annotations,
    and netlists.
 6. `board` — inspect and mutate the live board through the KiCad 10 IPC API and transactions,
    including placement, copper, routing, zones, vias, constraints, and dimensions.
 7. `inspect` — return compact structured design context plus rendered schematic/PCB/3D images.
-8. `verify` — run structured checks. Native ERC and DRC (including schematic parity) are
-   implemented; connectivity, sourcing, and manufacturability gates remain to be added here.
+8. `verify` — run structured checks. Native ERC, DRC (including schematic parity), and KDS sourcing
+   gates are implemented; connectivity and manufacturability gates remain to be added here.
 9. `fabricate` — generate and verify Gerber, drill, position, BOM, and other fabrication outputs
    behind an explicit final-action permission gate.
 

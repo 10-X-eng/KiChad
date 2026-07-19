@@ -181,7 +181,13 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
   (source R1
     (manufacturer "Yageo")
     (mpn "RC0603FR-0710KL")
+    (datasheet "https://yageogroup.com/content/datasheet/asset/file/PYU-RC_GROUP_51_ROHS_L")
+    (lifecycle active)
     (supplier "DigiKey")
+    (sku "311-10.0KHRCT-ND")
+    (product_url "https://www.digikey.com/en/products/detail/yageo/RC0603FR-0710KL/729827")
+    (available 6196602)
+    (verified_on 2026-07-19)
     (quantity 1))
   (check erc)
   (check drc)
@@ -202,6 +208,46 @@ rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zon
 board text require logical `id` fields. Those IDs are stable across formatting and statement
 reordering and are the source identity used by transactional backends; component placement uses the
 already-unique reference.
+
+### Sourcing evidence
+
+KDS has one sourcing representation: at most one `(source REF ...)` form for each component. There
+is no generated sourcing JSON, database, or second model-context projection. Codex uses its forced
+live web search before selecting or retaining a component, then records the evidence directly in
+the same sidecar that it reads, edits, exports, and imports with the project.
+
+A production-complete record for every footprint-bearing component contains:
+
+```scheme
+(source U1
+  (manufacturer "Manufacturer name")
+  (mpn "Exact manufacturer part number")
+  (datasheet "https://manufacturer.example/part.pdf")
+  (lifecycle active)
+  (supplier "Distributor name")
+  (sku "Exact distributor SKU")
+  (product_url "https://distributor.example/part")
+  (available 1234)
+  (verified_on 2026-07-19)
+  (quantity 1)
+  (unit_price "1.23 USD")
+  (notes "Optional bounded evidence note"))
+```
+
+`datasheet` and `product_url` must be HTTPS URLs. `lifecycle` is `active`, `nrnd`,
+`last_time_buy`, or `obsolete`; only `active` passes cleanly. `available` is the non-negative stock
+reported by the named supplier, `quantity` is the positive design quantity, and `verified_on` is a
+real `YYYY-MM-DD` calendar date. `unit_price` and `notes` are optional; the identity, URLs,
+lifecycle, supplier/SKU, stock, date, and quantity are required by the production gate. A
+footprintless virtual or power component does not require a distributor record.
+
+The native `verify` tool's `sourcing` operation compiles the exact `.kicad_kds` source and returns
+complete error/warning counts plus bounded pageable issues such as `missing_source`,
+`missing_evidence_field`, `non_active_lifecycle`, `not_orderable`, `future_evidence`, and
+`stale_evidence`. Evidence is seven days old at most by default; callers may explicitly select one
+through ninety days with `maxAgeDays`. The gate checks the cached facts deterministically and does
+not silently access the network or claim that a saved URL still has the same content. Codex must
+refresh the form with live web search before treating stale evidence as production-ready.
 
 ### Schematic hierarchy
 
@@ -785,7 +831,7 @@ KiCad `Dimension` protobuf type and uses the authored style as its single geomet
 6. Compile native project library tables, exact cached symbols, placed units, connectivity, and
    hierarchy through lossless edits validated by KiCad 10.
 7. Compile live board state through the official KiCad 10 protobuf IPC transaction API.
-8. Resolve and cache sourcing evidence with explicit remote-action permissions.
+8. Record live-search sourcing evidence in the canonical KDS source forms.
 9. Run ERC, DRC, connectivity, sourcing, and manufacturability checks.
 10. Generate and validate requested fabrication outputs.
 
@@ -878,8 +924,10 @@ Before applying the sidecar, the same smoke proof invokes KiChad's native `verif
 current-format root schematic and board. This exercises the real sibling KiCad 10.0.4 CLI rather
 than an emulated rule checker: ERC must return a clean structured report, while the intentionally
 incomplete pre-apply board must return its four DRC violations and one schematic-parity warning in
-the correct categories. KDS `(check ...)` declarations are still compiler intent; apply does not
-yet execute them as an automatic production gate.
+the correct categories. The sourcing operation has separate unit coverage against exact KDS source,
+including complete physical coverage, exempt footprintless virtual components, lifecycle, stock,
+freshness, malformed input, and project confinement. KDS `(check ...)` declarations are still
+compiler intent; apply does not yet execute them as an automatic production gate.
 
 ## Production support rule
 

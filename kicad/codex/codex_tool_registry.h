@@ -27,7 +27,7 @@ public:
     using JSON = nlohmann::json;
     using NATIVE_CHECK_RUNNER = std::function<bool( const std::string&, const wxFileName&,
                                                      std::string&, std::string& )>;
-    static constexpr int SCHEMA_VERSION = 5;
+    static constexpr int SCHEMA_VERSION = 6;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
@@ -51,6 +51,7 @@ private:
     JSON handlePcb( const JSON& aArguments, const wxString& aProjectPath,
                     bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
     JSON handleVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
+    JSON handleSourcingVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON success( const JSON& aPayload ) const;
     JSON failure( const std::string& aCode, const std::string& aMessage ) const;
     wxString projectPath() const;

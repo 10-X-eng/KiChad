@@ -1427,9 +1427,75 @@ JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
     }
 
     JSON source = { { "component", reference } };
-    const std::set<std::string> allowed = { "manufacturer", "mpn", "supplier", "sku",
-                                             "lifecycle", "quantity", "unit_price" };
+    const std::set<std::string> allowed = {
+        "manufacturer", "mpn",       "datasheet", "lifecycle", "supplier", "sku",
+        "product_url",  "available", "verified_on", "quantity", "unit_price", "notes"
+    };
     std::set<std::string> fields;
+
+    const auto boundedString = []( const JSON& aValue, size_t aMaximum )
+    {
+        if( !aValue.is_string() )
+            return false;
+
+        const std::string& value = aValue.get_ref<const std::string&>();
+        return !value.empty() && value.size() <= aMaximum
+               && std::none_of( value.begin(), value.end(),
+                                []( unsigned char aCharacter )
+                                {
+                                    return aCharacter < 0x20 || aCharacter == 0x7F;
+                                } );
+    };
+
+    const auto httpsUrl = [&]( const JSON& aValue )
+    {
+        if( !boundedString( aValue, 4096 ) )
+            return false;
+
+        const std::string& value = aValue.get_ref<const std::string&>();
+
+        if( !value.starts_with( "https://" ) || value.size() <= 8 )
+            return false;
+
+        const size_t authorityEnd = value.find_first_of( "/?#", 8 );
+        const size_t authoritySize = ( authorityEnd == std::string::npos ? value.size()
+                                                                            : authorityEnd )
+                                     - 8;
+        return authoritySize > 0 && value.find_first_of( " \t\r\n" ) == std::string::npos;
+    };
+
+    const auto isoDate = []( const JSON& aValue )
+    {
+        if( !aValue.is_string() )
+            return false;
+
+        const std::string& value = aValue.get_ref<const std::string&>();
+
+        if( value.size() != 10 || value[4] != '-' || value[7] != '-' )
+            return false;
+
+        for( size_t i = 0; i < value.size(); ++i )
+        {
+            if( i != 4 && i != 7 && !std::isdigit( static_cast<unsigned char>( value[i] ) ) )
+                return false;
+        }
+
+        const int year = std::stoi( value.substr( 0, 4 ) );
+        const int month = std::stoi( value.substr( 5, 2 ) );
+        const int day = std::stoi( value.substr( 8, 2 ) );
+        static constexpr int DAYS[] = { 31, 28, 31, 30, 31, 30,
+                                        31, 31, 30, 31, 30, 31 };
+
+        if( year < 2000 || year > 9999 || month < 1 || month > 12 || day < 1 )
+            return false;
+
+        int maximumDay = DAYS[month - 1];
+
+        if( month == 2 && ( year % 400 == 0 || ( year % 4 == 0 && year % 100 != 0 ) ) )
+            maximumDay = 29;
+
+        return day <= maximumDay;
+    };
 
     for( size_t i = 2; i < node.children.size(); ++i )
     {
@@ -1441,8 +1507,7 @@ JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
             || !isScalar( aDocument, field.children[1] ) )
         {
             diagnostic( aResult, "error", "invalid_source_field",
-                        "source fields must be manufacturer, mpn, supplier, sku, lifecycle, "
-                        "quantity, or unit_price with one value" );
+                        "source fields must use one supported scalar evidence value" );
             continue;
         }
 
@@ -1453,7 +1518,38 @@ JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
             continue;
         }
 
-        source[head] = scalarValue( aDocument, field.children[1] );
+        JSON value = scalarValue( aDocument, field.children[1] );
+        bool valid = true;
+
+        if( head == "manufacturer" || head == "mpn" || head == "supplier" || head == "sku" )
+            valid = boundedString( value, 512 );
+        else if( head == "datasheet" || head == "product_url" )
+            valid = httpsUrl( value );
+        else if( head == "lifecycle" )
+            valid = value.is_string()
+                    && std::set<std::string>{ "active", "nrnd", "last_time_buy", "obsolete" }
+                               .contains( value.get<std::string>() );
+        else if( head == "verified_on" )
+            valid = isoDate( value );
+        else if( head == "available" )
+            valid = value.is_number_integer() && value.get<int64_t>() >= 0
+                    && value.get<int64_t>() <= 1'000'000'000'000LL;
+        else if( head == "quantity" )
+            valid = value.is_number_integer() && value.get<int64_t>() >= 1
+                    && value.get<int64_t>() <= 1'000'000;
+        else if( head == "unit_price" )
+            valid = boundedString( value, 128 );
+        else if( head == "notes" )
+            valid = boundedString( value, 2048 );
+
+        if( !valid )
+        {
+            diagnostic( aResult, "error", "invalid_source_value",
+                        "source field '" + head + "' has an invalid evidence value" );
+            continue;
+        }
+
+        source[head] = std::move( value );
     }
 
     if( !source.contains( "manufacturer" ) || !source.contains( "mpn" ) )
@@ -2966,8 +3062,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(severity ignore|warning|error|exclusion) "
                       "(constraint TYPE TYPED_VALUES) ...))" } },
                   { { "form",
-                      "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "
-                      "(quantity N))" } },
+                      "(source REF (manufacturer NAME) (mpn PART) (datasheet HTTPS_URL) "
+                      "(lifecycle active|nrnd|last_time_buy|obsolete) (supplier NAME) "
+                      "(sku PART) (product_url HTTPS_URL) (available N) "
+                      "(verified_on YYYY-MM-DD) (quantity N) [(unit_price TEXT) (notes TEXT)])" } },
                   { { "form", "(check erc|drc|sourcing|footprints|fabrication)" } },
                   { { "form", "(output gerbers|drill|pick_place|bom|step|pdf)" } }
           } ) },

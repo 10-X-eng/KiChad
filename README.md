@@ -44,12 +44,16 @@ applies reusable `.kicad_kds` project sidecars, and the `pcb` call exposes the e
 schema and connects directly to the open PCB Editor through KiCad 10's protobuf IPC API for bounded
 live reads and snapshot-gated, native undoable transactions. The read-only `verify` call runs the
 matching sibling KiCad 10.0.4 ERC or DRC engine (including DRC schematic parity), rejects reports
-from any other KiCad version, and returns complete counts plus bounded pageable violations.
+from any other KiCad version, and returns complete counts plus bounded pageable violations. Its
+`sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
+cached evidence is incomplete, stale, unavailable, or not active.
 
 KiChad forces the Codex app-server's built-in web search to live, high-context mode for new and
 resumed project conversations. The embedded agent instructions require current manufacturer,
 datasheet, lifecycle, and distributor evidence before a component can be accepted into a design;
-GUI browser automation and inherited MCP connectors remain disabled.
+that exact evidence is written into the component's KDS `source` form and checked by the native
+sourcing gate. There is no parallel sourcing database or generated context document. GUI browser
+automation and inherited MCP connectors remain disabled.
 
 KiChad Design Script is the versioned source language Codex uses to describe a complete design.
 A `project.kicad_kds` sidecar lives beside the normal project, schematic, and board files; KiChad
@@ -108,8 +112,10 @@ restoring its placement proves exact deletion and recreation with the same ident
 board, schematic, symbol, and footprint fixtures are serialized in the exact formats emitted by
 KiCad 10.0.4, and the smoke test rejects stale fixture versions before opening the editor. The
 harness also runs the native `verify` tool against the current-format schematic and board, proving
-the real 10.0.4 ERC/DRC JSON contracts and schematic-parity category. It never connects to or stops
-an existing KiChad process.
+the real 10.0.4 ERC/DRC JSON contracts and schematic-parity category. Unit coverage separately
+proves the deterministic KDS sourcing gate, including physical-versus-virtual coverage, freshness,
+lifecycle, stock, malformed evidence, and failure paths. It never connects to or stops an existing
+KiChad process.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

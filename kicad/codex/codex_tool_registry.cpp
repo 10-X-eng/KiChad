@@ -33,6 +33,7 @@
 #include <set>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <api/board/board_commands.pb.h>
@@ -43,6 +44,7 @@
 #include <google/protobuf/util/field_mask_util.h>
 #include <google/protobuf/util/json_util.h>
 #include <wx/base64.h>
+#include <wx/datetime.h>
 #include <wx/dir.h>
 #include <wx/file.h>
 #include <wx/ffile.h>
@@ -1378,6 +1380,38 @@ bool resolveProjectSidecar( const wxString& aProjectPath, const std::string& aRe
         }
 
         aResolved = canonicalTarget;
+    }
+
+    return true;
+}
+
+
+bool readDesignScriptSidecar( const wxFileName& aFile, std::string& aSource,
+                              std::string& aError )
+{
+    wxFile file( aFile.GetFullPath(), wxFile::read );
+
+    if( !file.IsOpened() )
+    {
+        aError = "could not open the KiChad Design Script sidecar";
+        return false;
+    }
+
+    const wxFileOffset length = file.Length();
+
+    if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_SCRIPT_BYTES ) )
+    {
+        aError = "KiChad Design Script sidecars must contain 1 byte to 1 MiB";
+        return false;
+    }
+
+    aSource.assign( static_cast<size_t>( length ), '\0' );
+
+    if( file.Read( aSource.data(), static_cast<size_t>( length ) ) != length )
+    {
+        aError = "could not read the complete KiChad Design Script sidecar";
+        aSource.clear();
+        return false;
     }
 
     return true;
@@ -2837,24 +2871,31 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                           { "additionalProperties", false },
                           { "required", JSON::array( { "operation", "path" } ) } };
     verifySchema["properties"]["operation"] =
-            { { "type", "string" }, { "enum", JSON::array( { "erc", "drc" } ) } };
+            { { "type", "string" },
+              { "enum", JSON::array( { "erc", "drc", "sourcing" } ) } };
     verifySchema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description",
-                "Project-relative .kicad_sch for ERC or .kicad_pcb for DRC." } };
+                "Project-relative .kicad_sch for ERC, .kicad_pcb for DRC, or "
+                ".kicad_kds for sourcing." } };
     verifySchema["properties"]["offset"] =
             { { "type", "integer" }, { "minimum", 0 }, { "maximum", 1000000 },
               { "description", "Zero-based violation offset; defaults to 0." } };
     verifySchema["properties"]["limit"] =
             { { "type", "integer" }, { "minimum", 1 }, { "maximum", 200 },
               { "description", "Maximum violations returned; defaults to 100." } };
+    verifySchema["properties"]["maxAgeDays"] =
+            { { "type", "integer" }, { "minimum", 1 }, { "maximum", 90 },
+              { "description",
+                "Maximum sourcing-evidence age in days; defaults to 7." } };
 
     specs.push_back( { { "type", "function" },
                        { "name", "verify" },
                        { "description",
-                         "Run the matching KiCad 10 native ERC or DRC backend read-only. DRC "
-                         "also checks schematic parity. Returns complete severity/category "
-                         "counts and a bounded, pageable structured violation list." },
+                         "Run read-only native design gates. ERC and DRC use the matching KiCad "
+                         "10 backend; DRC also checks schematic parity. Sourcing checks the "
+                         "single KDS evidence cache for completeness, orderability, and "
+                         "freshness. Results have complete counts and bounded pageable issues." },
                        { "inputSchema", std::move( verifySchema ) } } );
 
     return specs;
@@ -2952,37 +2993,6 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                         "design source, path, or boardPath has the wrong type" );
     }
 
-    auto readFile = []( const wxFileName& aFile, std::string& aSource,
-                        std::string& aError ) -> bool
-    {
-        wxFile file( aFile.GetFullPath(), wxFile::read );
-
-        if( !file.IsOpened() )
-        {
-            aError = "could not open the KiChad Design Script sidecar";
-            return false;
-        }
-
-        const wxFileOffset length = file.Length();
-
-        if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_SCRIPT_BYTES ) )
-        {
-            aError = "KiChad Design Script sidecars must contain 1 byte to 1 MiB";
-            return false;
-        }
-
-        aSource.assign( static_cast<size_t>( length ), '\0' );
-
-        if( file.Read( aSource.data(), static_cast<size_t>( length ) ) != length )
-        {
-            aError = "could not read the complete KiChad Design Script sidecar";
-            aSource.clear();
-            return false;
-        }
-
-        return true;
-    };
-
     std::string source;
     wxFileName  sidecar;
     std::string pathError;
@@ -3002,7 +3012,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     if( hasSource )
         source = aArguments["source"].get<std::string>();
-    else if( !readFile( sidecar, source, pathError ) )
+    else if( !readDesignScriptSidecar( sidecar, source, pathError ) )
         return failure( "read_failed", pathError );
 
     if( source.empty() || source.size() > MAX_DESIGN_SCRIPT_BYTES
@@ -4289,7 +4299,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         std::string existing;
 
-        if( !readFile( sidecar, existing, pathError ) )
+        if( !readDesignScriptSidecar( sidecar, existing, pathError ) )
             return failure( "read_failed", pathError );
 
         std::string existingSha256;
@@ -4322,7 +4332,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     std::string installed;
 
-    if( !readFile( sidecar, installed, pathError ) || installed != source )
+    if( !readDesignScriptSidecar( sidecar, installed, pathError ) || installed != source )
         return failure( "write_failed", "sidecar verification failed after atomic installation" );
 
     JSON payload = { { "operation", "save" },
@@ -4937,6 +4947,272 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleInspect(
 }
 
 
+CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleSourcingVerify(
+        const JSON& aArguments, const wxString& aProjectPath ) const
+{
+    int offset = 0;
+    int limit = 100;
+    int maxAgeDays = 7;
+
+    const auto boundedInteger = [&]( const char* aName, int64_t aMinimum, int64_t aMaximum,
+                                     int& aValue ) -> JSON
+    {
+        if( !aArguments.contains( aName ) )
+            return nullptr;
+
+        if( !aArguments[aName].is_number_integer() )
+            return failure( "invalid_arguments", std::string( "verify." ) + aName
+                                                         + " must be an integer" );
+
+        const int64_t parsed = aArguments[aName].get<int64_t>();
+
+        if( parsed < aMinimum || parsed > aMaximum )
+        {
+            return failure( "invalid_arguments", std::string( "verify." ) + aName
+                                                         + " is outside its allowed range" );
+        }
+
+        aValue = static_cast<int>( parsed );
+        return nullptr;
+    };
+
+    for( const auto& [name, minimum, maximum, destination] :
+         std::array<std::tuple<const char*, int64_t, int64_t, int*>, 3>{
+                 std::tuple{ "offset", 0, 1000000, &offset },
+                 std::tuple{ "limit", 1, 200, &limit },
+                 std::tuple{ "maxAgeDays", 1, 90, &maxAgeDays } } )
+    {
+        JSON error = boundedInteger( name, minimum, maximum, *destination );
+
+        if( !error.is_null() )
+            return error;
+    }
+
+    if( !wxFileName::DirExists( aProjectPath ) )
+        return failure( "project_unavailable", "No readable project directory is active" );
+
+    const std::string relativePath = aArguments["path"].get<std::string>();
+    wxFileName sidecar;
+    std::string pathError;
+
+    if( !resolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
+        return failure( "invalid_path", pathError );
+
+    if( !sidecar.FileExists() )
+        return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
+
+    std::string source;
+
+    if( !readDesignScriptSidecar( sidecar, source, pathError ) )
+        return failure( "read_failed", pathError );
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    if( !compiled.ok )
+    {
+        return failure( "compile_failed",
+                        "KDS must compile before sourcing verification; use design.compile "
+                        "for structured diagnostics" );
+    }
+
+    std::set<std::string> requiredComponents;
+
+    for( const JSON& component : compiled.ir["schematic"]["components"] )
+    {
+        if( !component.is_object() || !component.contains( "reference" )
+            || !component["reference"].is_string() )
+        {
+            return failure( "compile_failed", "KDS compiler returned invalid component data" );
+        }
+
+        const std::string reference = component["reference"].get<std::string>();
+
+        if( component.contains( "footprint" ) && !component["footprint"].is_null() )
+            requiredComponents.emplace( reference );
+    }
+
+    std::map<std::string, const JSON*> records;
+
+    for( const JSON& record : compiled.ir["sourcing"] )
+    {
+        if( !record.is_object() || !record.contains( "component" )
+            || !record["component"].is_string() )
+        {
+            return failure( "compile_failed", "KDS compiler returned invalid sourcing data" );
+        }
+
+        records.emplace( record["component"].get<std::string>(), &record );
+    }
+
+    JSON issues = JSON::array();
+    std::set<std::string> componentsWithIssues;
+    const auto addIssue = [&]( const std::string& aComponent, const std::string& aType,
+                               const std::string& aSeverity, const std::string& aDescription,
+                               JSON aDetail = JSON::object() )
+    {
+        JSON issue = { { "category", "sourcing" },
+                       { "type", aType },
+                       { "severity", aSeverity },
+                       { "description", aDescription },
+                       { "component", aComponent } };
+
+        if( aDetail.is_object() )
+            issue.update( aDetail );
+
+        issues.push_back( std::move( issue ) );
+        componentsWithIssues.emplace( aComponent );
+    };
+
+    static constexpr const char* REQUIRED_FIELDS[] = {
+        "manufacturer", "mpn",       "datasheet",  "lifecycle", "supplier",
+        "sku",          "product_url", "available", "verified_on", "quantity"
+    };
+    const wxDateTime today = wxDateTime::Today();
+
+    for( const std::string& reference : requiredComponents )
+    {
+        auto recordIt = records.find( reference );
+
+        if( recordIt == records.end() )
+        {
+            addIssue( reference, "missing_source", "error",
+                      "Physical component has no cached sourcing evidence" );
+            continue;
+        }
+
+        const JSON& record = *recordIt->second;
+        JSON missing = JSON::array();
+
+        for( const char* field : REQUIRED_FIELDS )
+        {
+            if( !record.contains( field ) )
+                missing.push_back( field );
+        }
+
+        if( !missing.empty() )
+        {
+            addIssue( reference, "missing_evidence_field", "error",
+                      "Sourcing evidence is incomplete", { { "missingFields", missing } } );
+            continue;
+        }
+
+        const std::string lifecycle = record["lifecycle"].get<std::string>();
+
+        if( lifecycle != "active" )
+        {
+            addIssue( reference, "non_active_lifecycle",
+                      lifecycle == "nrnd" ? "warning" : "error",
+                      "Component lifecycle is not active", { { "lifecycle", lifecycle } } );
+        }
+
+        const int64_t available = record["available"].get<int64_t>();
+
+        if( available <= 0 )
+        {
+            addIssue( reference, "not_orderable", "error",
+                      "Distributor evidence reports no available stock",
+                      { { "available", available }, { "supplier", record["supplier"] } } );
+        }
+
+        const std::string verifiedOn = record["verified_on"].get<std::string>();
+        const int year = std::stoi( verifiedOn.substr( 0, 4 ) );
+        const int month = std::stoi( verifiedOn.substr( 5, 2 ) );
+        const int day = std::stoi( verifiedOn.substr( 8, 2 ) );
+        const wxDateTime verified( day, static_cast<wxDateTime::Month>( month - 1 ), year );
+        const int ageDays = ( today - verified ).GetDays();
+
+        if( ageDays < 0 )
+        {
+            addIssue( reference, "future_evidence", "error",
+                      "Sourcing evidence date is in the future",
+                      { { "verifiedOn", verifiedOn } } );
+        }
+        else if( ageDays > maxAgeDays )
+        {
+            addIssue( reference, "stale_evidence", "error",
+                      "Sourcing evidence is older than the allowed age",
+                      { { "verifiedOn", verifiedOn }, { "ageDays", ageDays } } );
+        }
+    }
+
+    for( const auto& entry : records )
+    {
+        const std::string& reference = entry.first;
+
+        if( !requiredComponents.contains( reference ) )
+        {
+            addIssue( reference, "non_physical_source", "warning",
+                      "Sourcing evidence belongs to a component with no physical footprint" );
+        }
+    }
+
+    size_t errorCount = 0;
+    size_t warningCount = 0;
+
+    for( const JSON& issue : issues )
+    {
+        if( issue["severity"] == "error" )
+            ++errorCount;
+        else
+            ++warningCount;
+    }
+
+    size_t completeComponents = 0;
+
+    for( const std::string& reference : requiredComponents )
+    {
+        if( !componentsWithIssues.contains( reference ) )
+            ++completeComponents;
+    }
+
+    const size_t totalIssues = issues.size();
+    JSON page = JSON::array();
+
+    for( size_t i = static_cast<size_t>( offset ); i < totalIssues
+                                                      && page.size() < static_cast<size_t>( limit );
+         ++i )
+    {
+        page.push_back( issues[i] );
+    }
+
+    const size_t returned = page.size();
+    const bool hasMore = static_cast<size_t>( offset ) + returned < totalIssues;
+    JSON payload = {
+        { "operation", "sourcing" },
+        { "path", relativePath },
+        { "sourceSha256", compiled.sourceSha256 },
+        { "verifiedOn", std::string( today.FormatISODate().ToUTF8() ) },
+        { "maxAgeDays", maxAgeDays },
+        { "clean", totalIssues == 0 },
+        { "waiversPresent", false },
+        { "counts",
+          { { "total", totalIssues },
+            { "errors", errorCount },
+            { "warnings", warningCount },
+            { "exclusions", 0 },
+            { "other", 0 },
+            { "categories", { { "sourcing", totalIssues } } } } },
+        { "sourcing",
+          { { "requiredComponents", requiredComponents.size() },
+            { "sourceRecords", records.size() },
+            { "completeComponents", completeComponents } } },
+        { "ignoredChecksCount", 0 },
+        { "ignoredChecks", JSON::array() },
+        { "ignoredChecksTruncated", false },
+        { "offset", offset },
+        { "returnedViolations", returned },
+        { "violations", std::move( page ) },
+        { "resultTruncated", hasMore }
+    };
+
+    if( hasMore )
+        payload["nextOffset"] = static_cast<size_t>( offset ) + returned;
+
+    return success( payload );
+}
+
+
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleVerify(
         const JSON& aArguments, const wxString& aProjectPath ) const
 {
@@ -4950,8 +5226,17 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleVerify(
     const std::string operation = aArguments["operation"].get<std::string>();
     const std::string relativePath = aArguments["path"].get<std::string>();
 
-    if( operation != "erc" && operation != "drc" )
-        return failure( "invalid_arguments", "verify.operation must be 'erc' or 'drc'" );
+    if( operation != "erc" && operation != "drc" && operation != "sourcing" )
+    {
+        return failure( "invalid_arguments",
+                        "verify.operation must be 'erc', 'drc', or 'sourcing'" );
+    }
+
+    if( operation == "sourcing" )
+        return handleSourcingVerify( aArguments, aProjectPath );
+
+    if( aArguments.contains( "maxAgeDays" ) )
+        return failure( "invalid_arguments", "verify.maxAgeDays applies only to sourcing" );
 
     int offset = 0;
     int limit = 100;
