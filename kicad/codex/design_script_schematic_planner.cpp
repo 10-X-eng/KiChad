@@ -315,6 +315,11 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
     const std::string unitKey = std::to_string( unit );
     const JSON& pins = aResolved.at( "units" ).at( unitKey );
     const JSON& nativeProperties = aResolved.at( "properties" );
+    const JSON& nativeFlags = aResolved.at( "flags" );
+    const std::string footprint =
+            aComponent.at( "footprint" ).is_null()
+                    ? std::string()
+                    : aComponent.at( "footprint" ).get<std::string>();
     std::ostringstream output;
     output << "(symbol\n"
            << "    (lib_id " << quoted( libraryId ) << ")\n"
@@ -336,10 +341,14 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
 
     output << "    (unit " << unit << ")\n"
            << "    (body_style 1)\n"
-           << "    (exclude_from_sim no)\n"
-           << "    (in_bom yes)\n"
-           << "    (on_board yes)\n"
-           << "    (in_pos_files yes)\n"
+           << "    (exclude_from_sim "
+           << ( nativeFlags.at( "excludeFromSim" ).get<bool>() ? "yes" : "no" ) << ")\n"
+           << "    (in_bom " << ( nativeFlags.at( "inBom" ).get<bool>() ? "yes" : "no" )
+           << ")\n"
+           << "    (on_board "
+           << ( nativeFlags.at( "onBoard" ).get<bool>() ? "yes" : "no" ) << ")\n"
+           << "    (in_pos_files "
+           << ( nativeFlags.at( "inPosFiles" ).get<bool>() ? "yes" : "no" ) << ")\n"
            << "    (dnp " << ( aComponent.value( "dnp", false ) ? "yes" : "no" ) << ")\n"
            << "    (fields_autoplaced yes)\n"
            << "    (uuid " << quoted( uuid ) << ")\n"
@@ -347,8 +356,7 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
                                   nativeRotation, false, "left" )
            << propertyExpression( "Value", aComponent.at( "value" ).get<std::string>(),
                                   x + 2'540'000, y + 1'270'000, nativeRotation, false, "left" )
-           << propertyExpression( "Footprint",
-                                  aComponent.at( "footprint" ).get<std::string>(),
+           << propertyExpression( "Footprint", footprint,
                                   x - 1'778'000, y, ( nativeRotation + 90 ) % 360, true, "" )
            << propertyExpression( "Datasheet", nativeProperties.value( "Datasheet", "" ),
                                   x, y, nativeRotation, true, "" )
@@ -758,7 +766,8 @@ bool validComponentShape( const JSON& aComponent )
         || !aComponent["reference"].is_string() || !aComponent.contains( "symbol" )
         || !aComponent["symbol"].is_string() || !aComponent.contains( "value" )
         || !aComponent["value"].is_string() || !aComponent.contains( "footprint" )
-        || !aComponent["footprint"].is_string() || !aComponent.contains( "properties" )
+        || ( !aComponent["footprint"].is_string() && !aComponent["footprint"].is_null() )
+        || !aComponent.contains( "properties" )
         || !aComponent["properties"].is_object() || !aComponent.contains( "units" )
         || !aComponent["units"].is_array() || aComponent["units"].empty() )
     {
@@ -1054,6 +1063,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                 || !aResolvedSymbols[libraryId]["cacheSource"].is_string()
                 || !aResolvedSymbols[libraryId].contains( "properties" )
                 || !aResolvedSymbols[libraryId]["properties"].is_object()
+                || !aResolvedSymbols[libraryId].contains( "flags" )
+                || !aResolvedSymbols[libraryId]["flags"].is_object()
                 || !aResolvedSymbols[libraryId].contains( "units" )
                 || !aResolvedSymbols[libraryId]["units"].is_object() )
             {
@@ -1064,6 +1075,18 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
             }
 
             const JSON& resolved = aResolvedSymbols[libraryId];
+            const JSON& flags = resolved["flags"];
+
+            if( !flags.contains( "excludeFromSim" ) || !flags["excludeFromSim"].is_boolean()
+                || !flags.contains( "inBom" ) || !flags["inBom"].is_boolean()
+                || !flags.contains( "onBoard" ) || !flags["onBoard"].is_boolean()
+                || !flags.contains( "inPosFiles" ) || !flags["inPosFiles"].is_boolean() )
+            {
+                diagnostic( result, "invalid_resolved_symbol_flags",
+                            "resolved symbol " + libraryId
+                                    + " has malformed native inclusion flags" );
+                continue;
+            }
 
             for( const JSON& unit : component["units"] )
             {

@@ -67,6 +67,9 @@ nlohmann::json componentOperation()
               "    (pin passive line (at 0 3.81 270) (length 1.27) "
               "(name \"\" (effects (font (size 1.27 1.27)))) "
               "(number \"1\" (effects (font (size 1.27 1.27)))))))" },
+            { "flags",
+              { { "excludeFromSim", false }, { "inBom", true }, { "onBoard", true },
+                { "inPosFiles", true } } },
             { "properties", nlohmann::json::object() },
             { "units",
               { { "1", nlohmann::json::array(

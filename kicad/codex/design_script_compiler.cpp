@@ -677,7 +677,8 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
         if( !parseSingleValueForm( aDocument, child, value ) || value.empty() )
         {
             diagnostic( aResult, "error", "invalid_component_field",
-                        "component symbol, value, and footprint require one non-empty value" );
+                        "component symbol and value require one non-empty value; footprint "
+                        "requires LIBRARY:ITEM or none" );
             continue;
         }
 
@@ -685,6 +686,12 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
         {
             diagnostic( aResult, "error", "duplicate_component_field",
                         "component field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "footprint" && value == "none" )
+        {
+            component[head] = nullptr;
             continue;
         }
 
@@ -2879,7 +2886,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(library symbol|footprint|model ID (table project) "
                       "(uri ${KIPRJMOD}/PATH))" } },
                   { { "form",
-                      "(component REF (symbol LIB:ID) (value VALUE) (footprint LIB:ID) "
+                      "(component REF (symbol LIB:ID) (value VALUE) "
+                      "(footprint LIB:ID|none) "
                       "(property NAME VALUE) (dnp true|false) "
                       "(unit NUMBER (sheet ID) (at X Y) "
                       "(rotation 0deg|90deg|180deg|270deg) (mirror none|x|y|xy)) ...)" } },
@@ -3580,6 +3588,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     }
 
     std::map<std::string, std::set<int64_t>> componentUnits;
+    std::map<std::string, bool>              componentHasFootprint;
 
     if( sheets.empty() && !result.ir["schematic"]["noConnects"].empty() )
     {
@@ -3598,6 +3607,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
         const std::string reference = component["reference"].get<std::string>();
         std::set<int64_t>& units = componentUnits[reference];
+        componentHasFootprint[reference] = component.contains( "footprint" )
+                                           && component["footprint"].is_string();
 
         if( !sheets.empty() && component["units"].empty() )
         {
@@ -3666,6 +3677,25 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     for( const JSON& noConnect : result.ir["schematic"]["noConnects"] )
         validateEndpointUnit( noConnect );
+
+    for( const JSON& statement : result.ir["pcb"] )
+    {
+        if( !statement.is_object() || statement.value( "kind", "" ) != "place"
+            || !statement.contains( "component" ) || !statement["component"].is_string() )
+        {
+            continue;
+        }
+
+        const std::string reference = statement["component"].get<std::string>();
+        auto component = componentHasFootprint.find( reference );
+
+        if( component != componentHasFootprint.end() && !component->second )
+        {
+            diagnostic( result, "error", "component_without_footprint_placement",
+                        "board placement references virtual component " + reference
+                                + " whose canonical footprint is none" );
+        }
+    }
 
     for( const JSON& drawing : result.ir["schematic"]["drawings"] )
     {

@@ -87,8 +87,10 @@ reference-resolved placement through a narrow native footprint transform: the pa
 schematic symbol path, and child geometry survive a front-to-back flip. Its cleanup targets only the
 process and directory it created. The fixture also reconciles an existing root schematic and a new
 child screen, preserves the root screen UUID and unmanaged title-block data, proves byte-idempotent
-reapply, injects native validation failure and verifies exact rollback/recovery, and loads the final
-hierarchy through `kicad-cli` to export a non-empty netlist.
+reapply, places a real footprintless power symbol through the same canonical component path while
+preserving native artifact-inclusion flags, injects native validation failure and verifies exact
+rollback/recovery, and loads the final hierarchy through `kicad-cli` to export exact signal and
+power connectivity.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for

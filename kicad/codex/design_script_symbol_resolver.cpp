@@ -84,6 +84,38 @@ bool directScalar( const DOCUMENT& aDocument, size_t aParent, const std::string&
 }
 
 
+bool optionalNativeBool( const DOCUMENT& aDocument, size_t aParent,
+                         const std::string& aHead, bool aDefault, bool& aValue )
+{
+    const std::vector<size_t> lists = directLists( aDocument, aParent, aHead );
+
+    if( lists.empty() )
+    {
+        aValue = aDefault;
+        return true;
+    }
+
+    if( lists.size() != 1 )
+        return false;
+
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( lists.front() );
+
+    if( node.children.size() != 2
+        || aDocument.Nodes().at( node.children[1] ).kind == DOCUMENT::NODE_KIND::LIST )
+    {
+        return false;
+    }
+
+    const std::string value = aDocument.AtomText( node.children[1] );
+
+    if( value != "yes" && value != "no" )
+        return false;
+
+    aValue = value == "yes";
+    return true;
+}
+
+
 std::string quoted( const std::string& aText )
 {
     std::string result = "\"";
@@ -386,6 +418,28 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
             continue;
         }
 
+        bool excludeFromSim = false;
+        bool inBom = true;
+        bool onBoard = true;
+        bool inPosFiles = true;
+
+        if( !optionalNativeBool( library, symbol, "exclude_from_sim", false,
+                                 excludeFromSim )
+            || !optionalNativeBool( library, symbol, "in_bom", true, inBom )
+            || !optionalNativeBool( library, symbol, "on_board", true, onBoard )
+            || !optionalNativeBool( library, symbol, "in_pos_files", true, inPosFiles ) )
+        {
+            diagnostic( result, "invalid_symbol_flags",
+                        "symbol " + libraryId
+                                + " has duplicate or malformed native inclusion flags" );
+            continue;
+        }
+
+        JSON flags = { { "excludeFromSim", excludeFromSim },
+                       { "inBom", inBom },
+                       { "onBoard", onBoard },
+                       { "inPosFiles", inPosFiles } };
+
         JSON properties = JSON::object();
 
         for( size_t property : directLists( library, symbol, "property" ) )
@@ -515,6 +569,7 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
 
         result.symbols[libraryId] = { { "libraryId", libraryId },
                                       { "cacheSource", cacheSource },
+                                      { "flags", std::move( flags ) },
                                       { "properties", std::move( properties ) },
                                       { "units", std::move( units ) } };
     }

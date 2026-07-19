@@ -33,6 +33,10 @@ BOOST_AUTO_TEST_CASE( ResolvesExactProjectSymbolCacheAndPinsDeterministically )
   (version 20241209)
   (generator "kicad_symbol_editor")
   (symbol "R"
+    (exclude_from_sim yes)
+    (in_bom no)
+    (on_board no)
+    (in_pos_files no)
     (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
     (property "Value" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
     (symbol "R_1_1"
@@ -59,6 +63,21 @@ BOOST_AUTO_TEST_CASE( ResolvesExactProjectSymbolCacheAndPinsDeterministically )
     BOOST_REQUIRE_EQUAL( first.symbols["Local:R"]["units"]["1"].size(), 2 );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["units"]["1"][0]["number"], "1" );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["units"]["1"][0]["yNm"], 3810000 );
+    BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["excludeFromSim"], true );
+    BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["inBom"], false );
+    BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["onBoard"], false );
+    BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["inPosFiles"], false );
+
+    std::string malformedFlags = library;
+    const size_t inBom = malformedFlags.find( "(in_bom no)" );
+    BOOST_REQUIRE_NE( inBom, std::string::npos );
+    malformedFlags.replace( inBom, std::string( "(in_bom no)" ).size(), "(in_bom maybe)" );
+    KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT malformed =
+            KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
+                    compiled.ir, { { "Local", malformedFlags } } );
+    BOOST_CHECK( !malformed.ok );
+    BOOST_CHECK_NE( malformed.diagnostics.dump().find( "invalid_symbol_flags" ),
+                    std::string::npos );
 }
 
 

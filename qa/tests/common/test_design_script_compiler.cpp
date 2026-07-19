@@ -1268,6 +1268,40 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesVirtualComponentsWithOneCanonicalFootprintNoneRepresentation )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project virtual_component)
+  (library symbol Power (table project) (uri "${KIPRJMOD}/Power.kicad_sym"))
+  (sheet root (parent none) (file "virtual_component.kicad_sch") (title "Main"))
+  (component #PWR01
+    (symbol "Power:GND") (value "GND") (footprint none)
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.ir["schematic"]["components"].size(), 1 );
+    BOOST_CHECK( result.ir["schematic"]["components"][0]["footprint"].is_null() );
+
+    const std::string invalidPlacement = R"KDS((kichad_design
+  (version 1)
+  (project invalid_virtual_placement)
+  (library symbol Power (table project) (uri "${KIPRJMOD}/Power.kicad_sym"))
+  (sheet root (parent none) (file "invalid_virtual_placement.kicad_sch") (title "Main"))
+  (component #PWR01
+    (symbol "Power:GND") (value "GND") (footprint none)
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+  (board (place #PWR01 (at 10mm 10mm) (rotation 0deg) (side front)))
+))KDS";
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalidPlacement );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "component_without_footprint_placement" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( CompilesCanonicalNativeSchematicDrawingPrimitives )
 {
     const std::string program = R"KDS((kichad_design

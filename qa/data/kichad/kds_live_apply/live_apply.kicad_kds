@@ -26,7 +26,13 @@
     (value "2k")
     (footprint "Resistor_SMD:R_0603_1608Metric")
     (unit 1 (sheet power) (at 40mm 40mm) (rotation 90deg) (mirror x)))
+  (component #PWR01
+    (symbol "Device:GND")
+    (value "GND")
+    (footprint none)
+    (unit 1 (sheet root) (at 50mm 50mm) (rotation 0deg) (mirror none)))
   (net Net1 (pin R1 1 1) (pin R2 1 1))
+  (net GND (pin R1 1 2) (pin #PWR01 1 1))
   (wire root-wire (sheet root) (from 80mm 40mm) (to 90mm 40mm)
     (stroke default default))
   (junction root-junction (sheet root) (at 90mm 40mm)

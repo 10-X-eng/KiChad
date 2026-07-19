@@ -202,6 +202,9 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
         { "Local:R",
           { { "libraryId", "Local:R" },
             { "cacheSource", cache },
+            { "flags",
+              { { "excludeFromSim", true }, { "inBom", false }, { "onBoard", false },
+                { "inPosFiles", false } } },
             { "properties", { { "Description", "Resistor" } } },
             { "units",
               { { "1", nlohmann::json::array(
@@ -221,6 +224,10 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
     BOOST_CHECK_NE( native.find( "(symbol \"Local:R\"" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(lib_id \"Local:R\")" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(exclude_from_sim yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(in_bom no)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(on_board no)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(in_pos_files no)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(global_label \"SIGNAL\"" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(no_connect" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(mirror x)" ), std::string::npos );

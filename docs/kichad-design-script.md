@@ -263,6 +263,12 @@ state. Each physical schematic unit is an explicit nested placement:
 
 (net SENSOR_OUT (pin U1 1 1) (pin U1 2 7))
 (no_connect U1 2 5)
+
+(component #PWR01
+  (symbol "ProductSymbols:GND")
+  (value "GND")
+  (footprint none)
+  (unit 1 (sheet analog) (at 80mm 40mm) (rotation 0deg) (mirror none)))
 ```
 
 The endpoint tuple is always `(pin REFERENCE UNIT PIN_NUMBER)`; there is no implicit-unit spelling.
@@ -271,7 +277,9 @@ within the component, range from 1 through 256, resolve to the exact library sym
 sheet, position, orthogonal rotation (`0deg`, `90deg`, `180deg`, or `270deg`), and mirror policy
 (`none`, `x`, `y`, or `xy`). Native required fields are controlled by `symbol`, `value`, and
 `footprint`, so custom properties cannot redefine `Reference`, `Value`, `Footprint`, `Datasheet`, or
-`Description`.
+`Description`. The same component form represents power and other virtual symbols: `(footprint
+none)` compiles to KiCad's native empty Footprint property. Such a component cannot be referenced by
+a board `place` form. There is no separate power-symbol representation.
 
 Executable symbols currently resolve only from project-local `.kicad_sym` files. KiChad inventories
 each file within the project, rejects symlinks and paths that escape the project, bounds individual
@@ -281,6 +289,12 @@ graphics, fields, pin numbers, and pin coordinates become compiler input. Derive
 symbols are rejected until inheritance can be flattened without losing semantics. Global symbol
 libraries remain valid dependencies for board-only programs but are not accepted for executable
 schematic placement because their contents depend on the host installation.
+
+The resolver also preserves the exact library symbol's native `exclude_from_sim`, `in_bom`,
+`on_board`, and `in_pos_files` semantics on every placed unit. Missing fields use KiCad 10's native
+defaults; malformed or duplicate flags abort before planning. This keeps virtual and power symbols
+out of downstream artifacts whenever their actual library definition requires it, without adding
+KDS-only policy fields.
 
 Each placed unit, pin instance, global-net endpoint, and explicit no-connect marker receives a
 stable UUIDv8 identity. A KDS net is project-global and lowers to native global labels attached at
@@ -780,7 +794,8 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes nested native schematic hierarchy, confined project-local
-symbol resolution, multi-unit component placement, global-net connectivity, explicit no-connect
+symbol resolution, multi-unit and virtual/power component placement, native inclusion flags,
+global-net connectivity, explicit no-connect
 state, native local/global labels, bus aliases, wires/junctions/buses/bus entries, complete native project
 symbol/footprint tables, physical
 board stackups, the complete global Board Setup
@@ -857,8 +872,9 @@ components, nets, no-connect state, sourcing, board statement kinds, global rule
 custom rules, checks, and outputs. Global rules, net classes, custom rules, and executable board forms have
 backend-specific type checking and rollback coverage. Project symbol/footprint tables are
 executable with native parser validation, atomic installation, journaling, and rollback coverage.
-Project-local non-derived symbol content, component unit placement, connectivity, and no-connect
-state are executable with lossless reconciliation, stable identity, native netlist validation,
+Project-local non-derived symbol content, physical and virtual/power component unit placement,
+native inclusion flags, connectivity, and no-connect state are executable with lossless
+reconciliation, stable identity, native netlist validation,
 journaling, rollback, and a disposable live integration proof. Derived symbols, global installed
 symbol content, library authoring, footprint/model content, and other schematic
 drawing forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet

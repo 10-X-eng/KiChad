@@ -91,8 +91,14 @@ for attempt in $(seq 1 30); do
             exit 1 unless $net =~ /\(node\s+\(ref "R2"\)\s+\(pin "1"\)/s;
             my @nodes = $net =~ /\(node\b/g;
             exit 1 unless @nodes == 2;
+            my ($ground) = $text =~
+                    /(\(net\s+\(code "[^"]+"\)\s+\(name "GND"\).*?)(?=\n[ \t]*\(net|\n[ \t]*\)\s*\z)/s;
+            exit 1 unless defined $ground;
+            exit 1 unless $ground =~ /\(node\s+\(ref "R1"\)\s+\(pin "2"\)/s;
+            my @ground_nodes = $ground =~ /\(node\b/g;
+            exit 1 unless @ground_nodes == 1;
         ' "${project_dir}/live_apply.net"; then
-            echo "Native netlist is missing the exact KDS R1.1-to-R2.1 Net1 connectivity." >&2
+            echo "Native netlist is missing exact KDS signal or power connectivity." >&2
             sed -n '1,260p' "${project_dir}/live_apply.net" >&2
             exit 1
         fi
@@ -110,6 +116,8 @@ for attempt in $(seq 1 30); do
         grep -Fq '(label "Net1"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(global_label "Net1"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"
         echo "KiChad live KDS apply smoke test passed."
         exit 0
     fi
