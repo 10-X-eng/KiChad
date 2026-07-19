@@ -45,6 +45,9 @@ set( QA_COMMON_SRCS
     test_codex_thread_store.cpp
     test_fabrication_artifact_validator.cpp
     test_mechanical_artifact_validator.cpp
+    test_stepz_artifact_validator.cpp
+    test_three_d_pdf_artifact_validator.cpp
+    test_u3d_artifact_validator.cpp
     test_design_script_compiler.cpp
     test_design_script_pcb_planner.cpp
     test_design_script_pcb_reconciler.cpp
@@ -123,6 +126,9 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/mechanical_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/stepz_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/three_d_pdf_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/u3d_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/kicad_ipc_transaction.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/project_settings_ipc.cpp
 

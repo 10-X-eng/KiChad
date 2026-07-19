@@ -299,7 +299,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v7`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v8`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -313,10 +313,13 @@ production-ready plan requires all of the following declarations in the same sid
 (output pick_place)
 (output bom)
 ; optional: (output step)
+; optional: (output stepz)
 ; optional: (output brep)
 ; optional: (output glb)
 ; optional: (output stl)
+; optional: (output u3d)
 ; optional: (output xao)
+; optional: (output 3d_pdf)
 ; optional: (output pdf)
 ; optional: (output ipc2581)
 ; optional: (output odbpp)
@@ -355,11 +358,13 @@ page sizing, millimetre DXF units, and verifies exact filenames plus bounded XML
 `gencad` emits unique pin and footprint definitions with stored origin coordinates, `vrml` emits a
 millimetre model excluding DNP and unspecified parts, and `board_stats` emits typed millimetre JSON
 with board identity, outline, pad/via/component counts, and drill inventory. Each passes a dedicated
-format-aware parser before installation. BREP, binary glTF (`glb`), triangular ASCII STL, and XAO
-use the same complete fixed-origin 3D geometry policy as STEP and each has a bounded structural
-validator for its native container and scene/topology data. `netlist` runs the native Eeschema
-exporter against the same private root-schematic snapshot used by ERC; KiChad parses the result and
-requires its exact component-reference and ref/pin connectivity sets to match compiled KDS intent.
+format-aware parser before installation. BREP, binary glTF (`glb`), triangular ASCII STL, STEPZ,
+U3D, XAO, and interactive `3d_pdf` use the same complete fixed-origin 3D geometry policy as STEP.
+Each has a bounded structural validator for its native container and scene/topology data; STEPZ is
+inflated with a hard limit, while 3D PDF's embedded U3D stream is decompressed and fully validated.
+`netlist` runs the native Eeschema exporter against the same private root-schematic snapshot used by
+ERC; KiChad parses the result and requires its exact component-reference and ref/pin connectivity
+sets to match compiled KDS intent.
 
 KiChad bounds and validates every artifact. The BOM reference set must equal all footprint-bearing
 KDS components, while the

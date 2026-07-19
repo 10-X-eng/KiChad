@@ -15,6 +15,8 @@
 #include <kicad/codex/kicad_ipc_client.h>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cstdint>
 #include <api/common/commands/editor_commands.pb.h>
 #include <api/common/envelope.pb.h>
@@ -29,6 +31,7 @@
 #include <wx/utils.h>
 #include <wx/wfstream.h>
 #include <wx/zipstrm.h>
+#include <zlib.h>
 
 
 namespace
@@ -57,6 +60,148 @@ void appendLittleEndian32( std::string& aOutput, uint32_t aValue )
 {
     for( size_t byte = 0; byte < 4; ++byte )
         aOutput.push_back( static_cast<char>( aValue >> ( byte * 8 ) ) );
+}
+
+
+void appendLittleEndian16( std::string& aOutput, uint16_t aValue )
+{
+    aOutput.push_back( static_cast<char>( aValue ) );
+    aOutput.push_back( static_cast<char>( aValue >> 8 ) );
+}
+
+
+void appendLittleEndian64( std::string& aOutput, uint64_t aValue )
+{
+    appendLittleEndian32( aOutput, static_cast<uint32_t>( aValue ) );
+    appendLittleEndian32( aOutput, static_cast<uint32_t>( aValue >> 32 ) );
+}
+
+
+void appendU3dBlock( std::string& aOutput, uint32_t aType, std::string aData )
+{
+    appendLittleEndian32( aOutput, aType );
+    appendLittleEndian32( aOutput, static_cast<uint32_t>( aData.size() ) );
+    appendLittleEndian32( aOutput, 0 );
+    aOutput += aData;
+
+    while( aOutput.size() % 4 != 0 )
+        aOutput.push_back( '\0' );
+}
+
+
+std::string mockU3d()
+{
+    std::string header;
+    appendLittleEndian16( header, 256 );
+    appendLittleEndian16( header, 0 );
+    appendLittleEndian32( header, 8 );
+    appendLittleEndian32( header, 88 );
+    appendLittleEndian64( header, 104 );
+    appendLittleEndian32( header, 106 );
+    appendLittleEndian64(
+            header, std::bit_cast<uint64_t>( static_cast<double>( 0.001F ) ) );
+
+    std::string result;
+    appendU3dBlock( result, 0x00443355, header );
+    appendU3dBlock( result, 0xFFFFFF14, std::string( "groups\0\0", 8 ) );
+    appendU3dBlock( result, 0xFFFFFF53, std::string( 4, '\0' ) );
+    appendU3dBlock( result, 0xFFFFFF54, std::string( 4, '\0' ) );
+    appendU3dBlock( result, 0xFFFFFF3B, std::string( 4, '\0' ) );
+    return result;
+}
+
+
+std::string zlibCompress( const std::string& aSource )
+{
+    uLongf bytes = compressBound( static_cast<uLong>( aSource.size() ) );
+    std::string compressed( bytes, '\0' );
+
+    if( compress2( reinterpret_cast<Bytef*>( compressed.data() ), &bytes,
+                   reinterpret_cast<const Bytef*>( aSource.data() ),
+                   static_cast<uLong>( aSource.size() ), Z_BEST_COMPRESSION ) != Z_OK )
+    {
+        return {};
+    }
+
+    compressed.resize( bytes );
+    return compressed;
+}
+
+
+std::string gzipCompress( const std::string& aSource )
+{
+    z_stream stream{};
+    stream.next_in = reinterpret_cast<Bytef*>( const_cast<char*>( aSource.data() ) );
+    stream.avail_in = static_cast<uInt>( aSource.size() );
+
+    if( deflateInit2( &stream, Z_BEST_COMPRESSION, Z_DEFLATED,
+                      MAX_WBITS + 16, 8, Z_DEFAULT_STRATEGY ) != Z_OK )
+    {
+        return {};
+    }
+
+    std::array<char, 4096> output{};
+    std::string compressed;
+    int status = Z_OK;
+
+    do
+    {
+        stream.next_out = reinterpret_cast<Bytef*>( output.data() );
+        stream.avail_out = static_cast<uInt>( output.size() );
+        status = deflate( &stream, Z_FINISH );
+
+        if( status != Z_OK && status != Z_STREAM_END )
+        {
+            deflateEnd( &stream );
+            return {};
+        }
+
+        compressed.append( output.data(), output.size() - stream.avail_out );
+    } while( status != Z_STREAM_END );
+
+    deflateEnd( &stream );
+    return compressed;
+}
+
+
+std::string mockStepz( const std::string& aStem )
+{
+    const std::string step =
+            "ISO-10303-21;\nHEADER;\n"
+            "FILE_DESCRIPTION(('KiCad electronic assembly'),'2;1');\n"
+            "FILE_NAME('" + aStem
+            + ".stpz','2026-07-19T00:00:00',('Pcbnew'),('Kicad'),"
+              "'Open CASCADE STEP processor 7.6','KiCad to STEP converter','Unknown');\n"
+              "ENDSEC;\nDATA;\n#1=CARTESIAN_POINT('',(0.,0.,0.));\n"
+              "ENDSEC;\nEND-ISO-10303-21;\n";
+    return gzipCompress( step );
+}
+
+
+std::string mock3dPdf()
+{
+    const std::string model = zlibCompress( mockU3d() );
+    std::string pdf =
+            "%PDF-1.5\n"
+            "1 0 obj\n<< /Producer (KiCad PDF) >>\nendobj\n";
+
+    for( size_t view = 2; view <= 5; ++view )
+    {
+        pdf += std::to_string( view )
+               + " 0 obj\n<<\n/Type /3DView\n/XN (View)\n>>\nendobj\n";
+    }
+
+    pdf += "6 0 obj\n<<\n/Type /3D\n/Subtype /U3D\n/DV 0\n"
+           "/VA [2 0 R 3 0 R 4 0 R 5 0 R]\n/Length 7 0 R\n"
+           "/Filter /FlateDecode\n>>\nstream\n";
+    pdf += model;
+    pdf += "\nendstream\nendobj\n7 0 obj\n" + std::to_string( model.size() )
+           + "\nendobj\n8 0 obj\n<<\n/Type /Annot\n/Subtype /3D\n"
+             "/3DD 6 0 R\n>>\nendobj\n";
+    const size_t xref = pdf.size();
+    pdf += "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 9 /Root 8 0 R >>\n"
+           "startxref\n" + std::to_string( xref ) + "\n%%EOF\n";
+    return pdf;
 }
 
 
@@ -248,10 +393,13 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output pick_place)
   (output bom)
   (output step)
+  (output stepz)
   (output brep)
   (output glb)
   (output stl)
+  (output u3d)
   (output xao)
+  (output 3d_pdf)
   (output pdf)
   (output assembly_svg)
   (output assembly_dxf)
@@ -581,6 +729,17 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 return false;
             }
         }
+        else if( kind == "stepz" )
+        {
+            const std::string source =
+                    mockStepz( aPlan.at( "fileStem" ).get<std::string>() );
+
+            if( source.empty() || !write( output, source ) )
+            {
+                aError = "could not write fake STEPZ output";
+                return false;
+            }
+        }
         else if( kind == "brep" )
         {
             const std::string source =
@@ -638,6 +797,24 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
             if( !write( output, source ) )
             {
                 aError = "could not write fake XAO output";
+                return false;
+            }
+        }
+        else if( kind == "u3d" )
+        {
+            if( !write( output, mockU3d() ) )
+            {
+                aError = "could not write fake U3D output";
+                return false;
+            }
+        }
+        else if( kind == "3d_pdf" )
+        {
+            const std::string source = mock3dPdf();
+
+            if( source.empty() || !write( output, source ) )
+            {
+                aError = "could not write fake 3D PDF output";
                 return false;
             }
         }
@@ -810,10 +987,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v7" );
+                       "kichad-production-10.0.4-v8" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 19 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 22 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
@@ -1157,7 +1334,7 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "waived" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 28 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 31 );
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
@@ -1188,6 +1365,8 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/model/fabrication_clean.step" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.stpz" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/model/fabrication_clean.brep" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/model/fabrication_clean.glb" ) ) );
@@ -1195,6 +1374,10 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
                                + wxS( "fabrication/model/fabrication_clean.stl" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/model/fabrication_clean.xao" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.u3d" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/model/fabrication_clean.3d.pdf" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/documentation/"
                                       "fabrication_clean.pdf" ) ) );
@@ -1327,7 +1510,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 21 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 24 );
 
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
@@ -1360,6 +1543,15 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName xaoPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/model/fabrication_component.xao" ) );
+    wxFileName stepzPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.stpz" ) );
+    wxFileName u3dPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.u3d" ) );
+    wxFileName threeDPdfPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/model/fabrication_component.3d.pdf" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
@@ -1371,6 +1563,9 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE( glbPath.FileExists() );
     BOOST_REQUIRE( stlPath.FileExists() );
     BOOST_REQUIRE( xaoPath.FileExists() );
+    BOOST_REQUIRE( stepzPath.FileExists() );
+    BOOST_REQUIRE( u3dPath.FileExists() );
+    BOOST_REQUIRE( threeDPdfPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );

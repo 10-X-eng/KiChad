@@ -38,6 +38,9 @@ set( KICAD_SRCS
     codex/design_script_symbol_resolver.cpp
     codex/fabrication_artifact_validator.cpp
     codex/mechanical_artifact_validator.cpp
+    codex/stepz_artifact_validator.cpp
+    codex/three_d_pdf_artifact_validator.cpp
+    codex/u3d_artifact_validator.cpp
     codex/kicad_ipc_client.cpp
     codex/kicad_ipc_transaction.cpp
     codex/project_settings_ipc.cpp
@@ -231,6 +234,7 @@ else()
         )
 endif()
 
+target_link_libraries( kicad ZLIB::ZLIB )
 target_link_libraries( kicad pcm )
 target_link_libraries( kicad-cli pcm )
 

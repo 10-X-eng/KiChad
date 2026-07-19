@@ -263,10 +263,11 @@ nlohmann::json DesignScriptCapabilities()
                     capability( "manufacturing.assembly", "manufacturing", "qualified", { "output pick_place", "output bom" },
                                 "Reference-consistent placement CSV and KDS-sourced BOM." ),
                     capability( "manufacturing.mechanical", "manufacturing", "qualified",
-                                { "output step", "output brep", "output glb", "output stl",
-                                  "output xao", "output pdf" },
-                                "Validated optional STEP, BREP, binary glTF, triangular ASCII STL, "
-                                "XAO, and multipage fabrication PDF artifacts." ),
+                                { "output step", "output stepz", "output brep", "output glb",
+                                  "output stl", "output u3d", "output xao", "output 3d_pdf",
+                                  "output pdf" },
+                                "Validated optional STEP/STEPZ, BREP, binary glTF, triangular ASCII "
+                                "STL, U3D, XAO, interactive 3D PDF, and fabrication PDF artifacts." ),
                     capability( "manufacturing.presets", "manufacturing", "partial", { "output", "check fabrication" },
                                 "One immutable KiChad 10.0.4 production profile and explicit output intent.",
                                 { "User-defined plot/drill/position/BOM presets, panelization, stencil policy, and fab-house profiles are absent." } ),
@@ -277,7 +278,7 @@ nlohmann::json DesignScriptCapabilities()
                                 "Validated front/back SVG and DXF assembly drawings, GenCAD, "
                                 "VRML, typed JSON board statistics, and an exact KDS-matched "
                                 "KiCad connectivity netlist from deterministic native jobs.",
-                                { "IDF, STEPZ, U3D, 3D PDF, PLY, custom BOM schemas, and the "
+                                { "IDF, PLY, custom BOM schemas, and the "
                                   "remaining native graphics and legacy exports are not represented yet." } ),
 
                     capability( "interchange.native_current", "interchange", "qualified", {},
@@ -286,8 +287,8 @@ nlohmann::json DesignScriptCapabilities()
                                 "Altium, Cadence, Eagle, EasyEDA, CADSTAR, EAGLE, LTspice, and other supported import workflows.",
                                 { "No KDS import declaration, conversion plan, or round-trip qualification exists." } ),
                     capability( "interchange.exporters", "interchange", "partial", { "output" },
-                                "Production Gerber/drill/IPC/ODB/BOM/placement/STEP/BREP/GLB/STL/"
-                                "XAO/PDF plus assembly SVG/DXF, GenCAD, VRML, JSON board statistics, and an "
+                                "Production Gerber/drill/IPC/ODB/BOM/placement/STEP/STEPZ/BREP/GLB/"
+                                "STL/U3D/XAO/3D-PDF/PDF plus assembly SVG/DXF, GenCAD, VRML, JSON board statistics, and an "
                                 "exact KiCad connectivity netlist.",
                                 { "Remaining graphics/mechanical containers, legacy, and configurable "
                                   "report exporters remain absent." } ),

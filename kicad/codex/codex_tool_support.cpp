@@ -18,6 +18,9 @@
 #include "design_script_symbol_resolver.h"
 #include "fabrication_artifact_validator.h"
 #include "mechanical_artifact_validator.h"
+#include "stepz_artifact_validator.h"
+#include "three_d_pdf_artifact_validator.h"
+#include "u3d_artifact_validator.h"
 #include "kicad_ipc_client.h"
 #include "kicad_ipc_transaction.h"
 #include "lossless_sexpr_document.h"
@@ -1535,9 +1538,13 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
                           aBoard.GetFullPath().ToStdString() };
         }
         else if( kind == "brep" || kind == "glb" || kind == "stl"
-                 || kind == "xao" )
+                 || kind == "xao" || kind == "stepz" || kind == "u3d"
+                 || kind == "3d_pdf" )
         {
-            arguments = { "pcb", "export", kind, "--output", output.string(),
+            const std::string nativeKind = kind == "3d_pdf" ? "3dpdf"
+                                           : kind == "stepz" ? "stpz"
+                                                             : kind;
+            arguments = { "pcb", "export", nativeKind, "--output", output.string(),
                           "--force", "--no-dnp", "--no-unspecified", "--subst-models",
                           "--include-tracks", "--include-pads", "--include-zones",
                           "--include-inner-copper", "--include-silkscreen",
@@ -1624,8 +1631,8 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     };
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
-        "step", "brep", "glb", "stl", "xao", "pdf", "assembly_svg", "assembly_dxf",
-        "gencad", "vrml", "board_stats"
+        "step", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf", "pdf",
+        "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
         "gerbers", "drill", "ipcd356", "pick_place", "bom"
@@ -1794,12 +1801,21 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         {
             job["relativePath"] = "model/" + aFileStem + ".step";
         }
+        else if( std::string_view( kind ) == "stepz" )
+        {
+            job["relativePath"] = "model/" + aFileStem + ".stpz";
+        }
         else if( std::string_view( kind ) == "brep"
                  || std::string_view( kind ) == "glb"
                  || std::string_view( kind ) == "stl"
-                 || std::string_view( kind ) == "xao" )
+                 || std::string_view( kind ) == "xao"
+                 || std::string_view( kind ) == "u3d" )
         {
             job["relativePath"] = "model/" + aFileStem + "." + kind;
+        }
+        else if( std::string_view( kind ) == "3d_pdf" )
+        {
+            job["relativePath"] = "model/" + aFileStem + ".3d.pdf";
         }
         else if( std::string_view( kind ) == "pdf" )
         {
@@ -1838,7 +1854,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v7" },
+    return { { "profile", "kichad-production-10.0.4-v8" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -3442,6 +3458,36 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path == "model/" + fileStem + ".stpz" )
+        {
+            kind = "stepz";
+
+            if( !KICHAD::STEPZ_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), fileStem, aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path == "model/" + fileStem + ".u3d" )
+        {
+            kind = "u3d";
+
+            if( !KICHAD::U3D_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path == "model/" + fileStem + ".3d.pdf" )
+        {
+            kind = "3d_pdf";
+
+            if( !KICHAD::THREE_D_PDF_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), aError ) )
+            {
+                return false;
+            }
+        }
         else if( path == "model/" + fileStem + ".wrl" )
         {
             kind = "vrml";
@@ -3564,6 +3610,12 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "STL export did not produce exactly one model artifact";
         else if( kind == "xao" && counts["xao"] != 1 )
             aError = "XAO export did not produce exactly one model artifact";
+        else if( kind == "stepz" && counts["stepz"] != 1 )
+            aError = "STEPZ export did not produce exactly one model artifact";
+        else if( kind == "u3d" && counts["u3d"] != 1 )
+            aError = "U3D export did not produce exactly one model artifact";
+        else if( kind == "3d_pdf" && counts["3d_pdf"] != 1 )
+            aError = "3D PDF export did not produce exactly one interactive model artifact";
         else if( kind == "pdf" && counts["pdf"] != 1 )
             aError = "documentation export did not produce exactly one PDF artifact";
         else if( kind == "assembly_svg"
