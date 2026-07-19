@@ -25,10 +25,16 @@ saved or dispatched to a KiChad compiler pass.
 
 The project manager recognizes the extension, displays sidecars in the project tree, and opens them
 as text. The native `design` tool supports `describe`, inline or file-backed `compile`, read-only
-`preview`, and `save`. Loading a sidecar never rewrites it. Saving preserves the supplied source
-byte-for-byte after the compiler accepts it. Preview lowers typed board statements into exact
-KiCad 10 protobuf JSON operations, deterministic item UUIDs, counts, and unsupported-backend
-diagnostics without connecting to or changing the PCB Editor.
+`preview`, `save`, and snapshot-gated `apply`. Loading a sidecar never rewrites it. Saving preserves
+the supplied source byte-for-byte after the compiler accepts it. Preview reports KDS logical IDs,
+deterministic target UUIDs, counts, and unsupported-backend diagnostics without connecting to or
+changing the PCB Editor. Internal compiler IR and KiCad protobuf payloads are not exposed as a
+second design representation.
+
+KDS itself is the AI context and the only external design representation. Its names are explicit,
+physical values retain readable engineering units, references resolve locally, and every generated
+object has a stable authored logical ID. A model reads, reviews, edits, imports, and exports this
+same source; it never needs to reconstruct design intent from KiCad serialization or backend JSON.
 
 ## Version 1 source model
 
@@ -101,8 +107,21 @@ identity used by transactional backends; component placement uses the already-un
 9. Run ERC, DRC, connectivity, sourcing, and manufacturability checks.
 10. Generate and validate requested fabrication outputs.
 
-Compilation and planning are read-only.  Apply is all-or-recoverable: a backend failure drops the
-active editor transaction and restores the complete pre-apply snapshot.
+Compilation and planning are read-only. Apply requires the exact previewed source SHA-256, the
+pre-turn project snapshot, and the target board open in PCB Editor. Managed PCB ownership is
+validated by recomputing every deterministic UUID from project, item kind, and KDS logical ID;
+unmanaged collisions abort before a transaction begins. Existing managed items are updated,
+missing ones are recreated, and only previously managed obsolete items are deleted in a single
+KiCad transaction. A project-confined apply journal makes an interrupted operation safely
+reconcilable on the next apply, while the whole turn remains revertible from local history.
+
+The apply backend currently executes rectangular outlines, straight traces, arcs, and vias. It
+refuses stackup, placement, zones, text, dimensions, keepouts, or any structurally retained form
+before mutation until that form has its own typed backend and rollback coverage.
+
+Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
+an isolated temporary project, starts its own build-tree PCB Editor, applies four managed items, and
+reapplies the unchanged source to verify updates reuse the same deterministic identities.
 
 ## Production support rule
 
@@ -116,8 +135,7 @@ A form is documented as executable only after it has all of the following covera
 - relevant ERC, DRC, sourcing, and fabrication-output assertions.
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
-components, nets, sourcing, board statement kinds, checks, and outputs.  It structurally normalizes
+components, nets, sourcing, board statement kinds, checks, and outputs. It structurally normalizes
 nested sheet, board, and rule payloads into IR and a pass plan; those nested payloads become
-executable only as their backend-specific type checkers and rollback tests land.  Native backend
-execution is being enabled incrementally, and unsupported execution is not advertised as a working
-tool operation.
+executable only as their backend-specific type checkers and rollback tests land. Native backend
+execution is enabled incrementally, and apply refuses unsupported execution before mutation.

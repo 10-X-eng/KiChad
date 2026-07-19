@@ -45,43 +45,6 @@ int hexValue( char aDigit )
 }
 
 
-std::string stableUuid( const std::string& aProject, const std::string& aKind,
-                        const std::string& aLogicalId )
-{
-    std::string identity = "kichad-design-v1";
-    identity.push_back( '\0' );
-    identity += aProject;
-    identity.push_back( '\0' );
-    identity += aKind;
-    identity.push_back( '\0' );
-    identity += aLogicalId;
-    std::string digest;
-    picosha2::hash256_hex_string( identity, digest );
-    std::array<unsigned int, 16> bytes{};
-
-    for( size_t i = 0; i < bytes.size(); ++i )
-        bytes[i] = static_cast<unsigned int>( ( hexValue( digest[i * 2] ) << 4 )
-                                               | hexValue( digest[i * 2 + 1] ) );
-
-    // RFC 9562 UUIDv8 layout for the application-defined SHA-256 name digest.
-    bytes[6] = ( bytes[6] & 0x0fU ) | 0x80U;
-    bytes[8] = ( bytes[8] & 0x3fU ) | 0x80U;
-
-    std::ostringstream formatted;
-    formatted << std::hex << std::setfill( '0' );
-
-    for( size_t i = 0; i < bytes.size(); ++i )
-    {
-        if( i == 4 || i == 6 || i == 8 || i == 10 )
-            formatted << '-';
-
-        formatted << std::setw( 2 ) << bytes[i];
-    }
-
-    return formatted.str();
-}
-
-
 std::string layerEnum( const std::string& aLayer )
 {
     std::string result = "BL_" + aLayer;
@@ -112,7 +75,8 @@ std::string lockedEnum( const JSON& aStatement )
 JSON planOutline( const JSON& aStatement, const std::string& aProject )
 {
     const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
-    const std::string itemId = stableUuid( aProject, "shape", logicalId );
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "shape", logicalId );
     JSON item = {
         { "id", { { "value", itemId } } },
         { "shape",
@@ -142,7 +106,8 @@ JSON planRoute( const JSON& aStatement, const std::string& aProject )
 {
     const std::string kind = aStatement.at( "kind" ).get<std::string>();
     const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
-    const std::string itemId = stableUuid( aProject, kind, logicalId );
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, kind, logicalId );
     JSON item = {
         { "id", { { "value", itemId } } },
         { "start", vectorProto( aStatement.at( "start" ) ) },
@@ -168,7 +133,8 @@ JSON planRoute( const JSON& aStatement, const std::string& aProject )
 JSON planVia( const JSON& aStatement, const std::string& aProject )
 {
     const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
-    const std::string itemId = stableUuid( aProject, "via", logicalId );
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "via", logicalId );
     const std::string startLayer = layerEnum( aStatement.at( "startLayer" ).get<std::string>() );
     const std::string endLayer = layerEnum( aStatement.at( "endLayer" ).get<std::string>() );
     const std::string diameter = std::to_string( aStatement.at( "diameterNm" ).get<int64_t>() );
@@ -218,6 +184,43 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
 
 namespace KICHAD
 {
+
+std::string DESIGN_SCRIPT_PCB_PLANNER::StableUuid( const std::string& aProject,
+                                                    const std::string& aKind,
+                                                    const std::string& aLogicalId )
+{
+    std::string identity = "kichad-design-v1";
+    identity.push_back( '\0' );
+    identity += aProject;
+    identity.push_back( '\0' );
+    identity += aKind;
+    identity.push_back( '\0' );
+    identity += aLogicalId;
+    std::string digest;
+    picosha2::hash256_hex_string( identity, digest );
+    std::array<unsigned int, 16> bytes{};
+
+    for( size_t i = 0; i < bytes.size(); ++i )
+        bytes[i] = static_cast<unsigned int>( ( hexValue( digest[i * 2] ) << 4 )
+                                               | hexValue( digest[i * 2 + 1] ) );
+
+    // RFC 9562 UUIDv8 layout for the application-defined SHA-256 name digest.
+    bytes[6] = ( bytes[6] & 0x0fU ) | 0x80U;
+    bytes[8] = ( bytes[8] & 0x3fU ) | 0x80U;
+
+    std::ostringstream formatted;
+    formatted << std::hex << std::setfill( '0' );
+
+    for( size_t i = 0; i < bytes.size(); ++i )
+    {
+        if( i == 4 || i == 6 || i == 8 || i == 10 )
+            formatted << '-';
+
+        formatted << std::setw( 2 ) << bytes[i];
+    }
+
+    return formatted.str();
+}
 
 DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& aCompilerIr )
 {
@@ -298,7 +301,8 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
     }
 
     result.fullyLowered = result.diagnostics.empty()
-                          && result.counts["unsupported"].get<int64_t>() == 0;
+                          && result.counts["unsupported"].get<int64_t>() == 0
+                          && result.counts["placements"].get<int64_t>() == 0;
     return result;
 }
 

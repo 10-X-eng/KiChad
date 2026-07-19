@@ -411,6 +411,16 @@ bool PGM_SINGLE_TOP::OnPgmInit()
     }
 
 #ifdef KICAD_IPC_API
+    // KiChad's native Codex tools require the supported protobuf API even when an editor is
+    // launched directly rather than as a child of the project manager.  Persist the setting
+    // before constructing the server so first-run and isolated QA configurations behave the same
+    // as a normal KiChad session.
+    if( !Pgm().GetCommonSettings()->m_Api.enable_server )
+    {
+        Pgm().GetCommonSettings()->m_Api.enable_server = true;
+        Pgm().GetSettingsManager().Save( Pgm().GetCommonSettings() );
+    }
+
     // Create the API server thread once the app event loop exists
     m_api_server = std::make_unique<KICAD_API_SERVER>();
 #endif

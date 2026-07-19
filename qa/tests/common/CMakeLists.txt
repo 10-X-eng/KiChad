@@ -44,6 +44,7 @@ set( QA_COMMON_SRCS
     test_codex_thread_store.cpp
     test_design_script_compiler.cpp
     test_design_script_pcb_planner.cpp
+    test_design_script_pcb_reconciler.cpp
     test_coroutine.cpp
     test_eda_shape.cpp
     test_eda_text.cpp
@@ -100,6 +101,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_planner.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
 
     libeval/test_numeric_evaluator.cpp

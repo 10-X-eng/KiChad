@@ -39,26 +39,33 @@ are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architec
 submitted turn first snapshots the project through KiCad's local-history system, and the panel can
 restore that complete pre-turn state.  The initial native `project` and `inspect` calls expose
 project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation;
-the `design` call compiles, previews exact deterministic PCB operations, and atomically saves
-reusable `.kicad_kds` project sidecars, and the `pcb` call exposes the exact protobuf field schema
-and connects directly to the open PCB Editor
-through KiCad 10's protobuf IPC API for bounded live reads and snapshot-gated, native undoable
-transactions.
+the `design` call compiles, previews, atomically saves, and transactionally applies reusable
+`.kicad_kds` project sidecars, and the `pcb` call exposes the exact protobuf field schema
+and connects directly to the open PCB Editor through KiCad 10's protobuf IPC API for bounded live
+reads and snapshot-gated, native undoable transactions.
 
 KiChad Design Script is the versioned source language Codex uses to describe a complete design.
 A `project.kicad_kds` sidecar lives beside the normal project, schematic, and board files; KiChad
-shows it in the project tree and can load, compile, preview, or save it without losing source text.
-Physical board statements use explicit units and stable logical IDs; preview deterministically
-lowers them to KiCad 10 protobuf JSON and UUIDs without changing the board. The sidecar declares
-libraries, components, nets, board intent, rules, sourcing, checks, and fabrication outputs, while
-ordinary KiCad files remain the compiler artifacts. The format, grammar, safety
-rules, and production support criteria are documented in
+shows it in the project tree and can load, compile, preview, save, or apply it without losing source
+text. KDS is the single external design representation: Codex reads and writes the same compact,
+self-describing source that is exported with the project, while compiler IR and protobuf messages
+remain private implementation details. Physical board statements use explicit units and stable
+logical IDs; preview reports their deterministic target identities without changing the board. The
+sidecar declares libraries, components, nets, board intent, rules, sourcing, checks, and fabrication
+outputs, while ordinary KiCad files remain the compiler artifacts. The format, grammar, safety rules,
+and production support criteria are documented in
 [docs/kichad-design-script.md](docs/kichad-design-script.md).
 
 For an opt-in transaction proof, first open a disposable project copy in the installed PCB Editor,
 then run `tools/smoke-kichad-live-ipc.sh --allow-mutation PROJECT_DIRECTORY BOARD_FILE`.  The smoke
 test creates, field-mask updates, and deletes one temporary trace through the official KiCad 10 IPC
 transaction API; it is never run implicitly by the build.
+
+For the self-contained KDS transaction proof, run
+`tools/smoke-kichad-kds-apply.sh --allow-mutation`. It launches a disposable build-tree PCB Editor
+with an isolated configuration and project copy, applies the committed KDS fixture, and proves that
+a repeated apply updates the same four managed objects without duplicates. The harness never
+connects to or stops an existing KiChad process.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

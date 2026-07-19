@@ -23,10 +23,9 @@ namespace KICHAD
 /**
  * Front end for the bounded, deterministic KiChad Design Script language.
  *
- * KDS is an s-expression language authored by Codex and compiled into a validated JSON IR.  The IR
- * is deliberately independent of editor state so later compiler passes can plan, preview, apply,
- * and verify the same program through KiCad-native schematic, library, PCB, sourcing, and
- * fabrication backends.
+ * KDS is the single external s-expression language authored by Codex. It compiles into a private,
+ * validated IR that is deliberately independent of editor state so later compiler passes can plan,
+ * preview, apply, and verify the same program through KiCad-native backends.
  */
 class DESIGN_SCRIPT_COMPILER
 {

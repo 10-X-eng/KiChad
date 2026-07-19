@@ -12,6 +12,7 @@
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <kicad/codex/codex_tool_registry.h>
+#include <kicad/codex/design_script_pcb_planner.h>
 
 #include <atomic>
 #include <import_export.h>
@@ -21,8 +22,10 @@
 #include <kiid.h>
 #include <kinng.h>
 #include <filesystem>
+#include <map>
 #include <wx/ffile.h>
 #include <wx/filename.h>
+#include <wx/utils.h>
 
 
 namespace
@@ -115,8 +118,9 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( specs[3]["name"].get<std::string>(), "pcb" );
     const JSON& designOperations =
             specs[2]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( designOperations.size(), 4 );
+    BOOST_REQUIRE_EQUAL( designOperations.size(), 5 );
     BOOST_CHECK_EQUAL( designOperations[2].get<std::string>(), "preview" );
+    BOOST_CHECK_EQUAL( designOperations[4].get<std::string>(), "apply" );
 }
 
 
@@ -193,7 +197,7 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     BOOST_REQUIRE_MESSAGE( compiled.at( "success" ).get<bool>(), compiled.dump() );
     JSON compileData = envelope( compiled )["data"];
     BOOST_CHECK( compileData["valid"].get<bool>() );
-    BOOST_CHECK( !compileData["irOmitted"].get<bool>() );
+    BOOST_CHECK( !compileData.contains( "ir" ) );
     const std::string firstHash = compileData["sourceSha256"].get<std::string>();
 
     CODEX_TOOL_REGISTRY readOnlyRegistry( [&fixture]() { return fixture.Root(); } );
@@ -206,12 +210,12 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     JSON firstBoardPlan = envelope( firstPreview )["data"]["boardPlan"];
     JSON secondBoardPlan = envelope( secondPreview )["data"]["boardPlan"];
     BOOST_CHECK( firstBoardPlan["fullyLowered"].get<bool>() );
-    BOOST_CHECK( !firstBoardPlan["operationsOmitted"].get<bool>() );
-    BOOST_REQUIRE_EQUAL( firstBoardPlan["operations"].size(), 2 );
-    BOOST_CHECK_EQUAL( firstBoardPlan["operations"][0]["itemId"].get<std::string>(),
-                       secondBoardPlan["operations"][0]["itemId"].get<std::string>() );
-    BOOST_CHECK_EQUAL( firstBoardPlan["operations"][1]["itemId"].get<std::string>(),
-                       secondBoardPlan["operations"][1]["itemId"].get<std::string>() );
+    BOOST_CHECK( !firstBoardPlan["itemsTruncated"].get<bool>() );
+    BOOST_REQUIRE_EQUAL( firstBoardPlan["items"].size(), 2 );
+    BOOST_CHECK_EQUAL( firstBoardPlan["items"][0]["targetId"].get<std::string>(),
+                       secondBoardPlan["items"][0]["targetId"].get<std::string>() );
+    BOOST_CHECK_EQUAL( firstBoardPlan["items"][1]["targetId"].get<std::string>(),
+                       secondBoardPlan["items"][1]["targetId"].get<std::string>() );
 
     JSON saved = registry.Handle( "design", { { "operation", "save" },
                                                { "path", "reusable.kicad_kds" },
@@ -221,15 +225,12 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
                        firstHash );
 
     JSON loaded = registry.Handle( "design", { { "operation", "compile" },
-                                                { "path", "reusable.kicad_kds" },
-                                                { "includeIr", false } } );
+                                                { "path", "reusable.kicad_kds" } } );
     BOOST_REQUIRE_MESSAGE( loaded.at( "success" ).get<bool>(), loaded.dump() );
     BOOST_CHECK( envelope( loaded )["data"]["valid"].get<bool>() );
     BOOST_CHECK_EQUAL( envelope( loaded )["data"]["sourceSha256"].get<std::string>(),
                        firstHash );
-    BOOST_CHECK( envelope( loaded )["data"]["irOmitted"].get<bool>() );
-    BOOST_CHECK_EQUAL( envelope( loaded )["data"]["irOmissionReason"].get<std::string>(),
-                       "not_requested" );
+    BOOST_CHECK( !envelope( loaded )["data"].contains( "ir" ) );
 
     const std::string updated = source + "; reusable sidecar comment\n";
     JSON noHash = registry.Handle( "design", { { "operation", "save" },
@@ -555,6 +556,465 @@ BOOST_AUTO_TEST_CASE( CreatesPcbItemsInsideAnIpcTransaction )
     BOOST_CHECK_EQUAL( beginCount.load(), 4 );
     BOOST_CHECK_EQUAL( commitCount.load(), 3 );
     server.Stop();
+}
+
+
+BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName socketPath( fixture.Root(), wxS( "api-design-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-design-token";
+    std::map<std::string, google::protobuf::Any> liveItems;
+    std::map<std::string, google::protobuf::Any> transactionBefore;
+    int commitCount = 0;
+    bool rejectNextCreate = false;
+    bool rejectNextCommitResponse = false;
+    bool transactionActive = false;
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetItemsById>() )
+                {
+                    kiapi::common::commands::GetItemsById get;
+                    kiapi::common::commands::GetItemsResponse items;
+
+                    if( request.message().UnpackTo( &get ) )
+                    {
+                        for( const auto& id : get.items() )
+                        {
+                            auto item = liveItems.find( id.value() );
+
+                            if( item != liveItems.end() )
+                                items.add_items()->CopyFrom( item->second );
+                        }
+
+                        items.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( items );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::BeginCommit>() )
+                {
+                    if( transactionActive )
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                        response.mutable_status()->set_error_message( "transaction already active" );
+                    }
+                    else
+                    {
+                        transactionActive = true;
+                        transactionBefore = liveItems;
+                        kiapi::common::commands::BeginCommitResponse begin;
+                        begin.mutable_id()->set_value( KIID().AsStdString() );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( begin );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::CreateItems>() )
+                {
+                    kiapi::common::commands::CreateItems create;
+                    kiapi::common::commands::CreateItemsResponse created;
+
+                    if( request.message().UnpackTo( &create ) )
+                    {
+                        for( const google::protobuf::Any& packed : create.items() )
+                        {
+                            std::string id;
+                            kiapi::board::types::BoardGraphicShape shape;
+                            kiapi::board::types::Track track;
+
+                            if( packed.UnpackTo( &shape ) )
+                                id = shape.id().value();
+                            else if( packed.UnpackTo( &track ) )
+                                id = track.id().value();
+
+                            auto* result = created.add_created_items();
+
+                            if( rejectNextCreate )
+                            {
+                                rejectNextCreate = false;
+                                result->mutable_status()->set_code(
+                                        kiapi::common::commands::ISC_INVALID_DATA );
+                                result->mutable_status()->set_error_message( "injected failure" );
+                            }
+                            else if( id.empty() || liveItems.contains( id ) )
+                            {
+                                result->mutable_status()->set_code(
+                                        kiapi::common::commands::ISC_EXISTING );
+                            }
+                            else
+                            {
+                                liveItems[id] = packed;
+                                result->mutable_status()->set_code(
+                                        kiapi::common::commands::ISC_OK );
+                                result->mutable_item()->CopyFrom( packed );
+                            }
+                        }
+
+                        created.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( created );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::UpdateItems>() )
+                {
+                    kiapi::common::commands::UpdateItems update;
+                    kiapi::common::commands::UpdateItemsResponse updated;
+
+                    if( request.message().UnpackTo( &update ) )
+                    {
+                        for( const google::protobuf::Any& packed : update.items() )
+                        {
+                            std::string id;
+                            kiapi::board::types::BoardGraphicShape shape;
+                            kiapi::board::types::Track track;
+
+                            if( packed.UnpackTo( &shape ) )
+                                id = shape.id().value();
+                            else if( packed.UnpackTo( &track ) )
+                                id = track.id().value();
+
+                            auto* result = updated.add_updated_items();
+
+                            if( id.empty() || !liveItems.contains( id ) )
+                            {
+                                result->mutable_status()->set_code(
+                                        kiapi::common::commands::ISC_NONEXISTENT );
+                            }
+                            else
+                            {
+                                liveItems[id] = packed;
+                                result->mutable_status()->set_code(
+                                        kiapi::common::commands::ISC_OK );
+                                result->mutable_item()->CopyFrom( packed );
+                            }
+                        }
+
+                        updated.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( updated );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::DeleteItems>() )
+                {
+                    kiapi::common::commands::DeleteItems remove;
+                    kiapi::common::commands::DeleteItemsResponse deleted;
+
+                    if( request.message().UnpackTo( &remove ) )
+                    {
+                        for( const auto& id : remove.item_ids() )
+                        {
+                            auto* result = deleted.add_deleted_items();
+                            result->mutable_id()->CopyFrom( id );
+                            result->set_status( liveItems.erase( id.value() ) == 1
+                                                        ? kiapi::common::commands::IDS_OK
+                                                        : kiapi::common::commands::IDS_NONEXISTENT );
+                        }
+
+                        deleted.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( deleted );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::EndCommit>() )
+                {
+                    kiapi::common::commands::EndCommit end;
+                    request.message().UnpackTo( &end );
+                    bool rejectResponse = false;
+
+                    if( end.action() == kiapi::common::commands::CMA_COMMIT )
+                    {
+                        if( transactionActive )
+                        {
+                            transactionActive = false;
+                            ++commitCount;
+                            rejectResponse = rejectNextCommitResponse;
+                            rejectNextCommitResponse = false;
+                        }
+                        else
+                        {
+                            response.mutable_status()->set_status(
+                                    kiapi::common::AS_BAD_REQUEST );
+                            response.mutable_status()->set_error_message(
+                                    "no transaction is active" );
+                        }
+                    }
+                    else if( end.action() == kiapi::common::commands::CMA_DROP )
+                    {
+                        if( transactionActive )
+                        {
+                            transactionActive = false;
+                            liveItems = transactionBefore;
+                        }
+                        else
+                        {
+                            response.mutable_status()->set_status(
+                                    kiapi::common::AS_BAD_REQUEST );
+                            response.mutable_status()->set_error_message(
+                                    "no transaction is active" );
+                        }
+                    }
+
+                    kiapi::common::commands::EndCommitResponse ended;
+
+                    if( rejectResponse )
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                        response.mutable_status()->set_error_message( "injected lost acknowledgement" );
+                    }
+                    else if( response.status().status() == kiapi::common::AS_UNKNOWN )
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( ended );
+                    }
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; },
+                                  [&fixture]() { return fixture.Root(); } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project managed_design)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net SIGNAL (pin R1 1) (pin R2 1))
+  (board
+    (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
+    (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
+      (width 0.25mm) (layer F.Cu))))
+)KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                               { "path", "managed.kicad_kds" },
+                                               { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                 { "path", "managed.kicad_kds" },
+                                                 { "boardPath", "design.kicad_pcb" },
+                                                 { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    BOOST_CHECK_EQUAL( envelope( applied )["data"]["counts"]["create"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( liveItems.size(), 2 );
+    BOOST_CHECK_EQUAL( commitCount, 1 );
+
+    JSON repeated = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", "managed.kicad_kds" },
+                                                  { "boardPath", "design.kicad_pcb" },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
+    BOOST_CHECK_EQUAL( envelope( repeated )["data"]["counts"]["update"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( liveItems.size(), 2 );
+
+    const std::string reduced = R"KDS((kichad_design
+  (version 1)
+  (project managed_design)
+  (board (outline (rect (id edge) (at 0mm 0mm) (size 25mm 10mm)))))
+)KDS";
+    JSON replaced = registry.Handle( "design", { { "operation", "save" },
+                                                  { "path", "managed.kicad_kds" },
+                                                  { "source", reduced },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( replaced.at( "success" ).get<bool>(), replaced.dump() );
+    hash = envelope( replaced )["data"]["sourceSha256"].get<std::string>();
+    JSON reducedApply = registry.Handle( "design", { { "operation", "apply" },
+                                                      { "path", "managed.kicad_kds" },
+                                                      { "boardPath", "design.kicad_pcb" },
+                                                      { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( reducedApply.at( "success" ).get<bool>(), reducedApply.dump() );
+    BOOST_CHECK_EQUAL( envelope( reducedApply )["data"]["counts"]["delete"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( liveItems.size(), 1 );
+    BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
+                                           wxS( "managed.kicad_kds_state" ) ).GetFullPath() ) );
+    BOOST_CHECK( !wxFileExists( wxFileName( fixture.Root(),
+                                            wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
+
+    const std::string recoveredSource = R"KDS((kichad_design
+  (version 1)
+  (project managed_design)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net SIGNAL (pin R1 1) (pin R2 1))
+  (board
+    (outline (rect (id edge) (at 0mm 0mm) (size 30mm 10mm)))
+    (route SIGNAL (id recovered-trace) (from 1mm 2mm) (to 4mm 4mm)
+      (width 0.3mm) (layer F.Cu))))
+)KDS";
+    replaced = registry.Handle( "design", { { "operation", "save" },
+                                             { "path", "managed.kicad_kds" },
+                                             { "source", recoveredSource },
+                                             { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( replaced.at( "success" ).get<bool>(), replaced.dump() );
+    hash = envelope( replaced )["data"]["sourceSha256"].get<std::string>();
+    rejectNextCreate = true;
+    JSON failed = registry.Handle( "design", { { "operation", "apply" },
+                                                { "path", "managed.kicad_kds" },
+                                                { "boardPath", "design.kicad_pcb" },
+                                                { "expectedSha256", hash } } );
+    BOOST_CHECK( !failed.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( failed )["error"]["code"].get<std::string>(), "apply_failed" );
+    BOOST_CHECK_EQUAL( liveItems.size(), 1 );
+    BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
+                                           wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
+
+    rejectNextCommitResponse = true;
+    JSON ambiguous = registry.Handle( "design", { { "operation", "apply" },
+                                                    { "path", "managed.kicad_kds" },
+                                                    { "boardPath", "design.kicad_pcb" },
+                                                    { "expectedSha256", hash } } );
+    BOOST_CHECK( !ambiguous.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( ambiguous )["error"]["code"].get<std::string>(),
+                       "transaction_failed" );
+    BOOST_CHECK_EQUAL( liveItems.size(), 2 );
+    BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
+                                           wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
+
+    JSON recovered = registry.Handle( "design", { { "operation", "apply" },
+                                                    { "path", "managed.kicad_kds" },
+                                                    { "boardPath", "design.kicad_pcb" },
+                                                    { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( recovered.at( "success" ).get<bool>(), recovered.dump() );
+    BOOST_CHECK_EQUAL( liveItems.size(), 2 );
+    BOOST_CHECK_EQUAL( envelope( recovered )["data"]["counts"]["update"].get<int>(), 2 );
+    BOOST_CHECK( !wxFileExists( wxFileName( fixture.Root(),
+                                            wxS( "managed.kicad_kds_journal" ) ).GetFullPath() ) );
+    server.Stop();
+}
+
+
+BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
+{
+    wxString projectPath;
+    wxString boardPath;
+    wxString sourcePath;
+
+    if( !wxGetEnv( wxS( "KICHAD_QA_LIVE_PROJECT" ), &projectPath )
+        || !wxGetEnv( wxS( "KICHAD_QA_LIVE_BOARD" ), &boardPath )
+        || !wxGetEnv( wxS( "KICHAD_QA_LIVE_KDS" ), &sourcePath ) )
+    {
+        BOOST_TEST_MESSAGE( "Skipping opt-in live KDS apply test" );
+        return;
+    }
+
+    wxFileName project = wxFileName::DirName( projectPath );
+    project.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+    wxFileName board( boardPath );
+    board.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+    wxFileName source( sourcePath );
+    source.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+    BOOST_REQUIRE( project.DirExists() );
+    BOOST_REQUIRE( board.FileExists() );
+    BOOST_REQUIRE( source.FileExists() );
+    BOOST_REQUIRE_EQUAL( board.GetPath(), project.GetPath() );
+    BOOST_REQUIRE_EQUAL( source.GetPath(), project.GetPath() );
+
+    wxString socketDirectory;
+    wxGetEnv( wxS( "KICHAD_QA_LIVE_SOCKET_DIR" ), &socketDirectory );
+    CODEX_TOOL_REGISTRY registry( [project]() { return project.GetFullPath(); },
+                                  []() { return true; },
+                                  [socketDirectory]() { return socketDirectory; } );
+    const std::string sourceName = source.GetFullName().ToStdString();
+    const std::string boardName = board.GetFullName().ToStdString();
+    JSON compiled = registry.Handle( "design", { { "operation", "compile" },
+                                                  { "path", sourceName } } );
+    BOOST_REQUIRE_MESSAGE( compiled.at( "success" ).get<bool>(), compiled.dump() );
+    JSON compileData = envelope( compiled )["data"];
+    BOOST_REQUIRE( compileData["valid"].get<bool>() );
+    const std::string hash = compileData["sourceSha256"].get<std::string>();
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                 { "path", sourceName },
+                                                 { "boardPath", boardName },
+                                                 { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    JSON firstData = envelope( applied )["data"];
+    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
+
+    JSON repeated = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", sourceName },
+                                                  { "boardPath", boardName },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
+    JSON repeatedData = envelope( repeated )["data"];
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
+
+    auto getOne = [&]( const std::string& aItemType )
+    {
+        JSON response = registry.Handle( "pcb", { { "operation", "get" },
+                                                   { "path", boardName },
+                                                   { "itemType", aItemType },
+                                                   { "limit", 10 } } );
+        BOOST_REQUIRE_MESSAGE( response.at( "success" ).get<bool>(), response.dump() );
+        JSON data = envelope( response )["data"];
+        BOOST_REQUIRE_EQUAL( data["totalItems"].get<int>(), 1 );
+        BOOST_REQUIRE_EQUAL( data["items"].size(), 1 );
+        return data["items"][0];
+    };
+
+    const auto stableUuid = []( const std::string& aType, const std::string& aLogicalId )
+    {
+        return KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                "live_apply", aType, aLogicalId );
+    };
+
+    JSON shape = getOne( "shape" );
+    BOOST_CHECK_EQUAL( shape["id"]["value"].get<std::string>(),
+                       stableUuid( "shape", "board-edge" ) );
+    BOOST_CHECK_EQUAL( shape["layer"].get<std::string>(), "BL_Edge_Cuts" );
+    BOOST_CHECK_EQUAL( shape["shape"]["rectangle"]["topLeft"]["xNm"].get<std::string>(),
+                       "20000000" );
+    BOOST_CHECK_EQUAL( shape["shape"]["rectangle"]["bottomRight"]["yNm"].get<std::string>(),
+                       "50000000" );
+
+    JSON trace = getOne( "trace" );
+    BOOST_CHECK_EQUAL( trace["id"]["value"].get<std::string>(),
+                       stableUuid( "trace", "first-trace" ) );
+    BOOST_CHECK_EQUAL( trace["start"]["xNm"].get<std::string>(), "25000000" );
+    BOOST_CHECK_EQUAL( trace["end"]["xNm"].get<std::string>(), "35000000" );
+    BOOST_CHECK_EQUAL( trace["width"]["valueNm"].get<std::string>(), "250000" );
+    BOOST_CHECK_EQUAL( trace["net"]["name"].get<std::string>(), "Net1" );
+
+    JSON arc = getOne( "arc" );
+    BOOST_CHECK_EQUAL( arc["id"]["value"].get<std::string>(),
+                       stableUuid( "arc", "first-arc" ) );
+    BOOST_CHECK_EQUAL( arc["mid"]["xNm"].get<std::string>(), "40000000" );
+    BOOST_CHECK_EQUAL( arc["mid"]["yNm"].get<std::string>(), "30000000" );
+
+    JSON via = getOne( "via" );
+    BOOST_CHECK_EQUAL( via["id"]["value"].get<std::string>(),
+                       stableUuid( "via", "first-via" ) );
+    BOOST_CHECK_EQUAL( via["position"]["xNm"].get<std::string>(), "45000000" );
+    BOOST_CHECK_EQUAL( via["padStack"]["drill"]["diameter"]["xNm"].get<std::string>(),
+                       "400000" );
+    BOOST_CHECK_EQUAL( via["net"]["name"].get<std::string>(), "Net1" );
 }
 
 

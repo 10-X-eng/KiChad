@@ -90,8 +90,10 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
     const std::string source = R"KDS((kichad_design
   (version 1)
   (project future_board)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
   (board
     (stackup (copper_layers 4) (thickness 1.6mm))
+    (place R1 (at 1mm 1mm))
     (zone GND (layer F.Cu))))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -103,6 +105,7 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
     BOOST_CHECK( !plan.fullyLowered );
     BOOST_CHECK_EQUAL( plan.counts["unsupported"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["placements"].get<int>(), 1 );
 }
 
 

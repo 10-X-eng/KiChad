@@ -33,6 +33,10 @@ public:
     };
 
     static RESULT Plan( const JSON& aCompilerIr );
+
+    /** RFC 9562 UUIDv8 identity used by both lowering and managed-state validation. */
+    static std::string StableUuid( const std::string& aProject, const std::string& aKind,
+                                   const std::string& aLogicalId );
 };
 
 } // namespace KICHAD

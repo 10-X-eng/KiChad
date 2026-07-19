@@ -893,14 +893,6 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItemsById(
             items.emplace_back( *item );
     }
 
-    if( items.empty() )
-    {
-        ApiResponseStatus e;
-        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-        e.set_error_message( "none of the requested IDs were found or valid" );
-        return tl::unexpected( e );
-    }
-
     for( const BOARD_ITEM* item : items )
     {
         google::protobuf::Any itemBuf;

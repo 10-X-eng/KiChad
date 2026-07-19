@@ -1,0 +1,19 @@
+(kichad_design
+  (version 1)
+  (project live_apply)
+  (component R1
+    (symbol "Device:R")
+    (value "1k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (component R2
+    (symbol "Device:R")
+    (value "2k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (net Net1 (pin R1 1) (pin R2 1))
+  (board
+    (outline (rect (id board-edge) (at 20mm 20mm) (size 40mm 30mm)))
+    (route Net1 (id first-trace) (from 25mm 25mm) (to 35mm 25mm)
+      (width 0.25mm) (layer F.Cu))
+    (route Net1 (id first-arc) (from 35mm 25mm) (mid 40mm 30mm) (to 45mm 25mm)
+      (width 0.25mm) (layer F.Cu))
+    (via Net1 (id first-via) (at 45mm 25mm) (diameter 0.8mm) (drill 0.4mm))))

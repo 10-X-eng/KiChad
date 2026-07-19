@@ -40,9 +40,11 @@ It accepts only existing project-relative paths, resolves symlinks before enforc
 root, checks the file extension against the document root, caps input/output sizes, and never writes.
 `design` is the compiler front end for reusable `.kicad_kds` KiChad Design Script sidecars.  It
 describes the versioned language, compiles either inline source or a project-confined sidecar into a
-deterministic validated IR and pass plan, previews typed physical board statements as exact KiCad 10
-protobuf JSON operations with stable UUIDv8 identities, and atomically saves only valid programs
-behind the pre-turn snapshot gate. Preview is bounded and read-only. Existing sidecars require a
+private deterministic validated IR and pass plan, previews typed physical board statements through
+their KDS logical and stable UUIDv8 identities, atomically saves only valid programs, and applies
+the currently supported physical subset behind the pre-turn snapshot gate. Preview is bounded and
+read-only. Compiler IR and protobuf payloads are deliberately not exposed as a second design
+representation. Existing sidecars require a
 matching SHA-256 revision before replacement. KDS has
 no host-language or shell escape; it declares project metadata, libraries, schematic hierarchy,
 components, connectivity, board intent, design rules, sourcing, verification, and outputs.  See
@@ -63,6 +65,11 @@ open disposable board copy.  It creates, commits, field-mask updates, commits, d
 temporary trace while checking per-item statuses and preservation of unmasked geometry.  Normal
 builds and test runs never invoke this mutating smoke test.
 
+`tools/smoke-kichad-kds-apply.sh --allow-mutation` is the self-contained compiler integration proof.
+It starts only its own build-tree PCB Editor, uses isolated settings and a temporary copy of the
+committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
+duplicate-free convergence. Its cleanup targets only the process and directory it created.
+
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for
 protocol changes; the runtime client accepts unknown notifications and relies only on the fields it
@@ -76,6 +83,12 @@ native schematic/library/PCB/sourcing/check/output backends.  The lower-level na
 available for bounded inspection, diagnostics, and compiler implementation; they are not a second,
 untracked source of design truth.  The sidecar is reusable source and the ordinary KiCad project
 files are its compiled artifacts.
+
+KDS is the only external representation of design intent. Internal JSON IR, transaction actions,
+managed-state records, and protobuf messages are compiler implementation details. The hidden
+`*.kicad_kds_state` file records only deterministic ownership identities needed for idempotent
+reconciliation; a short-lived `*.kicad_kds_journal` safely carries ownership across an interrupted
+apply. Both are project-confined and included in whole-turn local history snapshots.
 
 The complete tool surface is capped at nine host functions. Each function accepts schema-validated
 requests and returns structured results; functionality is added to these tools

@@ -12,6 +12,7 @@
 #include "codex_tool_registry.h"
 #include "design_script_compiler.h"
 #include "design_script_pcb_planner.h"
+#include "design_script_pcb_reconciler.h"
 #include "kicad_ipc_client.h"
 #include "lossless_sexpr_document.h"
 
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include <api/board/board_types.pb.h>
@@ -47,7 +49,7 @@ constexpr size_t       MAX_DISTINCT_HEADS = 512;
 constexpr size_t       MAX_PCB_ARGUMENT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
-constexpr size_t       MAX_DESIGN_RESULT_BYTES = 256 * 1024;
+constexpr size_t       MAX_DESIGN_STATE_BYTES = 4 * 1024 * 1024;
 
 
 bool isInspectableExtension( const wxString& aExtension )
@@ -237,6 +239,176 @@ bool resolveProjectSidecar( const wxString& aProjectPath, const std::string& aRe
         aResolved = canonicalTarget;
     }
 
+    return true;
+}
+
+
+bool readJsonFile( const wxFileName& aPath, nlohmann::json& aDocument, std::string& aError )
+{
+    if( !aPath.FileExists() )
+    {
+        aDocument = nullptr;
+        return true;
+    }
+
+    wxFile file( aPath.GetFullPath(), wxFile::read );
+
+    if( !file.IsOpened() )
+    {
+        aError = "could not open KiChad managed-state data";
+        return false;
+    }
+
+    const wxFileOffset length = file.Length();
+
+    if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_STATE_BYTES ) )
+    {
+        aError = "KiChad managed-state data must contain 1 byte to 4 MiB";
+        return false;
+    }
+
+    std::string text( static_cast<size_t>( length ), '\0' );
+
+    if( file.Read( text.data(), text.size() ) != length )
+    {
+        aError = "could not read complete KiChad managed-state data";
+        return false;
+    }
+
+    aDocument = nlohmann::json::parse( text, nullptr, false );
+
+    if( aDocument.is_discarded() )
+    {
+        aError = "KiChad managed-state data is not valid JSON";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool writeJsonAtomically( const wxFileName& aPath, const nlohmann::json& aDocument,
+                          std::string& aError )
+{
+    const std::string serialized = aDocument.dump( 2 ) + "\n";
+
+    if( serialized.size() > MAX_DESIGN_STATE_BYTES )
+    {
+        aError = "KiChad managed-state data exceeds 4 MiB";
+        return false;
+    }
+
+    const wxString temporaryPath =
+            aPath.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
+    wxFile temporary;
+
+    if( !temporary.Create( temporaryPath, true )
+        || temporary.Write( serialized.data(), serialized.size() ) != serialized.size()
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+        aError = "could not durably write KiChad managed-state data";
+        return false;
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, aPath.GetFullPath(), true ) )
+    {
+        wxRemoveFile( temporaryPath );
+        aError = "could not atomically install KiChad managed-state data";
+        return false;
+    }
+
+    nlohmann::json installed;
+
+    if( !readJsonFile( aPath, installed, aError ) || installed != aDocument )
+    {
+        aError = "KiChad managed-state verification failed after installation";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool mergeRecoveryJournal( const nlohmann::json& aJournal,
+                           const KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::CONTEXT& aContext,
+                           nlohmann::json& aPreviousState, std::string& aError )
+{
+    if( aJournal.is_null() )
+        return true;
+
+    if( !aJournal.is_object() || aJournal.value( "format", "" ) != "kichad-kds-apply-journal"
+        || aJournal.value( "version", 0 ) != 1
+        || aJournal.value( "sourcePath", "" ) != aContext.sourcePath
+        || aJournal.value( "boardPath", "" ) != aContext.boardPath
+        || aJournal.value( "projectName", "" ) != aContext.projectName
+        || !aJournal.contains( "previousState" ) || !aJournal.contains( "preparedState" )
+        || !aJournal["preparedState"].is_object()
+        || !aJournal["preparedState"].contains( "managedPcbItems" )
+        || !aJournal["preparedState"]["managedPcbItems"].is_array() )
+    {
+        aError = "KiChad apply journal is malformed or belongs to a different design";
+        return false;
+    }
+
+    nlohmann::json merged = aJournal["preparedState"];
+    std::map<std::string, nlohmann::json> items;
+
+    for( const nlohmann::json& item : merged["managedPcbItems"] )
+    {
+        if( !item.is_object() || !item.contains( "itemId" ) || !item["itemId"].is_string()
+            || !items.emplace( item["itemId"].get<std::string>(), item ).second )
+        {
+            aError = "KiChad apply journal contains invalid prepared ownership";
+            return false;
+        }
+    }
+
+    const nlohmann::json& previous = aJournal["previousState"];
+
+    if( !previous.is_null() )
+    {
+        if( !previous.is_object() || !previous.contains( "managedPcbItems" )
+            || !previous["managedPcbItems"].is_array() )
+        {
+            aError = "KiChad apply journal contains invalid previous ownership";
+            return false;
+        }
+
+        for( const nlohmann::json& item : previous["managedPcbItems"] )
+        {
+            if( !item.is_object() || !item.contains( "itemId" ) || !item["itemId"].is_string() )
+            {
+                aError = "KiChad apply journal contains invalid previous ownership";
+                return false;
+            }
+
+            const std::string itemId = item["itemId"].get<std::string>();
+            auto              existing = items.find( itemId );
+
+            if( existing != items.end() && existing->second != item )
+            {
+                aError = "KiChad apply journal contains conflicting ownership";
+                return false;
+            }
+
+            items.emplace( itemId, item );
+        }
+    }
+
+    merged["sourcePath"] = aContext.sourcePath;
+    merged["boardPath"] = aContext.boardPath;
+    merged["projectName"] = aContext.projectName;
+    merged["sourceSha256"] = aContext.sourceSha256;
+    merged["managedPcbItems"] = nlohmann::json::array();
+
+    for( const auto& [itemId, item] : items )
+        merged["managedPcbItems"].push_back( item );
+
+    aPreviousState = std::move( merged );
     return true;
 }
 
@@ -536,12 +708,340 @@ public:
         return true;
     }
 
+    bool Drop( std::string& aError )
+    {
+        if( !m_active )
+            return true;
+
+        if( !m_client.EndCommit( m_target, m_id, false, "", aError ) )
+            return false;
+
+        m_active = false;
+        return true;
+    }
+
 private:
     const KICHAD_IPC_CLIENT& m_client;
     const KICHAD_IPC_TARGET& m_target;
     std::string              m_id;
     bool                     m_active;
 };
+
+
+std::string pcbAnyType( const google::protobuf::Any& aItem )
+{
+    using namespace kiapi::board::types;
+
+    if( aItem.Is<BoardGraphicShape>() )
+        return "shape";
+    if( aItem.Is<Track>() )
+        return "trace";
+    if( aItem.Is<Arc>() )
+        return "arc";
+    if( aItem.Is<Via>() )
+        return "via";
+
+    return "other:" + aItem.type_url();
+}
+
+
+std::string pcbAnyId( const google::protobuf::Any& aItem )
+{
+    std::string itemType = pcbAnyType( aItem );
+
+    if( itemType.starts_with( "other:" ) )
+    {
+        size_t separator = aItem.type_url().rfind( '/' );
+        std::string typeName = separator == std::string::npos
+                                       ? aItem.type_url()
+                                       : aItem.type_url().substr( separator + 1 );
+        const google::protobuf::Descriptor* descriptor =
+                google::protobuf::DescriptorPool::generated_pool()->FindMessageTypeByName( typeName );
+
+        if( !descriptor )
+            return {};
+
+        const google::protobuf::Message* prototype =
+                google::protobuf::MessageFactory::generated_factory()->GetPrototype( descriptor );
+
+        if( !prototype )
+            return {};
+
+        std::unique_ptr<google::protobuf::Message> message( prototype->New() );
+
+        if( !aItem.UnpackTo( message.get() ) )
+            return {};
+
+        const google::protobuf::FieldDescriptor* idField = descriptor->FindFieldByName( "id" );
+
+        if( !idField || idField->cpp_type()
+                               != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE )
+        {
+            return {};
+        }
+
+        const google::protobuf::Message& idMessage =
+                message->GetReflection()->GetMessage( *message, idField );
+        const google::protobuf::FieldDescriptor* valueField =
+                idMessage.GetDescriptor()->FindFieldByName( "value" );
+
+        if( !valueField || valueField->cpp_type()
+                                  != google::protobuf::FieldDescriptor::CPPTYPE_STRING )
+        {
+            return {};
+        }
+
+        return idMessage.GetReflection()->GetString( idMessage, valueField );
+    }
+
+    return pcbItemId( aItem, itemType );
+}
+
+
+bool queryPcbInventory( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                        const std::set<std::string>& aIds, nlohmann::json& aInventory,
+                        std::string& aError )
+{
+    aInventory = nlohmann::json::array();
+
+    if( aIds.empty() )
+        return true;
+
+    kiapi::common::commands::GetItemsById request;
+    request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+
+    for( const std::string& id : aIds )
+        request.add_items()->set_value( id );
+
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::common::commands::GetItemsResponse items;
+
+    if( !response.message().UnpackTo( &items )
+        || items.status() != kiapi::common::types::IRS_OK )
+    {
+        aError = "KiCad returned an invalid managed-item inventory";
+        return false;
+    }
+
+    std::set<std::string> returnedIds;
+
+    for( const google::protobuf::Any& item : items.items() )
+    {
+        std::string itemId = pcbAnyId( item );
+
+        if( itemId.empty() || !aIds.contains( itemId ) || !returnedIds.emplace( itemId ).second )
+        {
+            aError = "KiCad returned an unexpected managed-item identity";
+            return false;
+        }
+
+        aInventory.push_back( { { "itemId", itemId }, { "itemType", pcbAnyType( item ) } } );
+    }
+
+    return true;
+}
+
+
+bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
+                                           kiapi::common::commands::ItemCreationResult>& aResults,
+                                   const std::vector<const nlohmann::json*>& aActions,
+                                   std::string& aError )
+{
+    if( aResults.size() != static_cast<int>( aActions.size() ) )
+    {
+        aError = "KiCad returned an incomplete create-items response";
+        return false;
+    }
+
+    for( int i = 0; i < aResults.size(); ++i )
+    {
+        if( aResults[i].status().code() != kiapi::common::commands::ISC_OK
+            || pcbAnyId( aResults[i].item() ) != aActions[i]->at( "itemId" ).get<std::string>() )
+        {
+            aError = aResults[i].status().error_message();
+
+            if( aError.empty() )
+                aError = "KiCad rejected or changed a deterministic PCB item UUID";
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
+                                           kiapi::common::commands::ItemUpdateResult>& aResults,
+                                   const std::vector<const nlohmann::json*>& aActions,
+                                   std::string& aError )
+{
+    if( aResults.size() != static_cast<int>( aActions.size() ) )
+    {
+        aError = "KiCad returned an incomplete update-items response";
+        return false;
+    }
+
+    for( int i = 0; i < aResults.size(); ++i )
+    {
+        if( aResults[i].status().code() != kiapi::common::commands::ISC_OK
+            || pcbAnyId( aResults[i].item() ) != aActions[i]->at( "itemId" ).get<std::string>() )
+        {
+            aError = aResults[i].status().error_message();
+
+            if( aError.empty() )
+                aError = "KiCad rejected or changed a deterministic PCB item UUID";
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                        const nlohmann::json& aActions, std::string& aError )
+{
+    std::vector<const nlohmann::json*> creates;
+    std::map<std::string, std::vector<const nlohmann::json*>> updates;
+    std::vector<const nlohmann::json*> deletes;
+
+    for( const nlohmann::json& action : aActions )
+    {
+        const std::string kind = action.at( "action" ).get<std::string>();
+
+        if( kind == "create" )
+            creates.emplace_back( &action );
+        else if( kind == "update" )
+            updates[action.at( "itemType" ).get<std::string>()].emplace_back( &action );
+        else
+            deletes.emplace_back( &action );
+    }
+
+    for( size_t begin = 0; begin < creates.size(); begin += 200 )
+    {
+        const size_t end = std::min( begin + 200, creates.size() );
+        kiapi::common::commands::CreateItems request;
+        request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+        std::vector<const nlohmann::json*> batch( creates.begin() + begin, creates.begin() + end );
+
+        for( const nlohmann::json* action : batch )
+        {
+            std::unique_ptr<google::protobuf::Message> item;
+
+            if( !parsePcbItem( action->at( "itemType" ).get<std::string>(),
+                               action->at( "item" ), item, aError ) )
+            {
+                return false;
+            }
+
+            request.add_items()->PackFrom( *item );
+        }
+
+        kiapi::common::ApiResponse response;
+
+        if( !aClient.Call( aTarget, request, response, aError ) )
+            return false;
+
+        kiapi::common::commands::CreateItemsResponse created;
+
+        if( !response.message().UnpackTo( &created )
+            || created.status() != kiapi::common::types::IRS_OK
+            || !validateCreateUpdateResponse( created.created_items(), batch, aError ) )
+        {
+            if( aError.empty() )
+                aError = "KiCad returned an invalid create-items response";
+
+            return false;
+        }
+    }
+
+    for( const auto& [itemType, actions] : updates )
+    {
+        for( size_t begin = 0; begin < actions.size(); begin += 200 )
+        {
+            const size_t end = std::min( begin + 200, actions.size() );
+            std::vector<const nlohmann::json*> batch( actions.begin() + begin,
+                                                       actions.begin() + end );
+            kiapi::common::commands::UpdateItems request;
+            request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+
+            for( const nlohmann::json& field : batch.front()->at( "fieldMask" ) )
+                request.mutable_header()->mutable_field_mask()->add_paths( field.get<std::string>() );
+
+            for( const nlohmann::json* action : batch )
+            {
+                std::unique_ptr<google::protobuf::Message> item;
+
+                if( !parsePcbItem( itemType, action->at( "item" ), item, aError ) )
+                    return false;
+
+                request.add_items()->PackFrom( *item );
+            }
+
+            kiapi::common::ApiResponse response;
+
+            if( !aClient.Call( aTarget, request, response, aError ) )
+                return false;
+
+            kiapi::common::commands::UpdateItemsResponse updated;
+
+            if( !response.message().UnpackTo( &updated )
+                || updated.status() != kiapi::common::types::IRS_OK
+                || !validateCreateUpdateResponse( updated.updated_items(), batch, aError ) )
+            {
+                if( aError.empty() )
+                    aError = "KiCad returned an invalid update-items response";
+
+                return false;
+            }
+        }
+    }
+
+    for( size_t begin = 0; begin < deletes.size(); begin += 500 )
+    {
+        const size_t end = std::min( begin + 500, deletes.size() );
+        kiapi::common::commands::DeleteItems request;
+        request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+
+        for( size_t i = begin; i < end; ++i )
+            request.add_item_ids()->set_value( deletes[i]->at( "itemId" ).get<std::string>() );
+
+        kiapi::common::ApiResponse response;
+
+        if( !aClient.Call( aTarget, request, response, aError ) )
+            return false;
+
+        kiapi::common::commands::DeleteItemsResponse deleted;
+
+        if( !response.message().UnpackTo( &deleted )
+            || deleted.status() != kiapi::common::types::IRS_OK
+            || deleted.deleted_items_size() != static_cast<int>( end - begin ) )
+        {
+            aError = "KiCad returned an invalid delete-items response";
+            return false;
+        }
+
+        for( int i = 0; i < deleted.deleted_items_size(); ++i )
+        {
+            if( deleted.deleted_items( i ).status() != kiapi::common::commands::IDS_OK
+                || deleted.deleted_items( i ).id().value()
+                           != deletes[begin + static_cast<size_t>( i )]
+                                      ->at( "itemId" ).get<std::string>() )
+            {
+                aError = "KiCad rejected or changed a managed PCB deletion";
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
 
 } // namespace
 
@@ -601,29 +1101,25 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                           { "required", JSON::array( { "operation" } ) } };
     designSchema["properties"]["operation"] =
             { { "type", "string" },
-              { "enum", JSON::array( { "describe", "compile", "preview", "save" } ) } };
+              { "enum", JSON::array( { "describe", "compile", "preview", "save", "apply" } ) } };
     designSchema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative reusable .kicad_kds sidecar path." } };
     designSchema["properties"]["source"] =
             { { "type", "string" }, { "maxLength", MAX_DESIGN_SCRIPT_BYTES },
               { "description", "Inline KiChad Design Script s-expression source." } };
+    designSchema["properties"]["boardPath"] =
+            { { "type", "string" }, { "maxLength", 4096 },
+              { "description", "Project-relative .kicad_pcb target required by apply." } };
     designSchema["properties"]["expectedSha256"] =
             { { "type", "string" }, { "minLength", 64 }, { "maxLength", 64 },
               { "description",
-                "Required when replacing an existing sidecar to prevent stale writes." } };
-    designSchema["properties"]["includeIr"] =
-            { { "type", "boolean" },
-              { "description", "Include bounded validated compiler IR; defaults to true." } };
-    designSchema["properties"]["includeOperations"] =
-            { { "type", "boolean" },
-              { "description",
-                "Include bounded KiCad protobuf-JSON operations in preview; defaults to true." } };
-
+                "Required for stale-write protection and to apply the exact compiled revision." } };
     specs.push_back( { { "type", "function" },
                        { "name", "design" },
                        { "description",
-                         "Describe, compile, preview, import, or atomically save a reusable KiChad Design "
+                         "Describe, compile, preview, atomically save, or transactionally apply a "
+                         "reusable KiChad Design "
                          "Script sidecar. KDS programs declare the complete project—schematic, "
                          "libraries, PCB intent, sourcing, verification, and fabrication outputs—"
                          "for deterministic execution by KiChad compiler backends." },
@@ -704,7 +1200,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
             return handleInspect( aArguments, aProjectPath );
 
         if( aTool == "design" )
-            return handleDesign( aArguments, aProjectPath, aMutationAvailable );
+            return handleDesign( aArguments, aProjectPath, aMutationAvailable,
+                                 aIpcSocketDirectory );
 
         if( aTool == "pcb" )
             return handlePcb( aArguments, aProjectPath, aMutationAvailable, aIpcSocketDirectory );
@@ -719,7 +1216,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
 
 
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
-        const JSON& aArguments, const wxString& aProjectPath, bool aMutationAvailable ) const
+        const JSON& aArguments, const wxString& aProjectPath, bool aMutationAvailable,
+        const wxString& aIpcSocketDirectory ) const
 {
     if( !aArguments.is_object() || !aArguments.contains( "operation" )
         || !aArguments["operation"].is_string() )
@@ -730,10 +1228,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
     const std::string operation = aArguments["operation"].get<std::string>();
 
     if( operation != "describe" && operation != "compile" && operation != "preview"
-        && operation != "save" )
+        && operation != "save" && operation != "apply" )
     {
         return failure( "invalid_arguments",
-                        "design.operation must be 'describe', 'compile', 'preview', or 'save'" );
+                        "design.operation must be 'describe', 'compile', 'preview', 'save', or 'apply'" );
     }
 
     if( operation == "describe" )
@@ -743,22 +1241,23 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
     const bool hasPath = aArguments.contains( "path" ) && aArguments["path"].is_string();
 
     if( ( ( operation == "compile" || operation == "preview" ) && hasSource == hasPath )
-        || ( operation == "save" && ( !hasSource || !hasPath ) ) )
+        || ( operation == "save" && ( !hasSource || !hasPath ) )
+        || ( operation == "apply" && ( hasSource || !hasPath ) ) )
     {
         return failure( "invalid_arguments",
-                        operation != "save"
+                        operation == "apply"
+                                ? "design.apply requires path and does not accept inline source"
+                        : operation != "save"
                                 ? "design.compile and design.preview require exactly one of source or path"
                                 : "design.save requires source and path" );
     }
 
     if( ( aArguments.contains( "source" ) && !aArguments["source"].is_string() )
         || ( aArguments.contains( "path" ) && !aArguments["path"].is_string() )
-        || ( aArguments.contains( "includeIr" ) && !aArguments["includeIr"].is_boolean() )
-        || ( aArguments.contains( "includeOperations" )
-             && !aArguments["includeOperations"].is_boolean() ) )
+        || ( aArguments.contains( "boardPath" ) && !aArguments["boardPath"].is_string() ) )
     {
         return failure( "invalid_arguments",
-                        "design source, path, includeIr, or includeOperations has the wrong type" );
+                        "design source, path, or boardPath has the wrong type" );
     }
 
     auto readFile = []( const wxFileName& aFile, std::string& aSource,
@@ -803,7 +1302,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !resolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
             return failure( "invalid_path", pathError );
 
-        if( ( operation == "compile" || operation == "preview" ) && !sidecar.FileExists() )
+        if( ( operation == "compile" || operation == "preview" || operation == "apply" )
+            && !sidecar.FileExists() )
             return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
     }
 
@@ -833,19 +1333,6 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( hasPath )
             payload["path"] = aArguments["path"];
 
-        const bool includeIr = aArguments.value( "includeIr", true );
-
-        if( includeIr && compiled.ir.dump().size() <= MAX_DESIGN_RESULT_BYTES )
-        {
-            payload["ir"] = std::move( compiled.ir );
-            payload["irOmitted"] = false;
-        }
-        else
-        {
-            payload["irOmitted"] = true;
-            payload["irOmissionReason"] = includeIr ? "size_limit" : "not_requested";
-        }
-
         return success( payload );
     }
 
@@ -863,22 +1350,40 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        JSON items = JSON::array();
+
+        for( const JSON& plannedOperation : planned.operations )
+        {
+            if( items.size() == 500 )
+                break;
+
+            const std::string action = plannedOperation.value( "action", "" );
+
+            if( action == "upsert" )
+            {
+                items.push_back( { { "action", "manage" },
+                                   { "logicalId", plannedOperation["logicalId"] },
+                                   { "itemType", plannedOperation["itemType"] },
+                                   { "targetId", plannedOperation["itemId"] } } );
+            }
+            else if( action == "place_by_reference" )
+            {
+                items.push_back( { { "action", "place" },
+                                   { "component", plannedOperation["component"] } } );
+            }
+            else
+            {
+                items.push_back( { { "action", "unsupported" },
+                                   { "statementKind", plannedOperation["statementKind"] },
+                                   { "reason", plannedOperation["reason"] } } );
+            }
+        }
+
         JSON boardPlan = { { "fullyLowered", planned.fullyLowered },
                            { "counts", std::move( planned.counts ) },
-                           { "diagnostics", std::move( planned.diagnostics ) } };
-        const bool includeOperations = aArguments.value( "includeOperations", true );
-
-        if( includeOperations && planned.operations.dump().size() <= MAX_DESIGN_RESULT_BYTES )
-        {
-            boardPlan["operations"] = std::move( planned.operations );
-            boardPlan["operationsOmitted"] = false;
-        }
-        else
-        {
-            boardPlan["operationsOmitted"] = true;
-            boardPlan["operationsOmissionReason"] =
-                    includeOperations ? "size_limit" : "not_requested";
-        }
+                           { "diagnostics", std::move( planned.diagnostics ) },
+                           { "items", std::move( items ) },
+                           { "itemsTruncated", planned.operations.size() > 500 } };
 
         JSON payload = { { "operation", "preview" },
                          { "valid", true },
@@ -889,6 +1394,219 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( hasPath )
             payload["path"] = aArguments["path"];
 
+        return success( payload );
+    }
+
+    if( operation == "apply" )
+    {
+        if( !aMutationAvailable )
+        {
+            return failure( "snapshot_required",
+                            "A complete pre-turn project snapshot is required to apply KDS" );
+        }
+
+        if( !compiled.ok )
+        {
+            std::string message = "KiChad Design Script did not pass compilation";
+
+            if( !compiled.diagnostics.empty() )
+                message += ": " + compiled.diagnostics.front().value( "message", "invalid program" );
+
+            return failure( "compile_failed", message );
+        }
+
+        if( !aArguments.contains( "expectedSha256" )
+            || !aArguments["expectedSha256"].is_string()
+            || aArguments["expectedSha256"].get<std::string>() != compiled.sourceSha256 )
+        {
+            return failure( "stale_source",
+                            "design.apply requires the exact compiled source SHA-256" );
+        }
+
+        if( !aArguments.contains( "boardPath" ) || !aArguments["boardPath"].is_string() )
+            return failure( "invalid_arguments", "design.apply requires boardPath" );
+
+        const std::string boardRelativePath = aArguments["boardPath"].get<std::string>();
+        wxFileName       board;
+
+        if( !resolveProjectFile( aProjectPath, boardRelativePath, board, pathError )
+            || board.GetExt() != wxS( "kicad_pcb" ) )
+        {
+            if( pathError.empty() )
+                pathError = "boardPath must identify a project .kicad_pcb file";
+
+            return failure( "invalid_path", pathError );
+        }
+
+        KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
+                KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+
+        if( !planned.fullyLowered )
+        {
+            std::string message = "one or more board statements do not have an apply backend";
+
+            for( const JSON& action : planned.operations )
+            {
+                if( action.value( "action", "" ) == "unsupported" )
+                {
+                    message += ": " + action.value( "reason", "unsupported statement" );
+                    break;
+                }
+                else if( action.value( "action", "" ) == "place_by_reference" )
+                {
+                    message += ": component placement apply is not implemented";
+                    break;
+                }
+            }
+
+            return failure( "backend_incomplete", message );
+        }
+
+        const std::string sourceRelativePath = aArguments["path"].get<std::string>();
+        const std::string projectName = compiled.ir["project"]["name"].get<std::string>();
+        KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::CONTEXT reconcileContext = {
+            sourceRelativePath, boardRelativePath, projectName, compiled.sourceSha256
+        };
+        wxFileName statePath = sidecar;
+        statePath.SetExt( wxS( "kicad_kds_state" ) );
+        wxFileName journalPath = sidecar;
+        journalPath.SetExt( wxS( "kicad_kds_journal" ) );
+        JSON previousState;
+        JSON journal;
+
+        if( !readJsonFile( statePath, previousState, pathError )
+            || !readJsonFile( journalPath, journal, pathError )
+            || !mergeRecoveryJournal( journal, reconcileContext, previousState, pathError ) )
+        {
+            return failure( "invalid_managed_state", pathError );
+        }
+
+        KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::RESULT preflight =
+                KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
+                        planned.operations, previousState, JSON::array(), reconcileContext );
+
+        if( !preflight.ok )
+        {
+            return failure( "reconcile_failed",
+                            preflight.diagnostics.empty()
+                                    ? "managed PCB state failed validation"
+                                    : preflight.diagnostics.front().value(
+                                              "message", "managed PCB state failed validation" ) );
+        }
+
+        std::set<std::string> relevantIds;
+
+        for( const JSON& plannedOperation : planned.operations )
+            relevantIds.emplace( plannedOperation["itemId"].get<std::string>() );
+
+        if( !previousState.is_null() )
+        {
+            for( const JSON& item : previousState["managedPcbItems"] )
+                relevantIds.emplace( item["itemId"].get<std::string>() );
+        }
+
+        KICHAD_IPC_CLIENT client( "org.kichad.codex.design", aIpcSocketDirectory );
+        KICHAD_IPC_TARGET target;
+
+        if( !client.FindOpenPcb( aProjectPath, board.GetFullPath(), target, pathError ) )
+            return failure( "pcb_not_open", pathError );
+
+        JSON liveInventory;
+
+        if( !queryPcbInventory( client, target, relevantIds, liveInventory, pathError ) )
+            return failure( "inventory_failed", pathError );
+
+        KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::RESULT reconciled =
+                KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
+                        planned.operations, previousState, liveInventory, reconcileContext );
+
+        if( !reconciled.ok )
+        {
+            return failure( "reconcile_failed",
+                            reconciled.diagnostics.empty()
+                                    ? "managed PCB reconciliation failed"
+                                    : reconciled.diagnostics.front().value(
+                                              "message", "managed PCB reconciliation failed" ) );
+        }
+
+        JSON applyJournal = { { "format", "kichad-kds-apply-journal" },
+                              { "version", 1 },
+                              { "sourcePath", sourceRelativePath },
+                              { "boardPath", boardRelativePath },
+                              { "projectName", projectName },
+                              { "sourceSha256", compiled.sourceSha256 },
+                              { "previousState", previousState },
+                              { "preparedState", reconciled.nextState } };
+
+        if( !writeJsonAtomically( journalPath, applyJournal, pathError ) )
+            return failure( "journal_failed", pathError );
+
+        if( reconciled.actions.empty() )
+        {
+            if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
+                return failure( "state_write_failed", pathError );
+
+            const bool journalRemoved = wxRemoveFile( journalPath.GetFullPath() );
+            JSON payload = { { "operation", "apply" },
+                             { "path", sourceRelativePath },
+                             { "boardPath", boardRelativePath },
+                             { "sourceSha256", compiled.sourceSha256 },
+                             { "counts", reconciled.counts },
+                             { "transaction", "no board changes" },
+                             { "journalRetained", !journalRemoved } };
+            return success( payload );
+        }
+
+        KICHAD_IPC_COMMIT_GUARD commit( client, target );
+
+        if( !commit.Begin( pathError ) )
+        {
+            return failure( "transaction_failed",
+                            pathError + "; the apply journal was retained for safe recovery" );
+        }
+
+        if( !executePcbActions( client, target, reconciled.actions, pathError ) )
+        {
+            std::string dropError;
+            const bool  dropped = commit.Drop( dropError );
+            std::string message = pathError + "; the apply journal was retained for safe recovery";
+
+            if( !dropped && !dropError.empty() )
+                message += "; transaction drop also failed: " + dropError;
+
+            return failure( "apply_failed", message );
+        }
+
+        if( !commit.Commit( "Apply KiChad Design Script " + sourceRelativePath, pathError ) )
+        {
+            std::string dropError;
+            const bool  dropped = commit.Drop( dropError );
+            std::string message = pathError + "; the apply journal was retained for safe recovery";
+
+            if( !dropped && !dropError.empty() )
+                message += "; transaction drop also failed: " + dropError;
+
+            return failure( "transaction_failed", message );
+        }
+
+        if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
+        {
+            return failure( "state_write_failed",
+                            pathError + "; the committed board and retained journal can be "
+                                        "reconciled safely on the next apply" );
+        }
+
+        const bool journalRemoved = wxRemoveFile( journalPath.GetFullPath() );
+        JSON payload = { { "operation", "apply" },
+                         { "path", sourceRelativePath },
+                         { "boardPath", boardRelativePath },
+                         { "sourceSha256", compiled.sourceSha256 },
+                         { "counts", reconciled.counts },
+                         { "managedItems",
+                           reconciled.nextState["managedPcbItems"].size() },
+                         { "transaction", "committed" },
+                         { "statePath", statePath.GetFullName().ToStdString() },
+                         { "journalRetained", !journalRemoved } };
         return success( payload );
     }
 
