@@ -82,6 +82,16 @@ std::string directUuid( const DOCUMENT& aDocument, size_t aNode )
 }
 
 
+std::string managedItemUuid( const DOCUMENT& aDocument, size_t aNode )
+{
+    if( aDocument.ListHead( aNode ) != "rule_area" )
+        return directUuid( aDocument, aNode );
+
+    const std::vector<size_t> polylines = directLists( aDocument, aNode, "polyline" );
+    return polylines.size() == 1 ? directUuid( aDocument, polylines.front() ) : std::string();
+}
+
+
 bool parseSchematic( const std::string& aSource, std::unique_ptr<DOCUMENT>& aDocument,
                      size_t& aRoot, std::string& aError )
 {
@@ -128,7 +138,8 @@ bool validManagedItem( const JSON& aItem )
                 || aItem["kind"] == "label" || aItem["kind"] == "no_connect"
                 || aItem["kind"] == "wire"
                 || aItem["kind"] == "bus" || aItem["kind"] == "bus_entry"
-                || aItem["kind"] == "junction" || aItem["kind"] == "netclass_flag"
+                || aItem["kind"] == "junction" || aItem["kind"] == "rule_area"
+                || aItem["kind"] == "netclass_flag"
                 || aItem["kind"] == "lib_symbol"
                 || aItem["kind"] == "bus_alias" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()
@@ -171,7 +182,7 @@ bool validateDesiredExpression( const JSON& aItem, std::string& aError )
     const size_t root = document->Roots().front();
 
     if( document->ListHead( root ) != aItem["kind"].get<std::string>()
-        || directUuid( *document, root ) != aItem["uuid"].get<std::string>() )
+        || managedItemUuid( *document, root ) != aItem["uuid"].get<std::string>() )
     {
         aError = "planned schematic item kind or UUID is inconsistent";
         return false;
@@ -815,7 +826,7 @@ DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile( const JSON& aOperation,
             if( document->Nodes().at( child ).kind != DOCUMENT::NODE_KIND::LIST )
                 continue;
 
-            const std::string uuid = directUuid( *document, child );
+            const std::string uuid = managedItemUuid( *document, child );
 
             if( uuid.empty() )
                 continue;

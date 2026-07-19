@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/multiprecision/cpp_int.hpp>
 #include <picosha2.h>
 #include <wx/string.h>
 
@@ -932,6 +933,125 @@ bool parseSchematicStroke( const DOCUMENT& aDocument, size_t aNode, JSON& aStrok
 }
 
 
+using SCHEMATIC_POINT = std::pair<int64_t, int64_t>;
+using WIDE_SCHEMATIC_INTEGER = boost::multiprecision::int128_t;
+
+
+WIDE_SCHEMATIC_INTEGER schematicOrientation( const SCHEMATIC_POINT& aStart,
+                                             const SCHEMATIC_POINT& aEnd,
+                                             const SCHEMATIC_POINT& aPoint )
+{
+    return static_cast<WIDE_SCHEMATIC_INTEGER>( aEnd.first - aStart.first )
+                   * ( aPoint.second - aStart.second )
+           - static_cast<WIDE_SCHEMATIC_INTEGER>( aEnd.second - aStart.second )
+                     * ( aPoint.first - aStart.first );
+}
+
+
+bool schematicPointOnSegment( const SCHEMATIC_POINT& aPoint,
+                              const SCHEMATIC_POINT& aStart,
+                              const SCHEMATIC_POINT& aEnd )
+{
+    return schematicOrientation( aStart, aEnd, aPoint ) == 0
+           && aPoint.first >= std::min( aStart.first, aEnd.first )
+           && aPoint.first <= std::max( aStart.first, aEnd.first )
+           && aPoint.second >= std::min( aStart.second, aEnd.second )
+           && aPoint.second <= std::max( aStart.second, aEnd.second );
+}
+
+
+bool schematicSegmentsIntersect( const SCHEMATIC_POINT& aStart,
+                                 const SCHEMATIC_POINT& aEnd,
+                                 const SCHEMATIC_POINT& bStart,
+                                 const SCHEMATIC_POINT& bEnd )
+{
+    const WIDE_SCHEMATIC_INTEGER a = schematicOrientation( aStart, aEnd, bStart );
+    const WIDE_SCHEMATIC_INTEGER b = schematicOrientation( aStart, aEnd, bEnd );
+    const WIDE_SCHEMATIC_INTEGER c = schematicOrientation( bStart, bEnd, aStart );
+    const WIDE_SCHEMATIC_INTEGER d = schematicOrientation( bStart, bEnd, aEnd );
+
+    if( ( ( a > 0 && b < 0 ) || ( a < 0 && b > 0 ) )
+        && ( ( c > 0 && d < 0 ) || ( c < 0 && d > 0 ) ) )
+    {
+        return true;
+    }
+
+    return ( a == 0 && schematicPointOnSegment( bStart, aStart, aEnd ) )
+           || ( b == 0 && schematicPointOnSegment( bEnd, aStart, aEnd ) )
+           || ( c == 0 && schematicPointOnSegment( aStart, bStart, bEnd ) )
+           || ( d == 0 && schematicPointOnSegment( aEnd, bStart, bEnd ) );
+}
+
+
+bool schematicPolygonIsSimple( const std::vector<SCHEMATIC_POINT>& aPoints )
+{
+    if( aPoints.size() < 3 )
+        return false;
+
+    WIDE_SCHEMATIC_INTEGER twiceArea = 0;
+
+    for( size_t index = 0; index < aPoints.size(); ++index )
+    {
+        const SCHEMATIC_POINT& point = aPoints[index];
+        const SCHEMATIC_POINT& next = aPoints[( index + 1 ) % aPoints.size()];
+        twiceArea += static_cast<WIDE_SCHEMATIC_INTEGER>( point.first ) * next.second
+                     - static_cast<WIDE_SCHEMATIC_INTEGER>( point.second ) * next.first;
+
+        if( point == next )
+            return false;
+    }
+
+    if( twiceArea == 0 )
+        return false;
+
+    for( size_t first = 0; first < aPoints.size(); ++first )
+    {
+        const size_t firstEnd = ( first + 1 ) % aPoints.size();
+
+        for( size_t second = first + 1; second < aPoints.size(); ++second )
+        {
+            const size_t secondEnd = ( second + 1 ) % aPoints.size();
+
+            if( first == second || firstEnd == second || secondEnd == first )
+                continue;
+
+            if( schematicSegmentsIntersect( aPoints[first], aPoints[firstEnd],
+                                             aPoints[second], aPoints[secondEnd] ) )
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+
+bool schematicPointOnPolygonBoundary( const JSON& aPoint, const JSON& aPolygon )
+{
+    if( !aPoint.is_object() || !aPolygon.is_array() || aPolygon.size() < 3 )
+        return false;
+
+    const SCHEMATIC_POINT point = { aPoint.at( "xNm" ).get<int64_t>(),
+                                    aPoint.at( "yNm" ).get<int64_t>() };
+
+    for( size_t index = 0; index < aPolygon.size(); ++index )
+    {
+        const JSON& startJson = aPolygon[index];
+        const JSON& endJson = aPolygon[( index + 1 ) % aPolygon.size()];
+        const SCHEMATIC_POINT start = { startJson.at( "xNm" ).get<int64_t>(),
+                                        startJson.at( "yNm" ).get<int64_t>() };
+        const SCHEMATIC_POINT end = { endJson.at( "xNm" ).get<int64_t>(),
+                                      endJson.at( "yNm" ).get<int64_t>() };
+
+        if( schematicPointOnSegment( point, start, end ) )
+            return true;
+    }
+
+    return false;
+}
+
+
 JSON compileSchematicLine( const DOCUMENT& aDocument, size_t aNode,
                            const std::string& aKind,
                            KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
@@ -1044,6 +1164,226 @@ JSON compileSchematicLine( const DOCUMENT& aDocument, size_t aNode,
     }
 
     return line;
+}
+
+
+JSON compileSchematicRuleArea( const DOCUMENT& aDocument, size_t aNode,
+                               KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_rule_area",
+                    "rule_area requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON ruleArea = { { "kind", "rule_area" }, { "id", id } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_rule_area_field",
+                        "rule_area field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet )
+                || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rule_area_sheet",
+                            "rule_area sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                ruleArea["sheet"] = sheet;
+            }
+
+            continue;
+        }
+
+        if( head == "polygon" )
+        {
+            const DOCUMENT::NODE& polygon = aDocument.Nodes()[child];
+            JSON points = JSON::array();
+            std::vector<SCHEMATIC_POINT> geometry;
+            std::set<SCHEMATIC_POINT> uniquePoints;
+            bool valid = polygon.children.size() >= 4 && polygon.children.size() <= 1025;
+
+            for( size_t pointIndex = 1; pointIndex < polygon.children.size(); ++pointIndex )
+            {
+                const size_t pointNode = polygon.children[pointIndex];
+                JSON point;
+
+                if( aDocument.ListHead( pointNode ) != "point"
+                    || !parseSchematicPoint( aDocument, pointNode, point ) )
+                {
+                    valid = false;
+                    continue;
+                }
+
+                const SCHEMATIC_POINT coordinate = {
+                    point["xNm"].get<int64_t>(), point["yNm"].get<int64_t>()
+                };
+                valid = uniquePoints.emplace( coordinate ).second && valid;
+                geometry.emplace_back( coordinate );
+                points.emplace_back( std::move( point ) );
+            }
+
+            if( !valid || !schematicPolygonIsSimple( geometry ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rule_area_polygon",
+                            "rule_area polygon requires 3 through 1024 unique points forming "
+                            "one non-self-intersecting, non-zero-area boundary" );
+            }
+            else
+            {
+                ruleArea["polygon"] = std::move( points );
+            }
+
+            continue;
+        }
+
+        if( head == "stroke" )
+        {
+            const DOCUMENT::NODE& stroke = aDocument.Nodes()[child];
+            std::string widthText;
+            std::string lineStyle;
+            std::string colorText;
+            int64_t width = 0;
+            JSON color;
+            static const std::set<std::string> STYLES = {
+                "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+            };
+
+            if( stroke.children.size() != 4
+                || !scalarText( aDocument, stroke.children[1], widthText )
+                || !scalarText( aDocument, stroke.children[2], lineStyle )
+                || !scalarText( aDocument, stroke.children[3], colorText )
+                || !STYLES.contains( lineStyle )
+                || ( widthText != "default"
+                     && ( !parseDistance( widthText, width ) || width < 10'000
+                          || width > 10'000'000 ) )
+                || ( colorText != "default" && !parseHexColor( colorText, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rule_area_stroke",
+                            "rule_area stroke requires default or 0.01 mm through 10 mm, a "
+                            "native line style, and default or #RRGGBB[AA] color" );
+            }
+            else
+            {
+                JSON nativeColor = nullptr;
+
+                if( colorText != "default" )
+                {
+                    nativeColor = {
+                        { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                        { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                        { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                        { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                    };
+                }
+
+                ruleArea["stroke"] = { { "widthNm", widthText == "default" ? 0 : width },
+                                         { "lineStyle", lineStyle },
+                                         { "color", std::move( nativeColor ) } };
+            }
+
+            continue;
+        }
+
+        if( head == "fill" )
+        {
+            const DOCUMENT::NODE& fill = aDocument.Nodes()[child];
+            std::string fillType;
+            std::string colorText;
+            JSON color;
+            static const std::set<std::string> TYPES = {
+                "none", "outline", "background", "color", "hatch", "reverse_hatch",
+                "cross_hatch"
+            };
+
+            if( fill.children.size() != 3
+                || !scalarText( aDocument, fill.children[1], fillType )
+                || !scalarText( aDocument, fill.children[2], colorText )
+                || !TYPES.contains( fillType )
+                || ( ( fillType == "color" || fillType == "hatch"
+                       || fillType == "reverse_hatch" || fillType == "cross_hatch" )
+                             ? !parseHexColor( colorText, color )
+                             : colorText != "default" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rule_area_fill",
+                            "rule_area fill requires none|outline|background with default, or "
+                            "color|hatch|reverse_hatch|cross_hatch with #RRGGBB[AA]" );
+            }
+            else
+            {
+                JSON nativeColor = nullptr;
+
+                if( colorText != "default" )
+                {
+                    nativeColor = {
+                        { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                        { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                        { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                        { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                    };
+                }
+
+                ruleArea["fill"] = { { "type", fillType },
+                                       { "color", std::move( nativeColor ) } };
+            }
+
+            continue;
+        }
+
+        if( head == "exclude_from_sim" || head == "exclude_from_bom"
+            || head == "exclude_from_board" || head == "dnp" )
+        {
+            std::string boolean;
+
+            if( !parseSingleValueForm( aDocument, child, boolean )
+                || ( boolean != "true" && boolean != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_rule_area_" + head,
+                            "rule_area " + head + " must be true or false" );
+            }
+            else
+            {
+                ruleArea[head] = boolean == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_rule_area_field",
+                    "rule_area supports sheet, polygon, stroke, fill, exclude_from_sim, "
+                    "exclude_from_bom, exclude_from_board, and dnp" );
+    }
+
+    for( const char* required : { "sheet", "polygon", "stroke", "fill", "exclude_from_sim",
+                                  "exclude_from_bom", "exclude_from_board", "dnp" } )
+    {
+        if( !ruleArea.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_rule_area_field",
+                        "rule_area " + id + " is missing " + required );
+        }
+    }
+
+    return ruleArea;
 }
 
 
@@ -1612,11 +1952,12 @@ JSON compileSchematicDirective( const DOCUMENT& aDocument, size_t aNode,
 
             if( target.children.size() != 3
                 || !scalarText( aDocument, target.children[1], kind )
-                || !scalarText( aDocument, target.children[2], name ) || kind != "net"
+                || !scalarText( aDocument, target.children[2], name )
+                || ( kind != "net" && kind != "rule_area" )
                 || name.empty() || name.size() > MAX_IDENTIFIER_BYTES )
             {
                 diagnostic( aResult, "error", "invalid_schematic_directive_target",
-                            "directive target currently requires net and a bounded declared net name" );
+                            "directive target requires net|rule_area and a bounded declared name" );
             }
             else
             {
@@ -3404,7 +3745,12 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(justify left|center|right top|center|bottom) "
                       "(bold true|false) (italic true|false))" } },
                   { { "form",
-                      "(directive ID (sheet ID) (target net NAME) (at X Y) "
+                      "(rule_area ID (sheet ID) (polygon (point X Y) ...) "
+                      "(stroke default|WIDTH STYLE default|#RRGGBB[AA]) "
+                      "(fill TYPE default|#RRGGBB[AA]) (exclude_from_sim BOOL) "
+                      "(exclude_from_bom BOOL) (exclude_from_board BOOL) (dnp BOOL))" } },
+                  { { "form",
+                      "(directive ID (sheet ID) (target net|rule_area NAME) (at X Y) "
                       "(rotation ORTHOGONAL) (shape dot|round|diamond|rectangle) "
                       "(length SIZE) (property NAME VALUE (at X Y) "
                       "(rotation ORTHOGONAL) (size W H) (thickness auto|SIZE) "
@@ -3721,6 +4067,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "junction" )
         {
             JSON drawing = compileSchematicJunction( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "rule_area" )
+        {
+            JSON drawing = compileSchematicRuleArea( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
@@ -4220,6 +4579,17 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         }
     }
 
+    std::map<std::string, JSON> schematicRuleAreas;
+
+    for( const JSON& drawing : result.ir["schematic"]["drawings"] )
+    {
+        if( drawing.is_object() && drawing.value( "kind", "" ) == "rule_area"
+            && drawing.contains( "id" ) && drawing["id"].is_string() )
+        {
+            schematicRuleAreas.emplace( drawing["id"].get<std::string>(), drawing );
+        }
+    }
+
     for( const JSON& drawing : result.ir["schematic"]["drawings"] )
     {
         if( !drawing.is_object() || !drawing.contains( "sheet" )
@@ -4253,17 +4623,51 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
                                 + drawing["net"].get<std::string>() );
         }
 
-        if( drawing.value( "kind", "" ) == "directive"
-            && drawing.contains( "target" ) && drawing["target"].is_object()
-            && drawing["target"].value( "kind", "" ) == "net"
-            && drawing["target"].contains( "name" )
-            && drawing["target"]["name"].is_string()
-            && !netNames.contains( drawing["target"]["name"].get<std::string>() ) )
+        if( drawing.value( "kind", "" ) != "directive"
+            || !drawing.contains( "target" ) || !drawing["target"].is_object()
+            || !drawing["target"].contains( "name" )
+            || !drawing["target"]["name"].is_string() )
+        {
+            continue;
+        }
+
+        const std::string targetKind = drawing["target"].value( "kind", "" );
+        const std::string targetName = drawing["target"]["name"].get<std::string>();
+
+        if( targetKind == "net" && !netNames.contains( targetName ) )
         {
             diagnostic( result, "error", "unresolved_schematic_directive_net",
                         "schematic directive " + drawing.value( "id", "" )
-                                + " references undeclared net "
-                                + drawing["target"]["name"].get<std::string>() );
+                                + " references undeclared net " + targetName );
+        }
+        else if( targetKind == "rule_area" )
+        {
+            auto area = schematicRuleAreas.find( targetName );
+
+            if( area == schematicRuleAreas.end() )
+            {
+                diagnostic( result, "error", "unresolved_schematic_directive_rule_area",
+                            "schematic directive " + drawing.value( "id", "" )
+                                    + " references undeclared rule_area " + targetName );
+            }
+            else if( area->second.value( "sheet", "" ) != sheet )
+            {
+                diagnostic( result, "error", "mismatched_schematic_directive_rule_area_sheet",
+                            "schematic directive " + drawing.value( "id", "" )
+                                    + " and rule_area " + targetName
+                                    + " must be on the same sheet" );
+            }
+            else if( drawing.contains( "position" ) && drawing["position"].is_object()
+                     && area->second.contains( "polygon" )
+                     && area->second["polygon"].is_array()
+                     && !schematicPointOnPolygonBoundary( drawing["position"],
+                                                          area->second["polygon"] ) )
+            {
+                diagnostic( result, "error", "detached_schematic_directive_rule_area",
+                            "schematic directive " + drawing.value( "id", "" )
+                                    + " anchor must lie exactly on rule_area " + targetName
+                                    + " boundary" );
+            }
         }
     }
 

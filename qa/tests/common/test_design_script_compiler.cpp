@@ -1466,6 +1466,14 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitNetTargetedSchematicDirectiveRepresenta
   (component R2 (symbol "Local:R") (value "20k") (footprint "Local:R")
     (unit 1 (sheet root) (at 60mm 40mm) (rotation 0deg) (mirror none)))
   (net SIGNAL (pin R1 1 1) (pin R2 1 1))
+  (rule_area analog-policy
+    (sheet root)
+    (polygon (point 70mm 30mm) (point 90mm 30mm)
+      (point 90mm 50mm) (point 70mm 50mm))
+    (stroke 0.2mm dash_dot #11223380)
+    (fill hatch #44556699)
+    (exclude_from_sim true) (exclude_from_bom true)
+    (exclude_from_board false) (dnp true))
   (directive signal-policy
     (sheet root) (target net SIGNAL) (at 45mm 40mm)
     (rotation 90deg) (shape diamond) (length 2.54mm)
@@ -1477,11 +1485,29 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitNetTargetedSchematicDirectiveRepresenta
       (at 46mm 42mm) (rotation 180deg) (size 1mm 1mm)
       (thickness auto) (justify right top)
       (bold false) (italic true) (visible false)))
+  (directive area-policy
+    (sheet root) (target rule_area analog-policy) (at 70mm 40mm)
+    (rotation 0deg) (shape rectangle) (length 1.27mm)
+    (property "Component Class" "ANALOG"
+      (at 72mm 40mm) (rotation 0deg) (size 1.27mm 1.27mm)
+      (thickness auto) (justify left center)
+      (bold false) (italic false) (visible true)))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
     BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
-    const nlohmann::json& directive = result.ir["schematic"]["drawings"][0];
+    const nlohmann::json& ruleArea = result.ir["schematic"]["drawings"][0];
+    BOOST_CHECK_EQUAL( ruleArea["kind"], "rule_area" );
+    BOOST_CHECK_EQUAL( ruleArea["polygon"].size(), 4 );
+    BOOST_CHECK_EQUAL( ruleArea["stroke"]["widthNm"], 200000 );
+    BOOST_CHECK_EQUAL( ruleArea["stroke"]["color"]["a"], 128 );
+    BOOST_CHECK_EQUAL( ruleArea["fill"]["type"], "hatch" );
+    BOOST_CHECK_EQUAL( ruleArea["fill"]["color"]["a"], 153 );
+    BOOST_CHECK( ruleArea["exclude_from_sim"].get<bool>() );
+    BOOST_CHECK( ruleArea["exclude_from_bom"].get<bool>() );
+    BOOST_CHECK( !ruleArea["exclude_from_board"].get<bool>() );
+    BOOST_CHECK( ruleArea["dnp"].get<bool>() );
+    const nlohmann::json& directive = result.ir["schematic"]["drawings"][1];
     BOOST_CHECK_EQUAL( directive["kind"], "directive" );
     BOOST_CHECK_EQUAL( directive["target"]["kind"], "net" );
     BOOST_CHECK_EQUAL( directive["target"]["name"], "SIGNAL" );
@@ -1492,7 +1518,22 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitNetTargetedSchematicDirectiveRepresenta
     BOOST_CHECK_EQUAL( directive["properties"][0]["thicknessNm"], 200000 );
     BOOST_CHECK( directive["properties"][0]["bold"].get<bool>() );
     BOOST_CHECK( !directive["properties"][1]["visible"].get<bool>() );
-    BOOST_CHECK_EQUAL( result.plan["counts"]["drawings"], 1 );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][2]["target"]["kind"],
+                       "rule_area" );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][2]["target"]["name"],
+                       "analog-policy" );
+    BOOST_CHECK_EQUAL( result.plan["counts"]["drawings"], 3 );
+
+    std::string detached = program;
+    const std::string attachedText = "(target rule_area analog-policy) (at 70mm 40mm)";
+    const size_t attachedPosition = detached.find( attachedText );
+    BOOST_REQUIRE_NE( attachedPosition, std::string::npos );
+    detached.replace( attachedPosition, attachedText.size(),
+                      "(target rule_area analog-policy) (at 80mm 40mm)" );
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( detached );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "detached_schematic_directive_rule_area" ),
+                    std::string::npos );
 
     result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
             R"KDS((kichad_design (version 1) (project invalid_directive)
@@ -1503,6 +1544,19 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitNetTargetedSchematicDirectiveRepresenta
     BOOST_CHECK_NE( result.diagnostics.dump().find( "missing_schematic_directive_property" ),
                     std::string::npos );
     BOOST_CHECK_NE( result.diagnostics.dump().find( "unresolved_schematic_directive_net" ),
+                    std::string::npos );
+
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
+            R"KDS((kichad_design (version 1) (project invalid_rule_area)
+              (sheet root (parent none) (file "invalid.kicad_sch") (title "Invalid"))
+              (rule_area crossed (sheet root)
+                (polygon (point 1mm 1mm) (point 5mm 5mm)
+                  (point 1mm 5mm) (point 5mm 1mm))
+                (stroke default dash default) (fill none default)
+                (exclude_from_sim false) (exclude_from_bom false)
+                (exclude_from_board false) (dnp false))))KDS" );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "invalid_schematic_rule_area_polygon" ),
                     std::string::npos );
 }
 
@@ -1725,6 +1779,7 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
     std::set<std::string> domains;
     std::map<std::string, size_t> counts;
     bool foundQualifiedTitleBlock = false;
+    bool foundQualifiedDirectives = false;
 
     for( const nlohmann::json& facet : coverage["facets"] )
     {
@@ -1749,9 +1804,18 @@ BOOST_AUTO_TEST_CASE( DescribesAuthoritativeExhaustiveCapabilityCoverageWithoutA
 
         if( id == "project.title_block" )
             foundQualifiedTitleBlock = state == "qualified" && facet["gaps"].empty();
+
+        if( id == "schematic.directive_labels" )
+        {
+            foundQualifiedDirectives =
+                    state == "qualified" && facet["gaps"].empty()
+                    && facet["kdsForms"] == nlohmann::json::array( { "directive",
+                                                                     "rule_area" } );
+        }
     }
 
     BOOST_CHECK( foundQualifiedTitleBlock );
+    BOOST_CHECK( foundQualifiedDirectives );
     BOOST_CHECK( domains == expectedDomains );
 
     for( const std::string& state : allowedStates )

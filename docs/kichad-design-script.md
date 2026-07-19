@@ -461,6 +461,18 @@ source:
   (bold false)
   (italic false))
 
+(rule_area analog-domain
+  (sheet analog)
+  (polygon
+    (point 65mm 35mm) (point 90mm 35mm)
+    (point 90mm 60mm) (point 65mm 60mm))
+  (stroke 0.2mm dash_dot #11223380)
+  (fill hatch #44556699)
+  (exclude_from_sim false)
+  (exclude_from_bom false)
+  (exclude_from_board false)
+  (dnp false))
+
 (directive sensor-policy
   (sheet analog)
   (target net SENSOR_OUT)
@@ -476,6 +488,23 @@ source:
     (justify left bottom)
     (bold false)
     (italic false)
+    (visible true)))
+
+(directive analog-domain-policy
+  (sheet analog)
+  (target rule_area analog-domain)
+  (at 65mm 45mm)
+  (rotation 0deg)
+  (shape rectangle)
+  (length 2.54mm)
+  (property "Component Class" "ANALOG"
+    (at 67mm 45mm)
+    (rotation 0deg)
+    (size 1.27mm 1.27mm)
+    (thickness auto)
+    (justify left center)
+    (bold false)
+    (italic true)
     (visible true)))
 
 (bus_alias SENSOR_SIGNALS
@@ -501,16 +530,27 @@ explicit. Hierarchical labels are not duplicated as free-standing forms: they re
 the child sheet's canonical `pin` declaration. Unknown nets and invalid scope/shape combinations
 abort compilation.
 
-A directive is the single KDS representation for a net-attached KiCad directive flag. Its
-`(target net NAME)` is a semantic reference to a declared net; the native marker's empty text is
-never copied into KDS. Stable ID, sheet, anchor, orthogonal rotation, flag shape (`dot`, `round`,
-`diamond`, or `rectangle`), and pin length are explicit. Each directive has 1 through 64 uniquely
+A directive is the single KDS representation for a KiCad directive flag. Its target is either a
+declared net or a declared rule area; the native marker's empty text is never copied into KDS.
+Stable ID, sheet, anchor, orthogonal rotation, flag shape (`dot`, `round`, `diamond`, or
+`rectangle`), and pin length are explicit. Each directive has 1 through 64 uniquely
 named properties with a bounded string value and complete position, rotation, font size,
 thickness, justification, bold, italic, and visibility state. The planner emits KiCad 10's current
 `netclass_flag` spelling, not the accepted legacy `directive_label` alias. The same UUID ownership,
 idempotence, removal, atomic journal, rollback, and native-loader validation used by other direct
-schematic objects apply. Schematic rule areas and directives attached to their borders remain an
-explicitly reported coverage gap; the capability is therefore `partial`, not `qualified`.
+schematic objects apply.
+
+A rule area declares one 3-through-1024-point simple polygon. Repeated points, zero-area outlines,
+self-intersections, and out-of-range coordinates fail compilation. Stroke always declares width,
+native line style, and `default` or `#RRGGBB[AA]` color. Fill always declares a mode and color:
+`none`, `outline`, and `background` require `default`; `color`, `hatch`, `reverse_hatch`, and
+`cross_hatch` require `#RRGGBB[AA]`. Simulation, BOM, board-transfer, and DNP policy are explicit
+booleans. A directive targeting a rule area must be on the same sheet and its anchor must lie
+exactly on a polygon edge; an interior, exterior, or cross-sheet marker is rejected before apply.
+The native rule-area UUID is nested in KiCad's `polyline`, so the reconciler deliberately validates
+that location while still replacing or removing the complete `rule_area` atomically. Net targets
+and rule-area targets now pass the complete production qualification, so
+`schematic.directive_labels` is reported as `qualified`.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are
@@ -937,7 +977,8 @@ reconcilable on the next apply, while the whole turn remains revertible from loc
 The apply backend currently executes nested native schematic hierarchy, confined project-local
 symbol resolution, multi-unit and virtual/power component placement, native inclusion flags,
 global-net connectivity, explicit no-connect state, native local/global labels, directive flags,
-bus aliases, wires/junctions/buses/bus entries, complete native project symbol/footprint tables, physical
+schematic rule areas, bus aliases, wires/junctions/buses/bus entries, complete native project
+symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,

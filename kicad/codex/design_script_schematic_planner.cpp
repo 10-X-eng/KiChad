@@ -613,6 +613,61 @@ std::string labelExpression( const JSON& aDrawing, const std::string& aNativeKin
 }
 
 
+void appendSchematicColor( std::ostringstream& aOutput, const JSON& aColor,
+                           const std::string& aIndent )
+{
+    aOutput << aIndent << "(color " << aColor.at( "r" ).get<int>() << ' '
+            << aColor.at( "g" ).get<int>() << ' ' << aColor.at( "b" ).get<int>() << ' '
+            << alphaChannel( aColor.at( "a" ).get<int>() ) << ")\n";
+}
+
+
+std::string ruleAreaExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& stroke = aDrawing.at( "stroke" );
+    const JSON& fill = aDrawing.at( "fill" );
+    std::ostringstream output;
+    output << "(rule_area\n"
+           << "    (exclude_from_sim "
+           << ( aDrawing.at( "exclude_from_sim" ).get<bool>() ? "yes" : "no" ) << ")\n"
+           << "    (in_bom "
+           << ( aDrawing.at( "exclude_from_bom" ).get<bool>() ? "no" : "yes" ) << ")\n"
+           << "    (on_board "
+           << ( aDrawing.at( "exclude_from_board" ).get<bool>() ? "no" : "yes" ) << ")\n"
+           << "    (dnp " << ( aDrawing.at( "dnp" ).get<bool>() ? "yes" : "no" ) << ")\n"
+           << "    (polyline\n"
+           << "      (pts\n";
+
+    for( const JSON& point : aDrawing.at( "polygon" ) )
+    {
+        output << "        (xy " << millimetres( point.at( "xNm" ).get<int64_t>() ) << ' '
+               << millimetres( point.at( "yNm" ).get<int64_t>() ) << ")\n";
+    }
+
+    output << "      )\n"
+           << "      (stroke\n"
+           << "        (width " << millimetres( stroke.at( "widthNm" ).get<int64_t>() )
+           << ")\n"
+           << "        (type " << stroke.at( "lineStyle" ).get<std::string>() << ")\n";
+
+    if( !stroke.at( "color" ).is_null() )
+        appendSchematicColor( output, stroke.at( "color" ), "        " );
+
+    output << "      )\n"
+           << "      (fill\n"
+           << "        (type " << fill.at( "type" ).get<std::string>() << ")\n";
+
+    if( !fill.at( "color" ).is_null() )
+        appendSchematicColor( output, fill.at( "color" ), "        " );
+
+    output << "      )\n"
+           << "      (uuid " << aUuid << ")\n"
+           << "    )\n"
+           << "  )";
+    return output.str();
+}
+
+
 std::string directivePropertyExpression( const JSON& aProperty )
 {
     const JSON& position = aProperty.at( "position" );
@@ -825,10 +880,66 @@ bool validDrawingShape( const JSON& aDrawing )
         return true;
     }
 
+    if( kind == "rule_area" )
+    {
+        if( !aDrawing.contains( "polygon" ) || !aDrawing["polygon"].is_array()
+            || aDrawing["polygon"].size() < 3 || aDrawing["polygon"].size() > 1024
+            || !aDrawing.contains( "stroke" ) || !aDrawing["stroke"].is_object()
+            || !aDrawing["stroke"].contains( "widthNm" )
+            || !aDrawing["stroke"]["widthNm"].is_number_integer()
+            || !aDrawing["stroke"].contains( "lineStyle" )
+            || !aDrawing["stroke"]["lineStyle"].is_string()
+            || !aDrawing["stroke"].contains( "color" )
+            || !( aDrawing["stroke"]["color"].is_null()
+                  || aDrawing["stroke"]["color"].is_object() )
+            || !aDrawing.contains( "fill" ) || !aDrawing["fill"].is_object()
+            || !aDrawing["fill"].contains( "type" )
+            || !aDrawing["fill"]["type"].is_string()
+            || !aDrawing["fill"].contains( "color" )
+            || !( aDrawing["fill"]["color"].is_null()
+                  || aDrawing["fill"]["color"].is_object() )
+            || !aDrawing.contains( "exclude_from_sim" )
+            || !aDrawing["exclude_from_sim"].is_boolean()
+            || !aDrawing.contains( "exclude_from_bom" )
+            || !aDrawing["exclude_from_bom"].is_boolean()
+            || !aDrawing.contains( "exclude_from_board" )
+            || !aDrawing["exclude_from_board"].is_boolean()
+            || !aDrawing.contains( "dnp" ) || !aDrawing["dnp"].is_boolean() )
+        {
+            return false;
+        }
+
+        for( const JSON& point : aDrawing["polygon"] )
+        {
+            if( !point.is_object() || !point.contains( "xNm" )
+                || !point["xNm"].is_number_integer() || !point.contains( "yNm" )
+                || !point["yNm"].is_number_integer() )
+            {
+                return false;
+            }
+        }
+
+        for( const JSON* color : { &aDrawing["stroke"]["color"],
+                                   &aDrawing["fill"]["color"] } )
+        {
+            if( color->is_null() )
+                continue;
+
+            for( const char* channel : { "r", "g", "b", "a" } )
+            {
+                if( !color->contains( channel ) || !( *color )[channel].is_number_integer() )
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
     if( kind == "directive" )
     {
         if( !aDrawing.contains( "target" ) || !aDrawing["target"].is_object()
-            || aDrawing["target"].value( "kind", "" ) != "net"
+            || ( aDrawing["target"].value( "kind", "" ) != "net"
+                 && aDrawing["target"].value( "kind", "" ) != "rule_area" )
             || !aDrawing["target"].contains( "name" )
             || !aDrawing["target"]["name"].is_string()
             || !aDrawing.contains( "position" ) || !aDrawing["position"].is_object()
@@ -1383,6 +1494,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                            ? labelExpression( drawing, nativeKind, uuid )
                                    : kind == "directive"
                                            ? directiveExpression( drawing, uuid )
+                                   : kind == "rule_area"
+                                           ? ruleAreaExpression( drawing, uuid )
                                            : schematicLineExpression( drawing, uuid );
         JSON planned = { { "kind", nativeKind },
                          { "logicalId", id },

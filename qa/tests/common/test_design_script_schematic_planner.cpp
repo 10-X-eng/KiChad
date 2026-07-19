@@ -216,6 +216,14 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
   (label signal-global (sheet root) (scope global) (net SIGNAL) (at 55mm 40mm)
     (rotation 180deg) (shape output) (size 1.5mm 1.2mm) (thickness 0.2mm)
     (justify right center) (bold true) (italic true))
+  (rule_area analog-policy
+    (sheet root)
+    (polygon (point 70mm 30mm) (point 90mm 30mm)
+      (point 90mm 50mm) (point 70mm 50mm))
+    (stroke 0.2mm dash_dot #11223380)
+    (fill hatch #44556699)
+    (exclude_from_sim true) (exclude_from_bom true)
+    (exclude_from_board false) (dnp true))
   (directive signal-policy
     (sheet root) (target net SIGNAL) (at 45mm 40mm)
     (rotation 90deg) (shape diamond) (length 2.54mm)
@@ -227,6 +235,13 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
       (at 46mm 42mm) (rotation 180deg) (size 1mm 1mm)
       (thickness 0.2mm) (justify right top)
       (bold true) (italic true) (visible false)))
+  (directive area-policy
+    (sheet root) (target rule_area analog-policy) (at 70mm 40mm)
+    (rotation 0deg) (shape rectangle) (length 1.27mm)
+    (property "Component Class" "ANALOG"
+      (at 72mm 40mm) (rotation 0deg) (size 1.27mm 1.27mm)
+      (thickness auto) (justify left center)
+      (bold false) (italic false) (visible true)))
   (bus_alias SIGNALS (sheet root) (members SIGNAL))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -263,7 +278,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_EQUAL( plan.counts["components"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( plan.counts["netEndpoints"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["noConnects"].get<int>(), 1 );
-    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 5 );
     BOOST_CHECK_EQUAL( plan.counts["busAliases"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["librarySymbols"].get<int>(), 1 );
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
@@ -297,6 +312,15 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
                     std::string::npos );
     BOOST_CHECK_NE( native.find( "(hide yes)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(justify right top)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(rule_area\n    (exclude_from_sim yes)\n"
+                                 "    (in_bom no)\n    (on_board yes)\n    (dnp yes)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(type dash_dot)\n        (color 17 34 51 0.50196078)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(type hatch)\n        (color 68 85 102 0.6)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property \"Component Class\" \"ANALOG\"" ),
+                    std::string::npos );
     BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
                     std::string::npos );
 }

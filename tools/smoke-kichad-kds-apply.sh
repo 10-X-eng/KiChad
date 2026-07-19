@@ -143,6 +143,11 @@ for attempt in $(seq 1 30); do
         grep -Fq '(netclass_flag ""' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(property "Review Note" "AI-controlled directive"' \
             "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(rule_area' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(type hatch)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(color 68 85 102 0.6)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(property "Component Class" "ANALOG"' \
+            "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"

@@ -408,10 +408,22 @@ BOOST_AUTO_TEST_CASE( ReconcilesBusAliasesByOwnedNameWithoutClaimingUnmanagedAli
 }
 
 
-BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectiveFlagsByStableUuid )
+BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectiveFlagsAndRuleAreasByStableUuid )
 {
     nlohmann::json operation = operationFor();
+    const std::string ruleUuid = "11111111-2222-4333-8444-55555555a2ea";
     const std::string uuid = "11111111-2222-4333-8444-55555555d1ec";
+    const nlohmann::json ruleArea = {
+        { "file", "hierarchy.kicad_sch" },
+        { "kind", "rule_area" },
+        { "logicalId", "analog-policy" },
+        { "uuid", ruleUuid },
+        { "source",
+          "(rule_area (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) "
+          "(polyline (pts (xy 30 30) (xy 50 30) (xy 50 50) (xy 30 50)) "
+          "(stroke (width 0) (type dash)) (fill (type none)) "
+          "(uuid " + ruleUuid + ")))" }
+    };
     const nlohmann::json directive = {
         { "file", "hierarchy.kicad_sch" },
         { "kind", "netclass_flag" },
@@ -431,12 +443,18 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectiveFlagsByStableUuid )
                 return aFile.value( "path", "" ) == "hierarchy.kicad_sch";
             } );
     BOOST_REQUIRE( rootFile != operation["files"].end() );
+    ( *rootFile )["items"].push_back( ruleArea );
     ( *rootFile )["items"].push_back( directive );
     std::string newDocument = ( *rootFile )["newDocumentSource"];
     const size_t insertion = newDocument.find( "  (sheet_instances" );
     BOOST_REQUIRE_NE( insertion, std::string::npos );
-    newDocument.insert( insertion, "  " + directive["source"].get<std::string>() + "\n" );
+    newDocument.insert( insertion,
+                        "  " + ruleArea["source"].get<std::string>() + "\n  "
+                                + directive["source"].get<std::string>() + "\n" );
     ( *rootFile )["newDocumentSource"] = newDocument;
+    nlohmann::json ruleOwnership = ruleArea;
+    ruleOwnership.erase( "source" );
+    operation["managedItems"].push_back( ruleOwnership );
     nlohmann::json ownership = directive;
     ownership.erase( "source" );
     operation["managedItems"].push_back( ownership );
@@ -458,6 +476,10 @@ BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectiveFlagsByStableUuid )
     BOOST_REQUIRE( createdRoot != created.fileActions.end() );
     BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find(
                             "(netclass_flag \"\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( "(rule_area" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( ruleUuid ),
                     std::string::npos );
     BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( uuid ),
                     std::string::npos );

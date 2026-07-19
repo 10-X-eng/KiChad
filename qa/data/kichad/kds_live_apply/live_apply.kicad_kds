@@ -56,6 +56,21 @@
       (at 81mm 38mm) (rotation 0deg) (size 1.27mm 1.27mm)
       (thickness auto) (justify left bottom)
       (bold false) (italic false) (visible true)))
+  (rule_area root-analog-area
+    (sheet root)
+    (polygon (point 100mm 40mm) (point 120mm 40mm)
+      (point 120mm 60mm) (point 100mm 60mm))
+    (stroke 0.2mm dash_dot #11223380)
+    (fill hatch #44556699)
+    (exclude_from_sim false) (exclude_from_bom false)
+    (exclude_from_board false) (dnp false))
+  (directive root-area-policy
+    (sheet root) (target rule_area root-analog-area) (at 100mm 50mm)
+    (rotation 0deg) (shape rectangle) (length 2.54mm)
+    (property "Component Class" "ANALOG"
+      (at 102mm 50mm) (rotation 0deg) (size 1.27mm 1.27mm)
+      (thickness auto) (justify left center)
+      (bold false) (italic true) (visible true)))
   (bus root-bus (sheet root) (from 80mm 50mm) (to 90mm 50mm)
     (stroke 0.5mm dash))
   (bus_entry root-entry (sheet root) (from 85mm 48.73mm) (to 86.27mm 50mm)
