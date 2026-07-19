@@ -18,6 +18,7 @@
 
 #include <build_version.h>
 #include <kiid.h>
+#include <libraries/library_table_parser.h>
 
 #include <algorithm>
 #include <chrono>
@@ -35,6 +36,7 @@
 #include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/field_mask_util.h>
 #include <google/protobuf/util/json_util.h>
+#include <wx/base64.h>
 #include <wx/dir.h>
 #include <wx/file.h>
 #include <wx/ffile.h>
@@ -55,9 +57,23 @@ constexpr size_t       MAX_PCB_ARGUMENT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_DESIGN_STATE_BYTES = 4 * 1024 * 1024;
+constexpr size_t       MAX_PROJECT_LIBRARY_TABLE_BYTES = 1024 * 1024;
+constexpr size_t       MAX_PROJECT_LIBRARY_ROWS = 256;
 constexpr size_t       MAX_PCB_FOOTPRINTS = 10000;
 constexpr size_t       MAX_PCB_ZONES = 10000;
 constexpr auto         MAX_ZONE_REFILL_WAIT = std::chrono::seconds( 30 );
+
+
+struct PROJECT_LIBRARY_TABLE_UPDATE
+{
+    std::string kind;
+    wxFileName  path;
+    std::string source;
+    size_t      rows = 0;
+    bool        previousPresent = false;
+    std::string previousSource;
+    bool        applied = false;
+};
 
 
 bool isInspectableExtension( const wxString& aExtension )
@@ -88,6 +104,217 @@ bool canonicalizeExisting( wxFileName& aPath, bool aDirectory = false )
     else
         aPath.Assign( canonicalPath );
 
+    return true;
+}
+
+
+bool resolveProjectLibraryTable( const wxString& aProjectPath, const std::string& aName,
+                                 wxFileName& aResolved, std::string& aError )
+{
+    if( aName != "sym-lib-table" && aName != "fp-lib-table" )
+    {
+        aError = "project library table name is not supported";
+        return false;
+    }
+
+    wxFileName root = wxFileName::DirName( aProjectPath );
+    root.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    if( !canonicalizeExisting( root, true ) )
+    {
+        aError = "active project path could not be resolved";
+        return false;
+    }
+
+    wxFileName candidate( root.GetFullPath(), wxString::FromUTF8( aName ) );
+
+    if( wxDirExists( candidate.GetFullPath() ) )
+    {
+        aError = "project library table path is a directory";
+        return false;
+    }
+
+    if( candidate.FileExists() )
+    {
+        wxFileName canonical = candidate;
+
+        if( !canonicalizeExisting( canonical ) )
+        {
+            aError = "existing project library table could not be resolved";
+            return false;
+        }
+
+        wxString canonicalPath = canonical.GetFullPath();
+        wxString candidatePath = candidate.GetFullPath();
+
+#ifdef __WXMSW__
+        canonicalPath.MakeLower();
+        candidatePath.MakeLower();
+#endif
+
+        if( canonicalPath != candidatePath )
+        {
+            aError = "project library table cannot be a symbolic link";
+            return false;
+        }
+    }
+
+    aResolved = candidate;
+    return true;
+}
+
+
+bool readOptionalTextFile( const wxFileName& aPath, bool& aPresent, std::string& aSource,
+                           std::string& aError )
+{
+    aPresent = aPath.FileExists();
+    aSource.clear();
+
+    if( !aPresent )
+        return true;
+
+    wxFile file( aPath.GetFullPath(), wxFile::read );
+
+    if( !file.IsOpened() )
+    {
+        aError = "could not open the project library table";
+        return false;
+    }
+
+    const wxFileOffset length = file.Length();
+
+    if( length < 0 || length > static_cast<wxFileOffset>( MAX_PROJECT_LIBRARY_TABLE_BYTES ) )
+    {
+        aError = "project library table exceeds 1 MiB";
+        return false;
+    }
+
+    aSource.assign( static_cast<size_t>( length ), '\0' );
+
+    if( length > 0 && file.Read( aSource.data(), aSource.size() ) != length )
+    {
+        aSource.clear();
+        aError = "could not read the complete project library table";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool installTextFileAtomically( const wxFileName& aPath, bool aPresent,
+                                const std::string& aSource, std::string& aError )
+{
+    if( !aPresent )
+    {
+        if( aPath.FileExists() && !wxRemoveFile( aPath.GetFullPath() ) )
+        {
+            aError = "could not remove the project library table during rollback";
+            return false;
+        }
+
+        if( aPath.FileExists() )
+        {
+            aError = "project library table remained after rollback";
+            return false;
+        }
+
+        return true;
+    }
+
+    if( aSource.size() > MAX_PROJECT_LIBRARY_TABLE_BYTES )
+    {
+        aError = "project library table exceeds 1 MiB";
+        return false;
+    }
+
+    const wxString temporaryPath =
+            aPath.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
+    wxFile temporary;
+
+    if( !temporary.Create( temporaryPath, true )
+        || temporary.Write( aSource.data(), aSource.size() ) != aSource.size()
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+        aError = "could not durably write the project library table";
+        return false;
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, aPath.GetFullPath(), true ) )
+    {
+        wxRemoveFile( temporaryPath );
+        aError = "could not atomically install the project library table";
+        return false;
+    }
+
+    bool        installedPresent = false;
+    std::string installedSource;
+
+    if( !readOptionalTextFile( aPath, installedPresent, installedSource, aError )
+        || !installedPresent || installedSource != aSource )
+    {
+        aError = "project library table verification failed after installation";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool validateProjectLibraryTable( const std::string& aKind, const std::string& aSource,
+                                  size_t& aRows, std::string& aError )
+{
+    if( aSource.empty() || aSource.size() > MAX_PROJECT_LIBRARY_TABLE_BYTES )
+    {
+        aError = "project library table must contain 1 byte to 1 MiB";
+        return false;
+    }
+
+    LIBRARY_TABLE_PARSER parser;
+    auto                 parsed = parser.ParseBuffer( aSource );
+
+    if( !parsed.has_value() )
+    {
+        aError = "native library parser rejected the generated table: "
+                 + parsed.error().description.ToStdString();
+        return false;
+    }
+
+    const LIBRARY_TABLE_TYPE expected = aKind == "symbol" ? LIBRARY_TABLE_TYPE::SYMBOL
+                                                           : LIBRARY_TABLE_TYPE::FOOTPRINT;
+
+    if( parsed->type != expected || parsed->version != "7"
+        || parsed->rows.size() > MAX_PROJECT_LIBRARY_ROWS )
+    {
+        aError = "generated project library table has the wrong type, version, or row count";
+        return false;
+    }
+
+    std::set<std::string> nicknames;
+
+    for( const LIBRARY_TABLE_ROW_IR& row : parsed->rows )
+    {
+        const bool safeUri = row.uri.starts_with( "${KIPRJMOD}/" )
+                             && row.uri.find( "/../" ) == std::string::npos
+                             && !row.uri.ends_with( "/.." );
+        const bool suffix = aKind == "symbol" ? row.uri.ends_with( ".kicad_sym" )
+                                               : row.uri.ends_with( ".pretty" );
+
+        if( row.nickname.empty() || row.nickname.size() > 128
+            || !nicknames.emplace( row.nickname ).second || row.type != "KiCad"
+            || !safeUri || !suffix || !row.options.empty() || !row.description.empty()
+            || row.disabled || row.hidden )
+        {
+            aError = "generated project library table contains an invalid native row";
+            return false;
+        }
+    }
+
+    aRows = parsed->rows.size();
     return true;
 }
 
@@ -1773,6 +2000,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                           { "assignments",
                             plannedOperation["settings"]["assignments"].size() } } );
             }
+            else if( action == "update_project_library_table" )
+            {
+                items.push_back(
+                        { { "action", "configure_project_library_table" },
+                          { "kind", plannedOperation["kind"] },
+                          { "path", plannedOperation["path"] },
+                          { "libraries", plannedOperation["entries"] } } );
+            }
             else if( action == "update_custom_rules" )
             {
                 items.push_back(
@@ -1868,6 +2103,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         std::unique_ptr<kiapi::board::BoardStackup> desiredStackup;
         std::unique_ptr<kiapi::board::BoardDesignRules> desiredRules;
         std::unique_ptr<kiapi::common::project::NetClassSettings> desiredNetClasses;
+        JSON desiredLibraryTables = JSON::array();
+        std::set<std::string> desiredLibraryTableKinds;
         bool        hasDesiredCustomRules = false;
         bool        desiredCustomRulesPresent = false;
         std::string desiredCustomRulesSource;
@@ -1878,8 +2115,47 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
             if( plannedAction != "update_stackup" && plannedAction != "update_rules"
                 && plannedAction != "update_net_classes"
-                && plannedAction != "update_custom_rules" )
+                && plannedAction != "update_custom_rules"
+                && plannedAction != "update_project_library_table" )
                 continue;
+
+            if( plannedAction == "update_project_library_table" )
+            {
+                const std::string kind = action.value( "kind", "" );
+                const std::string expectedPath = kind == "symbol" ? "sym-lib-table"
+                                                   : kind == "footprint" ? "fp-lib-table"
+                                                                          : "";
+
+                if( expectedPath.empty() || !desiredLibraryTableKinds.emplace( kind ).second
+                    || action.value( "path", "" ) != expectedPath
+                    || !action.contains( "present" ) || !action["present"].is_boolean()
+                    || !action["present"].get<bool>() || !action.contains( "source" )
+                    || !action["source"].is_string() )
+                {
+                    return failure( "invalid_plan",
+                                    "KDS produced an invalid project library table operation" );
+                }
+
+                size_t      rows = 0;
+                std::string validationError;
+                const std::string tableSource = action["source"].get<std::string>();
+
+                if( !validateProjectLibraryTable( kind, tableSource, rows, validationError )
+                    || !action.contains( "entries" ) || !action["entries"].is_number_unsigned()
+                    || action["entries"].get<size_t>() != rows )
+                {
+                    return failure( "invalid_plan",
+                                    validationError.empty()
+                                            ? "KDS project library table row count is inconsistent"
+                                            : validationError );
+                }
+
+                desiredLibraryTables.push_back( { { "kind", kind },
+                                                  { "path", expectedPath },
+                                                  { "source", tableSource },
+                                                  { "rows", rows } } );
+                continue;
+            }
 
             if( plannedAction == "update_custom_rules" )
             {
@@ -1947,6 +2223,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 return failure( "invalid_plan", "KDS produced invalid native design settings" );
         }
 
+        if( !desiredLibraryTables.empty() && desiredLibraryTables.size() != 2 )
+        {
+            return failure( "invalid_plan",
+                            "KDS must replace symbol and footprint project tables together" );
+        }
+
         const std::string sourceRelativePath = aArguments["path"].get<std::string>();
         const std::string projectName = compiled.ir["project"]["name"].get<std::string>();
         KICHAD::DESIGN_SCRIPT_PCB_RECONCILER::CONTEXT reconcileContext = {
@@ -2008,6 +2290,27 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             for( const JSON& item : previousState["managedPcbItems"] )
                 relevantIds.emplace( item["itemId"].get<std::string>() );
+        }
+
+        std::vector<PROJECT_LIBRARY_TABLE_UPDATE> libraryTableUpdates;
+
+        for( const JSON& desired : desiredLibraryTables )
+        {
+            PROJECT_LIBRARY_TABLE_UPDATE update;
+            update.kind = desired["kind"].get<std::string>();
+            update.source = desired["source"].get<std::string>();
+            update.rows = desired["rows"].get<size_t>();
+
+            if( !resolveProjectLibraryTable( aProjectPath,
+                                             desired["path"].get<std::string>(),
+                                             update.path, pathError )
+                || !readOptionalTextFile( update.path, update.previousPresent,
+                                          update.previousSource, pathError ) )
+            {
+                return failure( "library_table_inventory_failed", pathError );
+            }
+
+            libraryTableUpdates.emplace_back( std::move( update ) );
         }
 
         KICHAD_IPC_CLIENT client( "org.kichad.codex.design", aIpcSocketDirectory );
@@ -2146,6 +2449,23 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 { "present", previousCustomRulesPresent },
                 { "source", previousCustomRulesSource }
             };
+        }
+
+        if( !libraryTableUpdates.empty() )
+        {
+            applyJournal["previousProjectLibraryTables"] = JSON::array();
+
+            for( const PROJECT_LIBRARY_TABLE_UPDATE& update : libraryTableUpdates )
+            {
+                applyJournal["previousProjectLibraryTables"].push_back(
+                        { { "kind", update.kind },
+                          { "path", update.path.GetFullName().ToStdString() },
+                          { "present", update.previousPresent },
+                          { "sourceBase64",
+                            wxBase64Encode( update.previousSource.data(),
+                                            update.previousSource.size() )
+                                    .ToStdString() } } );
+            }
         }
 
         if( !writeJsonAtomically( journalPath, applyJournal, pathError ) )
@@ -2289,13 +2609,73 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             rollbackSettings( aMessage );
         };
 
+        size_t libraryTablesApplied = 0;
+
+        for( PROJECT_LIBRARY_TABLE_UPDATE& update : libraryTableUpdates )
+        {
+            if( !installTextFileAtomically( update.path, true, update.source, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !installTextFileAtomically( update.path, update.previousPresent,
+                                                update.previousSource, rollbackError ) )
+                {
+                    message += "; current library-table rollback also failed: "
+                               + rollbackError;
+                }
+
+                for( auto prior = libraryTableUpdates.rbegin();
+                     prior != libraryTableUpdates.rend(); ++prior )
+                {
+                    if( !prior->applied )
+                        continue;
+
+                    rollbackError.clear();
+
+                    if( !installTextFileAtomically( prior->path, prior->previousPresent,
+                                                    prior->previousSource, rollbackError ) )
+                    {
+                        message += "; library-table rollback also failed: " + rollbackError;
+                    }
+                }
+
+                rollbackAllSettings( message );
+                return failure( "library_table_apply_failed", message );
+            }
+
+            update.applied = true;
+            ++libraryTablesApplied;
+        }
+
+        auto rollbackAllArtifacts = [&]( std::string& aMessage )
+        {
+            for( auto update = libraryTableUpdates.rbegin();
+                 update != libraryTableUpdates.rend(); ++update )
+            {
+                if( !update->applied )
+                    continue;
+
+                std::string rollbackError;
+
+                if( !installTextFileAtomically( update->path, update->previousPresent,
+                                                update->previousSource, rollbackError ) )
+                {
+                    aMessage += "; library-table rollback also failed: " + rollbackError;
+                }
+            }
+
+            rollbackAllSettings( aMessage );
+        };
+
         if( reconciled.actions.empty() )
         {
             if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
             {
                 std::string message = pathError
                                       + "; the apply journal was retained for safe recovery";
-                rollbackAllSettings( message );
+                rollbackAllArtifacts( message );
                 return failure( "state_write_failed", message );
             }
 
@@ -2307,13 +2687,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "counts", reconciled.counts },
                              { "transaction",
                                stackupApplied || rulesApplied || netClassesApplied
-                                               || customRulesApplied
+                                               || customRulesApplied || libraryTablesApplied > 0
                                        ? "design settings applied"
                                        : "no board changes" },
                              { "stackupApplied", stackupApplied },
                              { "rulesApplied", rulesApplied },
                              { "netClassesApplied", netClassesApplied },
                              { "customRulesApplied", customRulesApplied },
+                             { "libraryTablesApplied", libraryTablesApplied },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -2324,7 +2705,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             std::string message = pathError
                                   + "; the apply journal was retained for safe recovery";
-            rollbackAllSettings( message );
+            rollbackAllArtifacts( message );
             return failure( "transaction_failed", message );
         }
 
@@ -2337,7 +2718,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
 
-            rollbackAllSettings( message );
+            rollbackAllArtifacts( message );
 
             return failure( "apply_failed", message );
         }
@@ -2351,7 +2732,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !dropped && !dropError.empty() )
                 message += "; transaction drop also failed: " + dropError;
 
-            rollbackAllSettings( message );
+            rollbackAllArtifacts( message );
 
             return failure( "transaction_failed", message );
         }
@@ -2383,6 +2764,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "rulesApplied", rulesApplied },
                          { "netClassesApplied", netClassesApplied },
                          { "customRulesApplied", customRulesApplied },
+                         { "libraryTablesApplied", libraryTablesApplied },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };

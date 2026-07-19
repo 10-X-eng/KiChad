@@ -48,9 +48,9 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
     (revision "A"))
   (units mm)
 
-  (library symbol Device
-    (uri "${KICAD10_SYMBOL_DIR}/Device.kicad_sym"))
-  (library footprint Resistor_SMD)
+  (library symbol Device (table global))
+  (library footprint Resistor_SMD (table global))
+  (library footprint LED_SMD (table global))
 
   (component R1
     (symbol "Device:R")
@@ -167,6 +167,37 @@ rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zon
 board text require logical `id` fields. Those IDs are stable across formatting and statement
 reordering and are the source identity used by transactional backends; component placement uses the
 already-unique reference.
+
+### Library dependencies and project tables
+
+KDS uses one library declaration for installed and project-local dependencies:
+
+```scheme
+(library symbol Device (table global))
+(library footprint Resistor_SMD (table global))
+(library symbol ProductSymbols (table project)
+  (uri "${KIPRJMOD}/libraries/product.kicad_sym"))
+(library footprint ProductFootprints (table project)
+  (uri "${KIPRJMOD}/libraries/Product.pretty"))
+(library model ProductModels (table project)
+  (uri "${KIPRJMOD}/libraries/models"))
+```
+
+`global` declares a required installed nickname and forbids a URI. `project` requires one bounded,
+project-confined `${KIPRJMOD}/` URI; symbol libraries end in `.kicad_sym` and footprint libraries
+end in `.pretty`. Traversal, absolute paths, quoted path injection, duplicate fields, duplicate
+kind/nickname pairs, and more than 512 dependencies are compile errors. Model dependencies use the
+same declaration but do not generate a table because KiCad has no model-library table.
+
+When any libraries are declared, KDS owns the complete project symbol and footprint tables. Apply
+deterministically lowers the project entries to native `sym-lib-table` and `fp-lib-table` files,
+validates both with KiCad 10's library-table parser, and installs them atomically beside the project
+file. Global dependencies are intentionally not copied into project tables. Exact prior presence
+and bytes for both tables are stored in the apply journal and restored in reverse order after a
+lost acknowledgement or any later pre-commit failure. Existing table symlinks, malformed generated
+rows, type/version mismatches, and tables larger than 1 MiB or 256 rows are rejected before
+mutation. These native files are compiler artifacts; the authored `.kicad_kds` declarations remain
+the only external design representation.
 
 ### Stackup form
 
@@ -537,7 +568,8 @@ KiCad `Dimension` protobuf type and uses the authored style as its single geomet
 3. Resolve libraries, symbols, footprints, models, components, pins, and nets.
 4. Produce a deterministic IR, source digest, diagnostics, and mutation plan.
 5. Establish the whole-project pre-apply snapshot.
-6. Compile schematic and library artifacts through lossless edits validated by KiCad 10.
+6. Compile native project library tables and schematic/library content through lossless edits
+   validated by KiCad 10.
 7. Compile live board state through the official KiCad 10 protobuf IPC transaction API.
 8. Resolve and cache sourcing evidence with explicit remote-action permissions.
 9. Run ERC, DRC, connectivity, sourcing, and manufacturability checks.
@@ -551,7 +583,8 @@ missing ones are recreated, and only previously managed obsolete items are delet
 KiCad transaction. A project-confined apply journal makes an interrupted operation safely
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
-The apply backend currently executes physical board stackups, the complete global Board Setup
+The apply backend currently executes complete native project symbol/footprint tables, physical
+board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,
 native board text, and all five native dimension styles. Stackup apply
@@ -565,7 +598,8 @@ mutation, and are journaled and restored together with the stackup on any pre-co
 complete net-class table uses a typed native project endpoint, is persisted with the project, and
 is journaled and restored after the global rules. Custom rules use a bounded native board endpoint,
 are compiled by KiCad's real DRC parser and engine, and are journaled and restored after net classes
-and before transactional PCB items. A zone explicitly declares
+and before project library tables and transactional PCB items. Project library tables are parsed by
+KiCad before atomic installation and journaled as exact prior bytes. A zone explicitly declares
 its net, stable ID, one or more copper layers, bounded
 polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
 solid or hatched fill, priority, border display, and lock state. No manufacturing setting is
@@ -589,6 +623,7 @@ same deterministic identities. It reads the stackup back from the live editor an
 impedance, bevel, plating, all nine ordered physical layers, thicknesses, material, color, loss,
 permittivity, and dielectric lock. It also reads back all global constraint fields, including the
 semantic legacy edge-clearance mode, and verifies the second apply updates the same settings. It
+verifies both generated project library tables byte-for-byte through repeated apply. It
 reads back the complete net-class table and assignments, including inherited fields, native
 schematic units, colors, line styles, via/microvia padstacks, and priorities; an invalid replacement
 must leave that table unchanged. It also reads back the exact generated custom-rule document,
@@ -616,8 +651,10 @@ A form is documented as executable only after it has all of the following covera
 
 The front-end currently validates the stable identities and fields for project metadata, libraries,
 components, nets, sourcing, board statement kinds, global rules, net classes, custom rules, checks,
-and outputs. Global rules, net classes, custom rules, and executable board forms have backend-specific type checking and
-rollback coverage. Nested sheet
-and library payloads remain non-executable until their own typed backends and rollback tests land.
+and outputs. Global rules, net classes, custom rules, and executable board forms have
+backend-specific type checking and rollback coverage. Project symbol/footprint tables are
+executable with native parser validation, atomic installation, journaling, and rollback coverage.
+Nested sheets, schematic components and connectivity, and symbol/footprint/model library content
+remain non-executable until their own lossless backends and rollback tests land.
 Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

@@ -77,8 +77,9 @@ native project API, reads every class and assignment back, rejects an invalid at
 and verifies the prior table did not change. It also lowers the single KDS custom-rule
 representation to one internal native document, installs it through a bounded board endpoint,
 reloads KiCad's DRC engine, verifies exact readback, and proves invalid input cannot mutate the
-active rules. It verifies a deterministic managed copper zone is filled by KiCad's
-official zone engine after each transaction and a distinct managed keepout remains an unfilled,
+active rules. It generates and repeats exact KiCad-parsed project symbol and footprint tables from
+the canonical KDS library declarations. It verifies a deterministic managed copper zone is filled
+by KiCad's official zone engine after each transaction and a distinct managed keepout remains an unfilled,
 locked rule area with exact prohibited-item settings. It also creates deterministic native board
 text and all five native dimension styles, then reapplies each distinct oneof field mask and verifies
 reference-resolved placement through a narrow native footprint transform: the parent and pad UUIDs,
@@ -112,6 +113,14 @@ and filled. A rejected or timed-out refill retains the recovery journal, and the
 reconciles and retries. Keepout rule areas use their own ownership namespace and exact protobuf
 field mask; they never participate in copper-fill completion polling. Both state files are project-confined and
 included in whole-turn local history snapshots.
+
+Project-local library declarations compile into complete native `sym-lib-table` and
+`fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and
+rows before project-confined atomic replacement. The apply journal retains the exact prior presence
+and bytes of both files and restores them in reverse order with board settings after a pre-commit
+failure. Installed/global library declarations remain nickname dependencies and are never copied
+into the project tables; model declarations remain KDS dependencies because KiCad has no model
+table.
 
 The complete tool surface is capped at nine host functions. Each function accepts schema-validated
 requests and returns structured results; functionality is added to these tools

@@ -40,6 +40,8 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 constexpr size_t MAX_SCRIPT_BYTES = 1024 * 1024;
 constexpr size_t MAX_TOP_LEVEL_FORMS = 20000;
 constexpr size_t MAX_IDENTIFIER_BYTES = 128;
+constexpr size_t MAX_LIBRARIES = 512;
+constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
 
 
 void diagnostic( KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult, const std::string& aSeverity,
@@ -81,6 +83,21 @@ bool validIdentifier( const std::string& aValue )
                                    || aCharacter == '.' || aCharacter == '/'
                                    || aCharacter == '#';
                         } );
+}
+
+
+bool libraryIdNickname( const std::string& aValue, std::string& aNickname )
+{
+    const size_t separator = aValue.find( ':' );
+
+    if( separator == std::string::npos || separator == 0 || separator + 1 == aValue.size()
+        || aValue.find( ':', separator + 1 ) != std::string::npos || aValue.size() > 512 )
+    {
+        return false;
+    }
+
+    aNickname = aValue.substr( 0, separator );
+    return validIdentifier( aNickname );
 }
 
 
@@ -370,7 +387,7 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
         return JSON::object();
     }
 
-    JSON library = { { "kind", kind }, { "id", id } };
+    JSON library = { { "kind", kind }, { "id", id }, { "uri", nullptr } };
     std::set<std::string> fields;
 
     for( size_t i = 3; i < node.children.size(); ++i )
@@ -395,6 +412,43 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
         }
 
         library[head] = value;
+    }
+
+    const std::string table = library.value( "table", "" );
+
+    if( table != "global" && table != "project" )
+    {
+        diagnostic( aResult, "error", "invalid_library_table",
+                    "library requires exactly one (table global|project)" );
+    }
+
+    if( table == "global" && !library["uri"].is_null() )
+    {
+        diagnostic( aResult, "error", "redundant_global_library_uri",
+                    "global library dependencies use their installed nickname and cannot set uri" );
+    }
+
+    if( table == "project" )
+    {
+        const std::string uri = library["uri"].is_string()
+                                      ? library["uri"].get<std::string>()
+                                      : std::string();
+        const bool safe = uri.starts_with( "${KIPRJMOD}/" ) && uri.size() <= 4096
+                          && uri.size() > std::strlen( "${KIPRJMOD}/" )
+                          && uri.find( '\0' ) == std::string::npos
+                          && uri.find_first_of( "\r\n\"\\" ) == std::string::npos
+                          && uri.find( "/../" ) == std::string::npos
+                          && !uri.ends_with( "/.." );
+        const bool nativeSuffix = kind == "symbol" ? uri.ends_with( ".kicad_sym" )
+                                : kind == "footprint" ? uri.ends_with( ".pretty" )
+                                                      : true;
+
+        if( !safe || !nativeSuffix )
+        {
+            diagnostic( aResult, "error", "invalid_project_library_uri",
+                        "project library uri must be a safe ${KIPRJMOD}/ path ending in "
+                        ".kicad_sym for symbols or .pretty for footprints" );
+        }
     }
 
     return library;
@@ -494,6 +548,17 @@ JSON compileComponent( const DOCUMENT& aDocument, size_t aNode,
             diagnostic( aResult, "error", "duplicate_component_field",
                         "component field '" + head + "' occurs more than once" );
             continue;
+        }
+
+        if( head == "symbol" || head == "footprint" )
+        {
+            std::string nickname;
+
+            if( !libraryIdNickname( value, nickname ) )
+            {
+                diagnostic( aResult, "error", "invalid_component_library_id",
+                            "component " + head + " must use bounded LIBRARY:ITEM syntax" );
+            }
         }
 
         component[head] = value;
@@ -1846,7 +1911,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form", "(project NAME (title TEXT) (company TEXT) (revision TEXT))" },
                     { "required", true } },
                   { { "form", "(units mm|mil)" }, { "default", "mm" } },
-                  { { "form", "(library symbol|footprint|model ID (uri URI))" } },
+                  { { "form",
+                      "(library symbol|footprint|model ID (table global)) | "
+                      "(library symbol|footprint|model ID (table project) "
+                      "(uri ${KIPRJMOD}/PATH))" } },
                   { { "form",
                       "(component REF (symbol LIB:ID) (value VALUE) (footprint LIB:ID) "
                       "(property NAME VALUE) (dnp true|false))" } },
@@ -2249,6 +2317,61 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     if( !sawProject )
         diagnostic( result, "error", "missing_project", "script is missing project metadata" );
+
+    if( result.ir["libraries"].size() > MAX_LIBRARIES )
+    {
+        diagnostic( result, "error", "too_many_libraries",
+                    "a script may declare at most 512 library dependencies" );
+    }
+
+    size_t projectSymbolLibraries = 0;
+    size_t projectFootprintLibraries = 0;
+
+    for( const JSON& library : result.ir["libraries"] )
+    {
+        if( !library.is_object() || library.value( "table", "" ) != "project" )
+            continue;
+
+        if( library.value( "kind", "" ) == "symbol" )
+            ++projectSymbolLibraries;
+        else if( library.value( "kind", "" ) == "footprint" )
+            ++projectFootprintLibraries;
+    }
+
+    if( projectSymbolLibraries > MAX_PROJECT_LIBRARIES_PER_TABLE
+        || projectFootprintLibraries > MAX_PROJECT_LIBRARIES_PER_TABLE )
+    {
+        diagnostic( result, "error", "too_many_project_libraries",
+                    "a project symbol or footprint table may contain at most 256 libraries" );
+    }
+
+    if( !result.ir["libraries"].empty() )
+    {
+        for( const JSON& component : result.ir["schematic"]["components"] )
+        {
+            for( const char* kind : { "symbol", "footprint" } )
+            {
+                if( !component.is_object() || !component.contains( kind )
+                    || !component[kind].is_string() )
+                {
+                    continue;
+                }
+
+                std::string nickname;
+
+                if( !libraryIdNickname( component[kind].get<std::string>(), nickname ) )
+                    continue;
+
+                if( !libraryIds.contains( std::string( kind ) + ":" + nickname ) )
+                {
+                    diagnostic( result, "error", "unresolved_component_library",
+                                "component " + component.value( "reference", "" ) + " uses "
+                                        + kind + " library " + nickname
+                                        + " without a matching declaration" );
+                }
+            }
+        }
+    }
 
     for( const std::string& reference : referencedComponents )
     {

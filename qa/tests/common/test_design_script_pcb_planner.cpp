@@ -21,6 +21,7 @@
 #include <api/board/board_types.pb.h>
 #include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/json_util.h>
+#include <libraries/library_table_parser.h>
 
 
 namespace
@@ -86,6 +87,63 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     BOOST_CHECK_EQUAL( id, "c3fc8149-6c3c-8f2d-94c6-2d462e6d2a49" );
     BOOST_CHECK_EQUAL( id[14], '8' );
     BOOST_CHECK( id[19] == '8' || id[19] == '9' || id[19] == 'a' || id[19] == 'b' );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersCanonicalLibrariesIntoExactNativeProjectTables )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project canonical_libraries)
+  (library symbol Device (table global))
+  (library symbol LocalSymbols (table project)
+    (uri "${KIPRJMOD}/libraries/local.kicad_sym"))
+  (library footprint Resistor_SMD (table global))
+  (library footprint LocalFootprints (table project)
+    (uri "${KIPRJMOD}/libraries/Local.pretty"))
+  (library model LocalModels (table project)
+    (uri "${KIPRJMOD}/libraries/models"))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["symbolLibraries"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["footprintLibraries"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["modelLibraries"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( plan.counts["libraryTables"].get<int>(), 2 );
+
+    const std::string expectedSymbols =
+            "(sym_lib_table\n"
+            "  (version 7)\n"
+            "  (lib (name \"LocalSymbols\")(type \"KiCad\")(uri "
+            "\"${KIPRJMOD}/libraries/local.kicad_sym\")(options \"\")(descr \"\"))\n"
+            ")\n";
+    const std::string expectedFootprints =
+            "(fp_lib_table\n"
+            "  (version 7)\n"
+            "  (lib (name \"LocalFootprints\")(type \"KiCad\")(uri "
+            "\"${KIPRJMOD}/libraries/Local.pretty\")(options \"\")(descr \"\"))\n"
+            ")\n";
+    BOOST_CHECK_EQUAL( plan.operations[0]["path"].get<std::string>(), "sym-lib-table" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["source"].get<std::string>(), expectedSymbols );
+    BOOST_CHECK_EQUAL( plan.operations[1]["path"].get<std::string>(), "fp-lib-table" );
+    BOOST_CHECK_EQUAL( plan.operations[1]["source"].get<std::string>(), expectedFootprints );
+
+    LIBRARY_TABLE_PARSER parser;
+    auto symbols = parser.ParseBuffer( plan.operations[0]["source"].get<std::string>() );
+    auto footprints = parser.ParseBuffer( plan.operations[1]["source"].get<std::string>() );
+    BOOST_REQUIRE( symbols.has_value() );
+    BOOST_REQUIRE( footprints.has_value() );
+    BOOST_CHECK( symbols->type == LIBRARY_TABLE_TYPE::SYMBOL );
+    BOOST_CHECK( footprints->type == LIBRARY_TABLE_TYPE::FOOTPRINT );
+    BOOST_CHECK_EQUAL( symbols->version, "7" );
+    BOOST_CHECK_EQUAL( symbols->rows.size(), 1 );
+    BOOST_CHECK_EQUAL( footprints->rows.size(), 1 );
 }
 
 

@@ -11,6 +11,7 @@
 
 #include "design_script_pcb_planner.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iomanip>
@@ -307,6 +308,47 @@ JSON planNetClasses( const JSON& aNetClasses )
     }
 
     return { { "action", "update_net_classes" }, { "settings", std::move( settings ) } };
+}
+
+
+std::string planLibraryTableSource( const JSON& aLibraries, const std::string& aKind )
+{
+    std::ostringstream output;
+    output << '(' << ( aKind == "symbol" ? "sym_lib_table" : "fp_lib_table" )
+           << "\n  (version 7)\n";
+
+    for( const JSON& library : aLibraries )
+    {
+        if( library.at( "kind" ) != aKind || library.at( "table" ) != "project" )
+            continue;
+
+        output << "  (lib (name " << JSON( library.at( "id" ).get<std::string>() ).dump()
+               << ")(type \"KiCad\")(uri "
+               << JSON( library.at( "uri" ).get<std::string>() ).dump()
+               << ")(options \"\")(descr \"\"))\n";
+    }
+
+    output << ")\n";
+    return output.str();
+}
+
+
+JSON planLibraryTable( const JSON& aLibraries, const std::string& aKind )
+{
+    const size_t entries = std::count_if(
+            aLibraries.begin(), aLibraries.end(),
+            [&]( const JSON& aLibrary )
+            {
+                return aLibrary.at( "kind" ) == aKind
+                       && aLibrary.at( "table" ) == "project";
+            } );
+
+    return { { "action", "update_project_library_table" },
+             { "kind", aKind },
+             { "path", aKind == "symbol" ? "sym-lib-table" : "fp-lib-table" },
+             { "present", true },
+             { "entries", entries },
+             { "source", planLibraryTableSource( aLibraries, aKind ) } };
 }
 
 
@@ -957,14 +999,17 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
     RESULT result;
     result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
                       { "netClasses", 0 }, { "netClassAssignments", 0 },
-                      { "customRules", 0 }, { "stackups", 0 },
+                      { "customRules", 0 }, { "symbolLibraries", 0 },
+                      { "footprintLibraries", 0 }, { "modelLibraries", 0 },
+                      { "libraryTables", 0 }, { "stackups", 0 },
                       { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
         || aCompilerIr.value( "version", 0 ) != 1 || !aCompilerIr.contains( "project" )
         || !aCompilerIr["project"].is_object() || !aCompilerIr["project"].contains( "name" )
         || !aCompilerIr["project"]["name"].is_string() || !aCompilerIr.contains( "pcb" )
-        || !aCompilerIr["pcb"].is_array() )
+        || !aCompilerIr["pcb"].is_array()
+        || ( aCompilerIr.contains( "libraries" ) && !aCompilerIr["libraries"].is_array() ) )
     {
         diagnostic( result, "error", "invalid_compiler_ir",
                     "PCB planning requires valid KiChad Design Script version 1 IR" );
@@ -975,6 +1020,28 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 
     try
     {
+        if( aCompilerIr.contains( "libraries" ) && aCompilerIr["libraries"].is_array()
+            && !aCompilerIr["libraries"].empty() )
+        {
+            result.operations.emplace_back(
+                    planLibraryTable( aCompilerIr["libraries"], "symbol" ) );
+            result.operations.emplace_back(
+                    planLibraryTable( aCompilerIr["libraries"], "footprint" ) );
+            result.counts["libraryTables"] = 2;
+
+            for( const JSON& library : aCompilerIr["libraries"] )
+            {
+                const std::string kind = library.at( "kind" ).get<std::string>();
+
+                if( kind == "symbol" )
+                    ++result.counts["symbolLibraries"].get_ref<int64_t&>();
+                else if( kind == "footprint" )
+                    ++result.counts["footprintLibraries"].get_ref<int64_t&>();
+                else
+                    ++result.counts["modelLibraries"].get_ref<int64_t&>();
+            }
+        }
+
         if( aCompilerIr.contains( "netClasses" ) && aCompilerIr["netClasses"].is_object() )
         {
             result.operations.emplace_back( planNetClasses( aCompilerIr["netClasses"] ) );
@@ -1075,7 +1142,10 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
         result.operations = JSON::array();
         result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
                           { "netClasses", 0 }, { "netClassAssignments", 0 },
-                          { "stackups", 0 }, { "unsupported", 0 } };
+                          { "customRules", 0 }, { "symbolLibraries", 0 },
+                          { "footprintLibraries", 0 }, { "modelLibraries", 0 },
+                          { "libraryTables", 0 }, { "stackups", 0 },
+                          { "unsupported", 0 } };
         return result;
     }
 

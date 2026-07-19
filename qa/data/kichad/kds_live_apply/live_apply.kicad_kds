@@ -1,6 +1,8 @@
 (kichad_design
   (version 1)
   (project live_apply)
+  (library symbol Device (table global))
+  (library footprint Resistor_SMD (table global))
   (component R1
     (symbol "Device:R")
     (value "1k")

@@ -79,7 +79,9 @@ table—including explicit priority order, inherited fields, via and microvia ge
 styles, colors, tuning profiles, and pattern assignments—then proves an invalid native replacement
 is rejected without mutation. It compiles the canonical KDS custom-rule set into one internal native
 rule document, loads all rule semantics through KiCad's real DRC engine, reads the exact document
-back, and proves malformed replacement input cannot change the active rules. It creates and fills a
+back, and proves malformed replacement input cannot change the active rules. It also generates the
+complete native project symbol and footprint tables from the same KDS declarations, validates them
+with KiCad's parser, repeats them byte-for-byte, and covers exact rollback. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.

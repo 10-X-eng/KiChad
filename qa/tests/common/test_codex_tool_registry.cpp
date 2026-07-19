@@ -120,6 +120,21 @@ kiapi::common::project::NetClassSettings mockNetClassSettings( int64_t aClearanc
 }
 
 
+std::string readExactTextFile( const wxFileName& aPath )
+{
+    wxFile file( aPath.GetFullPath(), wxFile::read );
+    BOOST_REQUIRE_MESSAGE( file.IsOpened(), aPath.GetFullPath() );
+    const wxFileOffset length = file.Length();
+    BOOST_REQUIRE_GE( length, 0 );
+    std::string text( static_cast<size_t>( length ), '\0' );
+
+    if( length > 0 )
+        BOOST_REQUIRE_EQUAL( file.Read( text.data(), text.size() ), length );
+
+    return text;
+}
+
+
 class TOOL_PROJECT_FIXTURE
 {
 public:
@@ -421,6 +436,36 @@ BOOST_AUTO_TEST_CASE( RejectsPathsOutsideTheProject )
             "inspect", { { "operation", "summary" }, { "path", "linked.kicad_pcb" } } );
     BOOST_REQUIRE_MESSAGE( !linked.at( "success" ).get<bool>(), linked.dump() );
     BOOST_CHECK_EQUAL( envelope( linked )["error"]["code"].get<std::string>(), "invalid_path" );
+
+    CODEX_TOOL_REGISTRY writableRegistry( [&fixture]() { return fixture.Root(); },
+                                          []() { return true; } );
+    const std::string librarySource = R"KDS((kichad_design
+  (version 1)
+  (project protected_tables)
+  (library symbol LocalSymbols (table project)
+    (uri "${KIPRJMOD}/libraries/local.kicad_sym"))
+))KDS";
+    JSON saved = writableRegistry.Handle( "design", { { "operation", "save" },
+                                                        { "path", "tables.kicad_kds" },
+                                                        { "source", librarySource } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    wxFileName tableLink( fixture.Root(), wxS( "sym-lib-table" ) );
+    linkError.clear();
+    std::filesystem::create_symlink(
+            std::filesystem::path( fixture.OutsidePath().ToStdString() ),
+            std::filesystem::path( tableLink.GetFullPath().ToStdString() ), linkError );
+    BOOST_REQUIRE_MESSAGE( !linkError, linkError.message() );
+    JSON linkedTable = writableRegistry.Handle(
+            "design", { { "operation", "apply" },
+                         { "path", "tables.kicad_kds" },
+                         { "boardPath", "design.kicad_pcb" },
+                         { "expectedSha256",
+                           envelope( saved )["data"]["sourceSha256"] } } );
+    BOOST_REQUIRE_MESSAGE( !linkedTable.at( "success" ).get<bool>(), linkedTable.dump() );
+    BOOST_CHECK_EQUAL( envelope( linkedTable )["error"]["code"].get<std::string>(),
+                       "library_table_inventory_failed" );
+    std::filesystem::remove(
+            std::filesystem::path( tableLink.GetFullPath().ToStdString() ) );
     std::filesystem::remove( std::filesystem::path( link.GetFullPath().ToStdString() ) );
 #endif
 }
@@ -1454,6 +1499,12 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
     const std::string source = R"KDS((kichad_design
   (version 1)
   (project custom_rules_design)
+  (library symbol Device (table global))
+  (library symbol LocalSymbols (table project)
+    (uri "${KIPRJMOD}/libraries/local-one.kicad_sym"))
+  (library footprint Resistor_SMD (table global))
+  (library footprint LocalFootprints (table project)
+    (uri "${KIPRJMOD}/libraries/LocalOne.pretty"))
   (custom_rules
     (rule signal_clearance
       (condition "A.NetName == 'SIGNAL'")
@@ -1472,10 +1523,37 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
     BOOST_REQUIRE_MESSAGE( preview.at( "success" ).get<bool>(), preview.dump() );
     const JSON previewData = envelope( preview );
     const JSON& items = previewData["data"]["boardPlan"]["items"];
-    BOOST_REQUIRE_EQUAL( items.size(), 1 );
+    BOOST_REQUIRE_EQUAL( items.size(), 3 );
     BOOST_CHECK_EQUAL( items[0]["action"].get<std::string>(),
+                       "configure_project_library_table" );
+    BOOST_CHECK_EQUAL( items[0]["kind"].get<std::string>(), "symbol" );
+    BOOST_CHECK_EQUAL( items[0]["libraries"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( items[1]["action"].get<std::string>(),
+                       "configure_project_library_table" );
+    BOOST_CHECK_EQUAL( items[1]["kind"].get<std::string>(), "footprint" );
+    BOOST_CHECK_EQUAL( items[1]["libraries"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( items[2]["action"].get<std::string>(),
                        "configure_custom_board_rules" );
-    BOOST_CHECK_EQUAL( items[0]["rules"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( items[2]["rules"].get<int>(), 1 );
+
+    wxFileName statePath( fixture.Root(), wxS( "custom_rules.kicad_kds_state" ) );
+    BOOST_REQUIRE( wxFileName::Mkdir(
+            statePath.GetFullPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
+    JSON initialStateFailure = registry.Handle(
+            "design", { { "operation", "apply" },
+                         { "path", "custom_rules.kicad_kds" },
+                         { "boardPath", "design.kicad_pcb" },
+                         { "expectedSha256", hash } } );
+    BOOST_CHECK( !initialStateFailure.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( initialStateFailure )["error"]["code"].get<std::string>(),
+                       "state_write_failed" );
+    BOOST_CHECK( !currentPresent );
+    BOOST_CHECK_EQUAL( updateCount, 2 );
+    BOOST_CHECK( !wxFileExists(
+            wxFileName( fixture.Root(), wxS( "sym-lib-table" ) ).GetFullPath() ) );
+    BOOST_CHECK( !wxFileExists(
+            wxFileName( fixture.Root(), wxS( "fp-lib-table" ) ).GetFullPath() ) );
+    BOOST_REQUIRE( wxFileName::Rmdir( statePath.GetFullPath() ) );
 
     JSON applied = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", "custom_rules.kicad_kds" },
@@ -1483,15 +1561,26 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
                                                   { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     BOOST_CHECK( envelope( applied )["data"]["customRulesApplied"].get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( applied )["data"]["libraryTablesApplied"].get<int>(), 2 );
     BOOST_CHECK( currentPresent );
     BOOST_CHECK_NE( currentSource.find( "(constraint clearance (min 0.2mm))" ),
                     std::string::npos );
-    BOOST_CHECK_EQUAL( updateCount, 1 );
+    BOOST_CHECK_EQUAL( updateCount, 3 );
     const std::string installedSource = currentSource;
+    const wxFileName symbolTable( fixture.Root(), wxS( "sym-lib-table" ) );
+    const wxFileName footprintTable( fixture.Root(), wxS( "fp-lib-table" ) );
+    const std::string installedSymbolTable = readExactTextFile( symbolTable );
+    const std::string installedFootprintTable = readExactTextFile( footprintTable );
+    BOOST_CHECK_NE( installedSymbolTable.find( "local-one.kicad_sym" ), std::string::npos );
+    BOOST_CHECK_NE( installedFootprintTable.find( "LocalOne.pretty" ), std::string::npos );
 
-    const std::string changed = std::regex_replace(
+    std::string changed = std::regex_replace(
             source, std::regex( "clearance \\(min 0\\.2mm\\)" ),
             "clearance (min 0.3mm)" );
+    changed = std::regex_replace( changed, std::regex( "local-one\\.kicad_sym" ),
+                                  "local-two.kicad_sym" );
+    changed = std::regex_replace( changed, std::regex( "LocalOne\\.pretty" ),
+                                  "LocalTwo.pretty" );
     saved = registry.Handle( "design", { { "operation", "save" },
                                           { "path", "custom_rules.kicad_kds" },
                                           { "source", changed },
@@ -1507,9 +1596,10 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
     BOOST_CHECK_EQUAL( envelope( lost )["error"]["code"].get<std::string>(),
                        "custom_rules_apply_failed" );
     BOOST_CHECK_EQUAL( currentSource, installedSource );
-    BOOST_CHECK_EQUAL( updateCount, 3 );
+    BOOST_CHECK_EQUAL( updateCount, 5 );
+    BOOST_CHECK_EQUAL( readExactTextFile( symbolTable ), installedSymbolTable );
+    BOOST_CHECK_EQUAL( readExactTextFile( footprintTable ), installedFootprintTable );
 
-    wxFileName statePath( fixture.Root(), wxS( "custom_rules.kicad_kds_state" ) );
     BOOST_REQUIRE( wxRemoveFile( statePath.GetFullPath() ) );
     BOOST_REQUIRE( wxFileName::Mkdir(
             statePath.GetFullPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
@@ -1521,7 +1611,9 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
     BOOST_CHECK_EQUAL( envelope( stateFailure )["error"]["code"].get<std::string>(),
                        "state_write_failed" );
     BOOST_CHECK_EQUAL( currentSource, installedSource );
-    BOOST_CHECK_EQUAL( updateCount, 5 );
+    BOOST_CHECK_EQUAL( updateCount, 7 );
+    BOOST_CHECK_EQUAL( readExactTextFile( symbolTable ), installedSymbolTable );
+    BOOST_CHECK_EQUAL( readExactTextFile( footprintTable ), installedFootprintTable );
     BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
                                            wxS( "custom_rules.kicad_kds_journal" ) )
                                       .GetFullPath() ) );
@@ -1962,6 +2054,13 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( firstData["rulesApplied"].get<bool>() );
     BOOST_CHECK( firstData["netClassesApplied"].get<bool>() );
     BOOST_CHECK( firstData["customRulesApplied"].get<bool>() );
+    BOOST_CHECK_EQUAL( firstData["libraryTablesApplied"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),
+                                                      wxS( "sym-lib-table" ) ) ),
+                       "(sym_lib_table\n  (version 7)\n)\n" );
+    BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),
+                                                      wxS( "fp-lib-table" ) ) ),
+                       "(fp_lib_table\n  (version 7)\n)\n" );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
                                                   { "path", sourceName },
@@ -1977,6 +2076,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK( repeatedData["rulesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["netClassesApplied"].get<bool>() );
     BOOST_CHECK( repeatedData["customRulesApplied"].get<bool>() );
+    BOOST_CHECK_EQUAL( repeatedData["libraryTablesApplied"].get<int>(), 2 );
 
     KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.stackup", socketDirectory );
     KICHAD_IPC_TARGET ipcTarget;

@@ -26,8 +26,9 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
     (company "KiChad QA")
     (revision "A"))
   (units mm)
-  (library symbol Device (uri "${KICAD10_SYMBOL_DIR}/Device.kicad_sym"))
-  (library footprint Resistor_SMD)
+  (library symbol Device (table global))
+  (library footprint Resistor_SMD (table global))
+  (library footprint LED_SMD (table global))
   (component R1
     (symbol "Device:R")
     (value "10k")
@@ -1055,8 +1056,11 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
     const std::string invalid = R"KDS((kichad_design
   (version 1)
   (project strict (title "First") (title "Second"))
-  (library symbol Device (uri "one") (uri "two"))
-  (library symbol Device)
+  (library symbol Device (table project) (uri "${KIPRJMOD}/one.kicad_sym")
+    (uri "${KIPRJMOD}/two.kicad_sym"))
+  (library symbol Device (table global) (uri "forbidden.kicad_sym"))
+  (library footprint Unsafe (table project) (uri "${KIPRJMOD}/../Unsafe.pretty"))
+  (library model MissingTable)
   (sheet repeated)
   (sheet repeated)
   (component R1
@@ -1085,7 +1089,9 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
     const std::string diagnostics = result.diagnostics.dump();
 
     for( const char* code : { "duplicate_project_field", "duplicate_library_field",
-                              "duplicate_library", "duplicate_sheet",
+                              "duplicate_library", "redundant_global_library_uri",
+                              "invalid_project_library_uri", "invalid_library_table",
+                              "duplicate_sheet",
                               "duplicate_component_property",
                               "duplicate_component_field", "duplicate_pin_connection",
                               "unknown_board_statement", "duplicate_rules", "duplicate_source",
@@ -1094,6 +1100,69 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
     {
         BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
     }
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesCanonicalGlobalAndProjectLibraryDependencies )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project canonical_libraries)
+  (library symbol Device (table global))
+  (library symbol LocalSymbols (table project)
+    (uri "${KIPRJMOD}/libraries/local.kicad_sym"))
+  (library footprint LocalFootprints (table project)
+    (uri "${KIPRJMOD}/libraries/Local.pretty"))
+  (library model LocalModels (table project)
+    (uri "${KIPRJMOD}/libraries/models"))
+  (component R1 (symbol "Device:R") (value "1k")
+    (footprint "LocalFootprints:R_0603"))
+))KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( result.ir["libraries"].size(), 4 );
+    BOOST_CHECK( result.ir["libraries"][0]["uri"].is_null() );
+    BOOST_CHECK_EQUAL( result.ir["libraries"][1]["table"].get<std::string>(), "project" );
+    BOOST_CHECK_EQUAL( result.ir["libraries"][1]["uri"].get<std::string>(),
+                       "${KIPRJMOD}/libraries/local.kicad_sym" );
+    BOOST_CHECK_EQUAL( result.plan["counts"]["libraries"].get<size_t>(), 4 );
+
+    const std::string unresolved = R"KDS((kichad_design
+  (version 1)
+  (project unresolved_library)
+  (library symbol Device (table global))
+  (component R1 (symbol "Missing:R") (value "1k") (footprint "Missing:R"))
+))KDS";
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( unresolved );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "unresolved_component_library" ),
+                    std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
+{
+    std::string source = R"KDS((kichad_design
+  (version 1)
+  (project bounded_libraries)
+)KDS";
+
+    for( int index = 0; index < 257; ++index )
+    {
+        source += "(library symbol Local" + std::to_string( index )
+                  + " (table project) (uri \"${KIPRJMOD}/Local"
+                  + std::to_string( index ) + ".kicad_sym\"))\n";
+    }
+
+    source += ")";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "too_many_project_libraries" ),
+                    std::string::npos );
 }
 
 
