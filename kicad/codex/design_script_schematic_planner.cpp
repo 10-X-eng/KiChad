@@ -613,6 +613,91 @@ std::string labelExpression( const JSON& aDrawing, const std::string& aNativeKin
 }
 
 
+std::string directivePropertyExpression( const JSON& aProperty )
+{
+    const JSON& position = aProperty.at( "position" );
+    const JSON& size = aProperty.at( "size" );
+    const JSON& justify = aProperty.at( "justify" );
+    const int64_t thickness = aProperty.at( "thicknessNm" ).get<int64_t>();
+    const std::string horizontal = justify.at( "horizontal" ).get<std::string>();
+    const std::string vertical = justify.at( "vertical" ).get<std::string>();
+    std::ostringstream output;
+    output << "    (property " << quoted( aProperty.at( "name" ).get<std::string>() ) << ' '
+           << quoted( aProperty.at( "value" ).get<std::string>() ) << "\n"
+           << "      (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
+           << aProperty.at( "rotationDegrees" ).get<int>() << ")\n";
+
+    if( !aProperty.at( "visible" ).get<bool>() )
+        output << "      (hide yes)\n";
+
+    output << "      (effects\n"
+           << "        (font\n"
+           << "          (size " << millimetres( size.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( size.at( "yNm" ).get<int64_t>() ) << ")\n";
+
+    if( thickness != 0 )
+        output << "          (thickness " << millimetres( thickness ) << ")\n";
+
+    if( aProperty.at( "bold" ).get<bool>() )
+        output << "          (bold yes)\n";
+
+    if( aProperty.at( "italic" ).get<bool>() )
+        output << "          (italic yes)\n";
+
+    output << "        )\n";
+
+    if( horizontal != "center" || vertical != "center" )
+    {
+        output << "        (justify";
+
+        if( horizontal != "center" )
+            output << ' ' << horizontal;
+
+        if( vertical != "center" )
+            output << ' ' << vertical;
+
+        output << ")\n";
+    }
+
+    output << "      )\n"
+           << "    )";
+    return output.str();
+}
+
+
+std::string directiveExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    std::ostringstream output;
+    output << "(netclass_flag \"\"\n"
+           << "    (length " << millimetres( aDrawing.at( "lengthNm" ).get<int64_t>() )
+           << ")\n"
+           << "    (shape " << aDrawing.at( "shape" ).get<std::string>() << ")\n"
+           << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
+           << aDrawing.at( "rotationDegrees" ).get<int>() << ")\n"
+           << "    (effects\n"
+           << "      (font\n"
+           << "        (size 1.27 1.27)\n"
+           << "      )\n"
+           << "      (justify left bottom)\n"
+           << "    )\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n";
+
+    for( size_t index = 0; index < aDrawing.at( "properties" ).size(); ++index )
+    {
+        if( index != 0 )
+            output << '\n';
+
+        output << directivePropertyExpression( aDrawing.at( "properties" ).at( index ) ) << '\n';
+    }
+
+    output << "  )";
+    return output.str();
+}
+
+
 std::string busAliasExpression( const JSON& aAlias )
 {
     std::ostringstream output;
@@ -735,6 +820,63 @@ bool validDrawingShape( const JSON& aDrawing )
             || !aDrawing.contains( "italic" ) || !aDrawing["italic"].is_boolean() )
         {
             return false;
+        }
+
+        return true;
+    }
+
+    if( kind == "directive" )
+    {
+        if( !aDrawing.contains( "target" ) || !aDrawing["target"].is_object()
+            || aDrawing["target"].value( "kind", "" ) != "net"
+            || !aDrawing["target"].contains( "name" )
+            || !aDrawing["target"]["name"].is_string()
+            || !aDrawing.contains( "position" ) || !aDrawing["position"].is_object()
+            || !aDrawing["position"].contains( "xNm" )
+            || !aDrawing["position"]["xNm"].is_number_integer()
+            || !aDrawing["position"].contains( "yNm" )
+            || !aDrawing["position"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "rotationDegrees" )
+            || !aDrawing["rotationDegrees"].is_number_integer()
+            || !aDrawing.contains( "shape" ) || !aDrawing["shape"].is_string()
+            || !aDrawing.contains( "lengthNm" )
+            || !aDrawing["lengthNm"].is_number_integer()
+            || !aDrawing.contains( "properties" ) || !aDrawing["properties"].is_array()
+            || aDrawing["properties"].empty() || aDrawing["properties"].size() > 64 )
+        {
+            return false;
+        }
+
+        for( const JSON& property : aDrawing["properties"] )
+        {
+            if( !property.is_object() || !property.contains( "name" )
+                || !property["name"].is_string() || property["name"].get<std::string>().empty()
+                || !property.contains( "value" ) || !property["value"].is_string()
+                || !property.contains( "position" ) || !property["position"].is_object()
+                || !property["position"].contains( "xNm" )
+                || !property["position"]["xNm"].is_number_integer()
+                || !property["position"].contains( "yNm" )
+                || !property["position"]["yNm"].is_number_integer()
+                || !property.contains( "rotationDegrees" )
+                || !property["rotationDegrees"].is_number_integer()
+                || !property.contains( "size" ) || !property["size"].is_object()
+                || !property["size"].contains( "xNm" )
+                || !property["size"]["xNm"].is_number_integer()
+                || !property["size"].contains( "yNm" )
+                || !property["size"]["yNm"].is_number_integer()
+                || !property.contains( "thicknessNm" )
+                || !property["thicknessNm"].is_number_integer()
+                || !property.contains( "justify" ) || !property["justify"].is_object()
+                || !property["justify"].contains( "horizontal" )
+                || !property["justify"]["horizontal"].is_string()
+                || !property["justify"].contains( "vertical" )
+                || !property["justify"]["vertical"].is_string()
+                || !property.contains( "bold" ) || !property["bold"].is_boolean()
+                || !property.contains( "italic" ) || !property["italic"].is_boolean()
+                || !property.contains( "visible" ) || !property["visible"].is_boolean() )
+            {
+                return false;
+            }
         }
 
         return true;
@@ -1232,12 +1374,15 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
         const std::string nativeKind = kind == "label"
                                                ? ( drawing["scope"] == "local" ? "label"
                                                                                 : "global_label" )
+                                       : kind == "directive" ? "netclass_flag"
                                                : kind;
         const std::string uuid = stableUuid( project, "schematic_" + nativeKind, id );
         const std::string source = kind == "junction"
                                            ? junctionExpression( drawing, uuid )
                                    : kind == "label"
                                            ? labelExpression( drawing, nativeKind, uuid )
+                                   : kind == "directive"
+                                           ? directiveExpression( drawing, uuid )
                                            : schematicLineExpression( drawing, uuid );
         JSON planned = { { "kind", nativeKind },
                          { "logicalId", id },

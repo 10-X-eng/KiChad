@@ -49,6 +49,13 @@
   (label root-global-label (sheet root) (scope global) (net Net1) (at 90mm 50mm)
     (rotation 180deg) (shape passive) (size 1.5mm 1.2mm) (thickness 0.2mm)
     (justify right center) (bold true) (italic true))
+  (directive root-net-policy
+    (sheet root) (target net Net1) (at 80mm 40mm)
+    (rotation 0deg) (shape round) (length 2.54mm)
+    (property "Review Note" "AI-controlled directive"
+      (at 81mm 38mm) (rotation 0deg) (size 1.27mm 1.27mm)
+      (thickness auto) (justify left bottom)
+      (bold false) (italic false) (visible true)))
   (bus root-bus (sheet root) (from 80mm 50mm) (to 90mm 50mm)
     (stroke 0.5mm dash))
   (bus_entry root-entry (sheet root) (from 85mm 48.73mm) (to 86.27mm 50mm)

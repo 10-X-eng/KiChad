@@ -128,7 +128,8 @@ bool validManagedItem( const JSON& aItem )
                 || aItem["kind"] == "label" || aItem["kind"] == "no_connect"
                 || aItem["kind"] == "wire"
                 || aItem["kind"] == "bus" || aItem["kind"] == "bus_entry"
-                || aItem["kind"] == "junction" || aItem["kind"] == "lib_symbol"
+                || aItem["kind"] == "junction" || aItem["kind"] == "netclass_flag"
+                || aItem["kind"] == "lib_symbol"
                 || aItem["kind"] == "bus_alias" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()
            && aItem.contains( "uuid" ) && aItem["uuid"].is_string();

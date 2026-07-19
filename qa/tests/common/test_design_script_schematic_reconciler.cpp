@@ -11,6 +11,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+
 #include <kicad/codex/design_script_compiler.h>
 #include <kicad/codex/design_script_schematic_planner.h>
 #include <kicad/codex/design_script_schematic_reconciler.h>
@@ -402,6 +404,86 @@ BOOST_AUTO_TEST_CASE( ReconcilesBusAliasesByOwnedNameWithoutClaimingUnmanagedAli
     BOOST_REQUIRE_EQUAL( removed.fileActions.size(), 1 );
     BOOST_CHECK_EQUAL( removed.fileActions[0]["source"].get<std::string>().find(
                                "(bus_alias \"SIGNALS\"" ),
+                       std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( ReconcilesCurrentNativeDirectiveFlagsByStableUuid )
+{
+    nlohmann::json operation = operationFor();
+    const std::string uuid = "11111111-2222-4333-8444-55555555d1ec";
+    const nlohmann::json directive = {
+        { "file", "hierarchy.kicad_sch" },
+        { "kind", "netclass_flag" },
+        { "logicalId", "signal-policy" },
+        { "uuid", uuid },
+        { "source",
+          "(netclass_flag \"\" (length 2.54) (shape round) (at 40 40 0) "
+          "(effects (font (size 1.27 1.27)) (justify left bottom)) "
+          "(uuid \"" + uuid + "\") "
+          "(property \"Review Note\" \"controlled\" (at 42 40 0) "
+          "(effects (font (size 1.27 1.27)))))" }
+    };
+    auto rootFile = std::find_if(
+            operation["files"].begin(), operation["files"].end(),
+            []( const nlohmann::json& aFile )
+            {
+                return aFile.value( "path", "" ) == "hierarchy.kicad_sch";
+            } );
+    BOOST_REQUIRE( rootFile != operation["files"].end() );
+    ( *rootFile )["items"].push_back( directive );
+    std::string newDocument = ( *rootFile )["newDocumentSource"];
+    const size_t insertion = newDocument.find( "  (sheet_instances" );
+    BOOST_REQUIRE_NE( insertion, std::string::npos );
+    newDocument.insert( insertion, "  " + directive["source"].get<std::string>() + "\n" );
+    ( *rootFile )["newDocumentSource"] = newDocument;
+    nlohmann::json ownership = directive;
+    ownership.erase( "source" );
+    operation["managedItems"].push_back( ownership );
+    const nlohmann::json absent = {
+        { { "path", "hierarchy.kicad_sch" }, { "present", false } },
+        { { "path", "power.kicad_sch" }, { "present", false } }
+    };
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT created =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    operation, nlohmann::json::array(), absent );
+    BOOST_REQUIRE_MESSAGE( created.ok, created.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( created.fileActions.size(), 2 );
+    auto createdRoot = std::find_if(
+            created.fileActions.begin(), created.fileActions.end(),
+            []( const nlohmann::json& aAction )
+            {
+                return aAction.value( "path", "" ) == "hierarchy.kicad_sch";
+            } );
+    BOOST_REQUIRE( createdRoot != created.fileActions.end() );
+    BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find(
+                            "(netclass_flag \"\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( ( *createdRoot )["source"].get<std::string>().find( uuid ),
+                    std::string::npos );
+
+    nlohmann::json installed = nlohmann::json::array();
+
+    for( const nlohmann::json& action : created.fileActions )
+    {
+        installed.push_back( { { "path", action["path"] },
+                               { "present", true },
+                               { "source", action["source"] } } );
+    }
+
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT repeated =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    operation, operation["managedItems"], installed );
+    BOOST_REQUIRE_MESSAGE( repeated.ok, repeated.diagnostics.dump() );
+    BOOST_CHECK( repeated.fileActions.empty() );
+
+    nlohmann::json withoutDirective = operationFor();
+    KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::RESULT removed =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_RECONCILER::Reconcile(
+                    withoutDirective, operation["managedItems"], installed );
+    BOOST_REQUIRE_MESSAGE( removed.ok, removed.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( removed.fileActions.size(), 1 );
+    BOOST_CHECK_EQUAL( removed.fileActions[0]["source"].get<std::string>().find( uuid ),
                        std::string::npos );
 }
 

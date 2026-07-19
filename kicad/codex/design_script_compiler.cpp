@@ -44,6 +44,7 @@ constexpr size_t MAX_SCRIPT_BYTES = 1024 * 1024;
 constexpr size_t MAX_TOP_LEVEL_FORMS = 20000;
 constexpr size_t MAX_IDENTIFIER_BYTES = 128;
 constexpr size_t MAX_TITLE_BLOCK_TEXT_BYTES = 4096;
+constexpr size_t MAX_SCHEMATIC_PROPERTY_BYTES = 4096;
 constexpr size_t MAX_LIBRARIES = 512;
 constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
 
@@ -1368,6 +1369,347 @@ JSON compileSchematicLabel( const DOCUMENT& aDocument, size_t aNode,
     }
 
     return label;
+}
+
+
+JSON compileSchematicDirectiveProperty(
+        const DOCUMENT& aDocument, size_t aNode,
+        KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
+        const std::string& aDirectiveId )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string name;
+    std::string value;
+
+    if( node.children.size() < 3 || !scalarText( aDocument, node.children[1], name )
+        || !scalarText( aDocument, node.children[2], value ) || name.empty()
+        || name.size() > MAX_IDENTIFIER_BYTES
+        || value.size() > MAX_SCHEMATIC_PROPERTY_BYTES )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_directive_property",
+                    "directive " + aDirectiveId
+                            + " property requires a 1..128-byte name and a value up to 4096 bytes" );
+        return JSON::object();
+    }
+
+    JSON property = { { "name", name }, { "value", value } };
+    std::set<std::string> fields;
+
+    for( size_t index = 3; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_directive_property_field",
+                        "directive " + aDirectiveId + " property " + name + " field '"
+                                + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "at" || head == "size" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point )
+                || ( head == "size"
+                     && ( point["xNm"].get<int64_t>() < 100'000
+                          || point["yNm"].get<int64_t>() < 100'000
+                          || point["xNm"].get<int64_t>() > 50'000'000
+                          || point["yNm"].get<int64_t>() > 50'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_property_" + head,
+                            head == "at"
+                                    ? "directive property at requires two distances from 0 to 2 m"
+                                    : "directive property size requires two dimensions from 0.1 mm through 50 mm" );
+            }
+            else
+            {
+                property[head == "at" ? "position" : "size"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string rotation;
+            double degrees = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, rotation )
+                || !parseFiniteDecimal( rotation, degrees, "deg" )
+                || ( degrees != 0.0 && degrees != 90.0 && degrees != 180.0
+                     && degrees != 270.0 ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_property_rotation",
+                            "directive property rotation must be 0deg, 90deg, 180deg, or 270deg" );
+            }
+            else
+            {
+                property["rotationDegrees"] = static_cast<int>( degrees );
+            }
+
+            continue;
+        }
+
+        if( head == "thickness" )
+        {
+            std::string thicknessText;
+            int64_t thickness = 0;
+
+            if( !parseSingleValueForm( aDocument, child, thicknessText )
+                || ( thicknessText != "auto"
+                     && ( !parseDistance( thicknessText, thickness ) || thickness < 10'000
+                          || thickness > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_property_thickness",
+                            "directive property thickness requires auto or 0.01 mm through 10 mm" );
+            }
+            else
+            {
+                property["thicknessNm"] = thicknessText == "auto" ? 0 : thickness;
+            }
+
+            continue;
+        }
+
+        if( head == "justify" )
+        {
+            const DOCUMENT::NODE& justify = aDocument.Nodes()[child];
+            std::string horizontal;
+            std::string vertical;
+
+            if( justify.children.size() != 3
+                || !scalarText( aDocument, justify.children[1], horizontal )
+                || !scalarText( aDocument, justify.children[2], vertical )
+                || ( horizontal != "left" && horizontal != "center"
+                     && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_property_justify",
+                            "directive property justify requires left|center|right and top|center|bottom" );
+            }
+            else
+            {
+                property["justify"] = { { "horizontal", horizontal },
+                                         { "vertical", vertical } };
+            }
+
+            continue;
+        }
+
+        if( head == "bold" || head == "italic" || head == "visible" )
+        {
+            std::string boolean;
+
+            if( !parseSingleValueForm( aDocument, child, boolean )
+                || ( boolean != "true" && boolean != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_property_" + head,
+                            "directive property " + head + " must be true or false" );
+            }
+            else
+            {
+                property[head] = boolean == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_directive_property_field",
+                    "directive property supports at, rotation, size, thickness, justify, bold, "
+                    "italic, and visible" );
+    }
+
+    for( const char* required : { "position", "rotationDegrees", "size", "thicknessNm",
+                                  "justify", "bold", "italic", "visible" } )
+    {
+        if( !property.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_directive_property_field",
+                        "directive " + aDirectiveId + " property " + name + " is missing "
+                                + required );
+        }
+    }
+
+    return property;
+}
+
+
+JSON compileSchematicDirective( const DOCUMENT& aDocument, size_t aNode,
+                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_directive",
+                    "directive requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON directive = { { "kind", "directive" }, { "id", id },
+                       { "properties", JSON::array() } };
+    std::set<std::string> fields;
+    std::set<std::string> propertyNames;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( head == "property" )
+        {
+            JSON property = compileSchematicDirectiveProperty( aDocument, child, aResult, id );
+            const std::string name = property.value( "name", "" );
+
+            if( !name.empty() && !propertyNames.emplace( name ).second )
+            {
+                diagnostic( aResult, "error", "duplicate_schematic_directive_property",
+                            "directive " + id + " property " + name
+                                    + " occurs more than once" );
+            }
+
+            directive["properties"].emplace_back( std::move( property ) );
+            continue;
+        }
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_directive_field",
+                        "directive field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" || head == "shape" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( head == "sheet" && !validIdentifier( value ) )
+                || ( head == "shape" && value != "dot" && value != "round"
+                     && value != "diamond" && value != "rectangle" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_" + head,
+                            "directive " + head + " has an invalid semantic value" );
+            }
+            else
+            {
+                directive[head] = value;
+            }
+
+            continue;
+        }
+
+        if( head == "target" )
+        {
+            const DOCUMENT::NODE& target = aDocument.Nodes()[child];
+            std::string kind;
+            std::string name;
+
+            if( target.children.size() != 3
+                || !scalarText( aDocument, target.children[1], kind )
+                || !scalarText( aDocument, target.children[2], name ) || kind != "net"
+                || name.empty() || name.size() > MAX_IDENTIFIER_BYTES )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_target",
+                            "directive target currently requires net and a bounded declared net name" );
+            }
+            else
+            {
+                directive["target"] = { { "kind", kind }, { "name", name } };
+            }
+
+            continue;
+        }
+
+        if( head == "at" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_position",
+                            "directive at requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                directive["position"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string rotation;
+            double degrees = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, rotation )
+                || !parseFiniteDecimal( rotation, degrees, "deg" )
+                || ( degrees != 0.0 && degrees != 90.0 && degrees != 180.0
+                     && degrees != 270.0 ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_rotation",
+                            "directive rotation must be 0deg, 90deg, 180deg, or 270deg" );
+            }
+            else
+            {
+                directive["rotationDegrees"] = static_cast<int>( degrees );
+            }
+
+            continue;
+        }
+
+        if( head == "length" )
+        {
+            std::string lengthText;
+            int64_t length = 0;
+
+            if( !parseSingleValueForm( aDocument, child, lengthText )
+                || !parseDistance( lengthText, length ) || length < 100'000
+                || length > 50'000'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_directive_length",
+                            "directive length requires 0.1 mm through 50 mm" );
+            }
+            else
+            {
+                directive["lengthNm"] = length;
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_directive_field",
+                    "directive supports sheet, target, at, rotation, shape, length, and property" );
+    }
+
+    for( const char* required : { "sheet", "target", "position", "rotationDegrees", "shape",
+                                  "lengthNm" } )
+    {
+        if( !directive.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_directive_field",
+                        "directive " + id + " is missing " + required );
+        }
+    }
+
+    if( directive["properties"].empty() )
+    {
+        diagnostic( aResult, "error", "missing_schematic_directive_property",
+                    "directive " + id + " requires at least one property" );
+    }
+    else if( directive["properties"].size() > 64 )
+    {
+        diagnostic( aResult, "error", "too_many_schematic_directive_properties",
+                    "directive " + id + " supports at most 64 properties" );
+    }
+
+    return directive;
 }
 
 
@@ -3061,6 +3403,13 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(size W H) (thickness auto|SIZE) "
                       "(justify left|center|right top|center|bottom) "
                       "(bold true|false) (italic true|false))" } },
+                  { { "form",
+                      "(directive ID (sheet ID) (target net NAME) (at X Y) "
+                      "(rotation ORTHOGONAL) (shape dot|round|diamond|rectangle) "
+                      "(length SIZE) (property NAME VALUE (at X Y) "
+                      "(rotation ORTHOGONAL) (size W H) (thickness auto|SIZE) "
+                      "(justify left|center|right top|center|bottom) "
+                      "(bold true|false) (italic true|false) (visible true|false)) ... )" } },
                   { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
@@ -3385,6 +3734,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "label" )
         {
             JSON drawing = compileSchematicLabel( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "directive" )
+        {
+            JSON drawing = compileSchematicDirective( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
@@ -3889,6 +4251,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
                         "schematic label " + drawing.value( "id", "" )
                                 + " references undeclared net "
                                 + drawing["net"].get<std::string>() );
+        }
+
+        if( drawing.value( "kind", "" ) == "directive"
+            && drawing.contains( "target" ) && drawing["target"].is_object()
+            && drawing["target"].value( "kind", "" ) == "net"
+            && drawing["target"].contains( "name" )
+            && drawing["target"]["name"].is_string()
+            && !netNames.contains( drawing["target"]["name"].get<std::string>() ) )
+        {
+            diagnostic( result, "error", "unresolved_schematic_directive_net",
+                        "schematic directive " + drawing.value( "id", "" )
+                                + " references undeclared net "
+                                + drawing["target"]["name"].get<std::string>() );
         }
     }
 

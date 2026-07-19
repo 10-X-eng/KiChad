@@ -140,6 +140,9 @@ for attempt in $(seq 1 30); do
         done
         grep -Fq '(label "Net1"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(global_label "Net1"' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(netclass_flag ""' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(property "Review Note" "AI-controlled directive"' \
+            "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"

@@ -209,6 +209,10 @@ Hierarchical labels continue to derive from sheet pins, keeping connectivity in 
 Bus aliases similarly reference declared KDS nets rather than copying member semantics. Because the
 native format has no alias UUID, the sidecar owns a stable logical identity while reconciliation is
 keyed by the exact sheet-local alias name; unmanaged name collisions abort before any file edit.
+Net-targeted KDS directives carry a semantic net reference plus explicit native flag and field
+appearance. They lower only to KiCad 10's current `netclass_flag` token and reconcile by a stable
+UUID like other direct schematic items. Rule-area targets are not yet lowered and remain visible in
+the capability inventory rather than being silently approximated.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

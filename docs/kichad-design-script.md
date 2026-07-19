@@ -461,6 +461,23 @@ source:
   (bold false)
   (italic false))
 
+(directive sensor-policy
+  (sheet analog)
+  (target net SENSOR_OUT)
+  (at 55mm 40mm)
+  (rotation 0deg)
+  (shape round)
+  (length 2.54mm)
+  (property "Review Note" "route as controlled impedance"
+    (at 56mm 38mm)
+    (rotation 0deg)
+    (size 1.27mm 1.27mm)
+    (thickness auto)
+    (justify left bottom)
+    (bold false)
+    (italic false)
+    (visible true)))
+
 (bus_alias SENSOR_SIGNALS
   (sheet analog)
   (members SENSOR_OUT SENSOR_ENABLE))
@@ -483,6 +500,17 @@ derived from that canonical name instead of being authored a second time. Scope 
 explicit. Hierarchical labels are not duplicated as free-standing forms: they remain derived from
 the child sheet's canonical `pin` declaration. Unknown nets and invalid scope/shape combinations
 abort compilation.
+
+A directive is the single KDS representation for a net-attached KiCad directive flag. Its
+`(target net NAME)` is a semantic reference to a declared net; the native marker's empty text is
+never copied into KDS. Stable ID, sheet, anchor, orthogonal rotation, flag shape (`dot`, `round`,
+`diamond`, or `rectangle`), and pin length are explicit. Each directive has 1 through 64 uniquely
+named properties with a bounded string value and complete position, rotation, font size,
+thickness, justification, bold, italic, and visibility state. The planner emits KiCad 10's current
+`netclass_flag` spelling, not the accepted legacy `directive_label` alias. The same UUID ownership,
+idempotence, removal, atomic journal, rollback, and native-loader validation used by other direct
+schematic objects apply. Schematic rule areas and directives attached to their borders remain an
+explicitly reported coverage gap; the capability is therefore `partial`, not `qualified`.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are
@@ -908,9 +936,8 @@ reconcilable on the next apply, while the whole turn remains revertible from loc
 
 The apply backend currently executes nested native schematic hierarchy, confined project-local
 symbol resolution, multi-unit and virtual/power component placement, native inclusion flags,
-global-net connectivity, explicit no-connect
-state, native local/global labels, bus aliases, wires/junctions/buses/bus entries, complete native project
-symbol/footprint tables, physical
+global-net connectivity, explicit no-connect state, native local/global labels, directive flags,
+bus aliases, wires/junctions/buses/bus entries, complete native project symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,

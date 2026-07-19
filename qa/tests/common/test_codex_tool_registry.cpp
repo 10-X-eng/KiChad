@@ -2439,7 +2439,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( firstData["schematicFilesApplied"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesCreated"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["schematicCounts"]["filesUpdated"].get<int>(), 1 );
-    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["itemsUpserted"].get<int>(), 20 );
+    BOOST_CHECK_EQUAL( firstData["schematicCounts"]["itemsUpserted"].get<int>(), 21 );
     BOOST_CHECK( wxFileExists( wxFileName( project.GetFullPath(),
                                            wxS( "power.kicad_sch" ) ).GetFullPath() ) );
     BOOST_CHECK_EQUAL( readExactTextFile( wxFileName( project.GetFullPath(),

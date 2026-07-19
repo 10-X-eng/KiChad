@@ -1455,6 +1455,58 @@ BOOST_AUTO_TEST_CASE( CompilesCanonicalNativeSchematicDrawingPrimitives )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesOneExplicitNetTargetedSchematicDirectiveRepresentation )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project schematic_directive)
+  (sheet root (parent none) (file "schematic_directive.kicad_sch") (title "Directive"))
+  (component R1 (symbol "Local:R") (value "10k") (footprint "Local:R")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+  (component R2 (symbol "Local:R") (value "20k") (footprint "Local:R")
+    (unit 1 (sheet root) (at 60mm 40mm) (rotation 0deg) (mirror none)))
+  (net SIGNAL (pin R1 1 1) (pin R2 1 1))
+  (directive signal-policy
+    (sheet root) (target net SIGNAL) (at 45mm 40mm)
+    (rotation 90deg) (shape diamond) (length 2.54mm)
+    (property "Impedance Policy" "controlled"
+      (at 46mm 38mm) (rotation 0deg) (size 1.27mm 1.5mm)
+      (thickness 0.2mm) (justify left bottom)
+      (bold true) (italic false) (visible true))
+    (property "Review Note" "route as pair"
+      (at 46mm 42mm) (rotation 180deg) (size 1mm 1mm)
+      (thickness auto) (justify right top)
+      (bold false) (italic true) (visible false)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& directive = result.ir["schematic"]["drawings"][0];
+    BOOST_CHECK_EQUAL( directive["kind"], "directive" );
+    BOOST_CHECK_EQUAL( directive["target"]["kind"], "net" );
+    BOOST_CHECK_EQUAL( directive["target"]["name"], "SIGNAL" );
+    BOOST_CHECK_EQUAL( directive["rotationDegrees"], 90 );
+    BOOST_CHECK_EQUAL( directive["shape"], "diamond" );
+    BOOST_CHECK_EQUAL( directive["lengthNm"], 2540000 );
+    BOOST_REQUIRE_EQUAL( directive["properties"].size(), 2 );
+    BOOST_CHECK_EQUAL( directive["properties"][0]["thicknessNm"], 200000 );
+    BOOST_CHECK( directive["properties"][0]["bold"].get<bool>() );
+    BOOST_CHECK( !directive["properties"][1]["visible"].get<bool>() );
+    BOOST_CHECK_EQUAL( result.plan["counts"]["drawings"], 1 );
+
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile(
+            R"KDS((kichad_design (version 1) (project invalid_directive)
+              (sheet root (parent none) (file "invalid.kicad_sch") (title "Invalid"))
+              (directive d (sheet root) (target net MISSING) (at 1mm 1mm)
+                (rotation 0deg) (shape round) (length 2.54mm))))KDS" );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "missing_schematic_directive_property" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "unresolved_schematic_directive_net" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeSchematicDrawingPrimitives )
 {
     const std::vector<std::string> programs = {

@@ -216,6 +216,17 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
   (label signal-global (sheet root) (scope global) (net SIGNAL) (at 55mm 40mm)
     (rotation 180deg) (shape output) (size 1.5mm 1.2mm) (thickness 0.2mm)
     (justify right center) (bold true) (italic true))
+  (directive signal-policy
+    (sheet root) (target net SIGNAL) (at 45mm 40mm)
+    (rotation 90deg) (shape diamond) (length 2.54mm)
+    (property "Netclass" "HighSpeed"
+      (at 46mm 38mm) (rotation 0deg) (size 1.27mm 1.27mm)
+      (thickness auto) (justify left bottom)
+      (bold false) (italic false) (visible true))
+    (property "Review Note" "route as pair"
+      (at 46mm 42mm) (rotation 180deg) (size 1mm 1mm)
+      (thickness 0.2mm) (justify right top)
+      (bold true) (italic true) (visible false)))
   (bus_alias SIGNALS (sheet root) (members SIGNAL))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -252,7 +263,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_EQUAL( plan.counts["components"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( plan.counts["netEndpoints"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["noConnects"].get<int>(), 1 );
-    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( plan.counts["busAliases"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( plan.counts["librarySymbols"].get<int>(), 1 );
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
@@ -277,6 +288,15 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(thickness 0.2)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(bold yes)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(italic yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(netclass_flag \"\"\n    (length 2.54)\n"
+                                 "    (shape diamond)\n    (at 45 40 90)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property \"Netclass\" \"HighSpeed\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property \"Review Note\" \"route as pair\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(hide yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(justify right top)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(bus_alias \"SIGNALS\"\n    (members \"SIGNAL\")" ),
                     std::string::npos );
 }
