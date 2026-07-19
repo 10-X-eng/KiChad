@@ -224,6 +224,10 @@ Native schematic polylines, rounded rectangles, circles, three-point arcs, and c
 use separate canonical forms with shared complete stroke/fill IR. Geometry is normalized and
 validated before planning, then lowered to same-named current KiCad 10 objects under stable UUID
 ownership.
+Schematic images remain portable by storing one bounded payload in KDS alongside an AI-readable
+description, declared media type, and SHA-256. Compilation strictly decodes and authenticates the
+payload before the planner chunks it into KiCad's native embedded-image expression; opaque bytes
+are never trusted as geometry or executable content.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

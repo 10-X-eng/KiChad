@@ -1752,6 +1752,42 @@ BOOST_AUTO_TEST_CASE( CompilesEveryNativeSchematicGraphicGeometry )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesDigestVerifiedSelfContainedSchematicImage )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_image)
+  (sheet root (parent none) (file "schematic_image.kicad_sch") (title "Image"))
+  (image system-overview (sheet root) (at 80mm 60mm) (scale 1.25)
+    (media_type image/png)
+    (sha256 431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460)
+    (description "AI-readable one-pixel system overview fixture")
+    (data_base64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& image = result.ir["schematic"]["drawings"][0];
+    BOOST_CHECK_EQUAL( image["kind"], "image" );
+    BOOST_CHECK_EQUAL( image["id"], "system-overview" );
+    BOOST_CHECK_CLOSE( image["scale"].get<double>(), 1.25, 0.000001 );
+    BOOST_CHECK_EQUAL( image["mediaType"], "image/png" );
+    BOOST_CHECK_EQUAL( image["byteCount"], 68 );
+    BOOST_CHECK_EQUAL( image["pixels"]["width"], 1 );
+    BOOST_CHECK_EQUAL( image["pixels"]["height"], 1 );
+    BOOST_CHECK_EQUAL( image["description"],
+                       "AI-readable one-pixel system overview fixture" );
+
+    std::string invalid = program;
+    const size_t digest = invalid.find( "431ced6916a2a21a" );
+    BOOST_REQUIRE_NE( digest, std::string::npos );
+    invalid[digest] = '5';
+    result = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "schematic_image_digest_mismatch" ),
+                    std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design
@@ -1828,7 +1864,7 @@ BOOST_AUTO_TEST_CASE( BoundsMalformedAndHostilePrograms )
     BOOST_CHECK_NE( nested.diagnostics[0]["message"].get<std::string>().find( "256 levels" ),
                     std::string::npos );
 
-    std::string oversized( 1024 * 1024 + 1, 'x' );
+    std::string oversized( 16 * 1024 * 1024 + 1, 'x' );
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT large =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( oversized );
     BOOST_CHECK( !large.ok );

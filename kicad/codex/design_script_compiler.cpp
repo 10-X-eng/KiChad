@@ -32,6 +32,7 @@
 
 #include <boost/multiprecision/cpp_int.hpp>
 #include <picosha2.h>
+#include <wx/base64.h>
 #include <wx/string.h>
 
 
@@ -41,7 +42,7 @@ namespace
 using JSON = nlohmann::json;
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 
-constexpr size_t MAX_SCRIPT_BYTES = 1024 * 1024;
+constexpr size_t MAX_SCRIPT_BYTES = 16 * 1024 * 1024;
 constexpr size_t MAX_TOP_LEVEL_FORMS = 20000;
 constexpr size_t MAX_IDENTIFIER_BYTES = 128;
 constexpr size_t MAX_TITLE_BLOCK_TEXT_BYTES = 4096;
@@ -49,6 +50,7 @@ constexpr size_t MAX_SCHEMATIC_PROPERTY_BYTES = 4096;
 constexpr size_t MAX_SCHEMATIC_TEXT_BYTES = 64 * 1024;
 constexpr size_t MAX_FONT_NAME_BYTES = 256;
 constexpr size_t MAX_HYPERLINK_BYTES = 2048;
+constexpr size_t MAX_SCHEMATIC_IMAGE_BYTES = 8 * 1024 * 1024;
 constexpr size_t MAX_LIBRARIES = 512;
 constexpr size_t MAX_PROJECT_LIBRARIES_PER_TABLE = 256;
 
@@ -3140,6 +3142,293 @@ JSON compileSchematicGraphic( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+std::string schematicImageMediaType( const std::vector<char>& aBytes )
+{
+    const auto byte = [&]( size_t aIndex )
+    {
+        return static_cast<unsigned char>( aBytes[aIndex] );
+    };
+
+    if( aBytes.size() >= 8 && byte( 0 ) == 0x89 && aBytes[1] == 'P'
+        && aBytes[2] == 'N' && aBytes[3] == 'G' && byte( 4 ) == 0x0d
+        && byte( 5 ) == 0x0a && byte( 6 ) == 0x1a && byte( 7 ) == 0x0a )
+    {
+        return "image/png";
+    }
+
+    if( aBytes.size() >= 3 && byte( 0 ) == 0xff && byte( 1 ) == 0xd8
+        && byte( 2 ) == 0xff )
+    {
+        return "image/jpeg";
+    }
+
+    if( aBytes.size() >= 6
+        && ( std::equal( aBytes.begin(), aBytes.begin() + 6, "GIF87a" )
+             || std::equal( aBytes.begin(), aBytes.begin() + 6, "GIF89a" ) ) )
+    {
+        return "image/gif";
+    }
+
+    if( aBytes.size() >= 2 && aBytes[0] == 'B' && aBytes[1] == 'M' )
+        return "image/bmp";
+
+    if( aBytes.size() >= 12 && std::equal( aBytes.begin(), aBytes.begin() + 4, "RIFF" )
+        && std::equal( aBytes.begin() + 8, aBytes.begin() + 12, "WEBP" ) )
+    {
+        return "image/webp";
+    }
+
+    return {};
+}
+
+
+JSON compileSchematicImage( const DOCUMENT& aDocument, size_t aNode,
+                            KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_image",
+                    "image requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON image = { { "kind", "image" }, { "id", id } };
+    std::set<std::string> fields;
+    std::vector<char> decoded;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_image_field",
+                        "image field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet )
+                || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_sheet",
+                            "image sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                image["sheet"] = sheet;
+            }
+
+            continue;
+        }
+
+        if( head == "at" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_at",
+                            "image at requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                image["position"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "scale" )
+        {
+            std::string scaleText;
+            double scale = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, scaleText )
+                || !parseFiniteDecimal( scaleText, scale, "" ) || scale < 0.001
+                || scale > 1000.0 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_scale",
+                            "image scale requires a finite factor from 0.001 through 1000" );
+            }
+            else
+            {
+                image["scale"] = scale;
+            }
+
+            continue;
+        }
+
+        if( head == "media_type" )
+        {
+            std::string mediaType;
+            static const std::set<std::string> TYPES = {
+                "image/png", "image/jpeg", "image/gif", "image/bmp", "image/webp"
+            };
+
+            if( !parseSingleValueForm( aDocument, child, mediaType )
+                || !TYPES.contains( mediaType ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_media_type",
+                            "image media_type must be image/png|jpeg|gif|bmp|webp" );
+            }
+            else
+            {
+                image["mediaType"] = mediaType;
+            }
+
+            continue;
+        }
+
+        if( head == "sha256" )
+        {
+            std::string digest;
+
+            if( !parseSingleValueForm( aDocument, child, digest ) || digest.size() != 64
+                || !std::all_of( digest.begin(), digest.end(),
+                                 []( unsigned char aCharacter )
+                                 {
+                                     return std::isdigit( aCharacter )
+                                            || ( aCharacter >= 'a' && aCharacter <= 'f' );
+                                 } ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_sha256",
+                            "image sha256 requires one lowercase 64-digit digest" );
+            }
+            else
+            {
+                image["sha256"] = digest;
+            }
+
+            continue;
+        }
+
+        if( head == "description" )
+        {
+            std::string description;
+
+            if( !parseSingleValueForm( aDocument, child, description )
+                || description.empty() || description.size() > MAX_SCHEMATIC_PROPERTY_BYTES
+                || description.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_description",
+                            "image description requires 1 through 4096 UTF-8 bytes" );
+            }
+            else
+            {
+                image["description"] = description;
+            }
+
+            continue;
+        }
+
+        if( head == "data_base64" )
+        {
+            std::string data;
+            size_t errorPosition = 0;
+
+            if( !parseSingleValueForm( aDocument, child, data ) || data.empty()
+                || data.size() > ( MAX_SCHEMATIC_IMAGE_BYTES * 4 / 3 + 4 ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_data",
+                            "image data_base64 must encode 1 byte through 8 MiB" );
+                continue;
+            }
+
+            wxMemoryBuffer buffer = wxBase64Decode( data.data(), data.size(),
+                                                     wxBase64DecodeMode_Strict,
+                                                     &errorPosition );
+
+            if( buffer.GetDataLen() == 0 || buffer.GetDataLen() > MAX_SCHEMATIC_IMAGE_BYTES )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_data",
+                            "image data_base64 is malformed or exceeds 8 MiB decoded" );
+            }
+            else
+            {
+                const char* bytes = static_cast<const char*>( buffer.GetData() );
+                decoded.assign( bytes, bytes + buffer.GetDataLen() );
+                image["dataBase64"] = std::move( data );
+                image["byteCount"] = decoded.size();
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_image_field",
+                    "image supports sheet, at, scale, media_type, sha256, description, and data_base64" );
+    }
+
+    for( const char* required : { "sheet", "position", "scale", "mediaType", "sha256",
+                                  "description", "dataBase64", "byteCount" } )
+    {
+        if( !image.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_image_field",
+                        "image " + id + " is missing " + required );
+        }
+    }
+
+    if( !decoded.empty() && image.contains( "mediaType" ) && image.contains( "sha256" ) )
+    {
+        const std::string detected = schematicImageMediaType( decoded );
+        std::string digest;
+        picosha2::hash256_hex_string( decoded, digest );
+
+        if( detected.empty() || detected != image["mediaType"].get<std::string>() )
+        {
+            diagnostic( aResult, "error", "schematic_image_media_mismatch",
+                        "image media_type does not match the decoded file signature" );
+        }
+
+        if( digest != image["sha256"].get<std::string>() )
+        {
+            diagnostic( aResult, "error", "schematic_image_digest_mismatch",
+                        "image sha256 does not match decoded data_base64" );
+        }
+
+        if( detected == "image/png" && decoded.size() >= 24 )
+        {
+            const auto bigEndian32 = [&]( size_t aOffset )
+            {
+                return ( static_cast<uint32_t>( static_cast<unsigned char>( decoded[aOffset] ) )
+                         << 24 )
+                       | ( static_cast<uint32_t>(
+                                   static_cast<unsigned char>( decoded[aOffset + 1] ) )
+                           << 16 )
+                       | ( static_cast<uint32_t>(
+                                   static_cast<unsigned char>( decoded[aOffset + 2] ) )
+                           << 8 )
+                       | static_cast<uint32_t>(
+                                 static_cast<unsigned char>( decoded[aOffset + 3] ) );
+            };
+            const uint32_t width = bigEndian32( 16 );
+            const uint32_t height = bigEndian32( 20 );
+
+            if( width == 0 || height == 0 || width > 100'000 || height > 100'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_image_dimensions",
+                            "PNG image dimensions must be 1 through 100000 pixels" );
+            }
+            else
+            {
+                image["pixels"] = { { "width", width }, { "height", height } };
+            }
+        }
+    }
+
+    return image;
+}
+
+
 JSON compileSchematicBusAlias( const DOCUMENT& aDocument, size_t aNode,
                                KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
 {
@@ -4866,6 +5155,10 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(bezier ID (sheet ID) (points (point X Y) x4) STROKE FILL); "
                       "STROKE=(stroke none|default|WIDTH STYLE default|#RRGGBB[AA]); "
                       "FILL=(fill TYPE default|#RRGGBB[AA])" } },
+                  { { "form",
+                      "(image ID (sheet ID) (at X Y) (scale FACTOR) "
+                      "(media_type image/png|jpeg|gif|bmp|webp) (sha256 DIGEST) "
+                      "(description TEXT) (data_base64 DATA))" } },
                   { { "form", "(bus_alias NAME (sheet ID) (members NET ...))" } },
                   { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
@@ -4972,7 +5265,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( aSource.empty() || aSource.size() > MAX_SCRIPT_BYTES )
     {
         diagnostic( result, "error", "invalid_source_size",
-                    "KiChad Design Script source must contain 1 byte to 1 MiB" );
+                    "KiChad Design Script source must contain 1 byte to 16 MiB" );
         return result;
     }
 
@@ -5256,6 +5549,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
                  || form == "arc" || form == "bezier" )
         {
             JSON drawing = compileSchematicGraphic( *document, formNode, form, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "image" )
+        {
+            JSON drawing = compileSchematicImage( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )

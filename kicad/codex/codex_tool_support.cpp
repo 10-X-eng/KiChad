@@ -75,7 +75,7 @@ constexpr size_t       MAX_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DISTINCT_HEADS = 512;
 constexpr size_t       MAX_PCB_ARGUMENT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
-constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
+constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 16 * 1024 * 1024;
 constexpr size_t       MAX_DESIGN_STATE_BYTES = 64 * 1024 * 1024;
 constexpr size_t       MAX_PROJECT_LIBRARY_TABLE_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PROJECT_LIBRARY_ROWS = 256;
@@ -3546,7 +3546,7 @@ bool readDesignScriptSidecar( const wxFileName& aFile, std::string& aSource,
 
     if( length <= 0 || length > static_cast<wxFileOffset>( MAX_DESIGN_SCRIPT_BYTES ) )
     {
-        aError = "KiChad Design Script sidecars must contain 1 byte to 1 MiB";
+        aError = "KiChad Design Script sidecars must contain 1 byte to 16 MiB";
         return false;
     }
 

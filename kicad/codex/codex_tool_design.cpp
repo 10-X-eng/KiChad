@@ -44,7 +44,7 @@ namespace
 
 using JSON = nlohmann::json;
 
-constexpr size_t MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
+constexpr size_t MAX_DESIGN_SCRIPT_BYTES = 16 * 1024 * 1024;
 constexpr size_t MAX_DESIGN_STATE_BYTES = 64 * 1024 * 1024;
 constexpr size_t MAX_SCHEMATIC_INVENTORY_BYTES = 32 * 1024 * 1024;
 
@@ -189,7 +189,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         || source.find( '\0' ) != std::string::npos )
     {
         return failure( "invalid_source",
-                        "KiChad Design Script source must be UTF-8 text containing 1 byte to 1 MiB" );
+                        "KiChad Design Script source must be UTF-8 text containing 1 byte to 16 MiB" );
     }
 
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =

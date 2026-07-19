@@ -17,7 +17,7 @@ saved or dispatched to a KiChad compiler pass.
 - Root expression: `kichad_design`
 - Required version form: `(version 1)`
 - Encoding: UTF-8
-- Maximum source size: 1 MiB
+- Maximum source size: 16 MiB, including bounded self-contained image payloads
 - Maximum nesting: 256 expressions
 - Save behavior: compile first, then snapshot-backed atomic replacement
 - Concurrency: replacing an existing sidecar requires its current SHA-256 digest
@@ -651,8 +651,27 @@ points. A cubic Bézier has exactly four ordered points: start, control 1, contr
 shape carries the same explicit hidden/default/physical stroke, line style, border color, fill mode,
 fill color, sheet reference, and stable identity. They lower to KiCad 10's current native tokens and
 pass the same reconcile, idempotence, removal, rollback, and native-loader gates. The broader
-`schematic.text_graphics` facet remains `partial` until images, tables, and table cells are
-represented.
+`schematic.text_graphics` facet also carries self-contained native images:
+
+```scheme
+(image system-overview
+  (sheet analog)
+  (at 180mm 90mm)
+  (scale 1.25)
+  (media_type image/png)
+  (sha256 431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460)
+  (description "AI-readable block diagram of the controller signal flow")
+  (data_base64 "..."))
+```
+
+An image always includes a non-empty semantic description so an AI can reason about its intent
+without interpreting opaque pixels. The one embedded payload keeps the sidecar portable like a
+native KiCad schematic. PNG, JPEG, GIF, BMP, and WebP signatures are recognized; MIME type and the
+lowercase SHA-256 digest are checked against strict base64 decoding before planning. Decoded data
+is bounded to 8 MiB, PNG dimensions are derived and bounded, and scale is explicit. The planner
+chunks the verified bytes into KiCad 10's native `image/data` representation under a stable UUID;
+the native image loader is part of the live qualification gate. The broader facet remains
+`partial` only until tables and table cells are represented.
 
 A bus alias is `(bus_alias NAME (sheet ID) (members NET ...))`. Every member references a declared
 KDS net, member names are unique, and each alias contains 1 through 256 members. Alias names are

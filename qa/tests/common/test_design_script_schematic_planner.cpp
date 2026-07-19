@@ -466,6 +466,40 @@ BOOST_AUTO_TEST_CASE( LowersEveryNativeSchematicGraphicGeometryWithStableIdentit
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersVerifiedSchematicImageToChunkedNativeData )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project schematic_image)
+  (sheet root (parent none) (file "schematic_image.kicad_sch") (title "Image"))
+  (image system-overview (sheet root) (at 80mm 60mm) (scale 1.25)
+    (media_type image/png)
+    (sha256 431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460)
+    (description "AI-readable one-pixel system overview fixture")
+    (data_base64 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT first =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT second =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( first.fullyLowered, first.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( first.operations.dump(), second.operations.dump() );
+    BOOST_CHECK_EQUAL( first.counts["drawings"].get<int>(), 1 );
+    const std::string native = first.operations[0]["files"][0]["newDocumentSource"];
+    BOOST_CHECK_NE( native.find( "(image\n    (at 80 60)\n    (scale 1.25)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(data\n      \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "ASUVORK5CYII=\"" ), std::string::npos );
+
+    std::string parseError;
+    BOOST_CHECK_MESSAGE( KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( native, &parseError ),
+                         parseError );
+}
+
+
 BOOST_AUTO_TEST_CASE( ExportsGeneratedHierarchyForOptInNativeValidation )
 {
     wxString exportDirectory;

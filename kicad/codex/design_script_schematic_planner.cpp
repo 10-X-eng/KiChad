@@ -870,6 +870,31 @@ std::string schematicGraphicExpression( const JSON& aDrawing, const std::string&
 }
 
 
+std::string schematicImageExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    const std::string data = aDrawing.at( "dataBase64" ).get<std::string>();
+    constexpr size_t BASE64_LINE_LENGTH = 76;
+    std::ostringstream output;
+    output << "(image\n"
+           << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ")\n"
+           << "    (scale " << finiteDecimal( aDrawing.at( "scale" ).get<double>() ) << ")\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "    (data";
+
+    for( size_t offset = 0; offset < data.size(); offset += BASE64_LINE_LENGTH )
+    {
+        output << "\n      "
+               << quoted( data.substr( offset, BASE64_LINE_LENGTH ) );
+    }
+
+    output << "\n    )\n"
+           << "  )";
+    return output.str();
+}
+
+
 std::string directivePropertyExpression( const JSON& aProperty )
 {
     const JSON& position = aProperty.at( "position" );
@@ -1314,6 +1339,19 @@ bool validDrawingShape( const JSON& aDrawing )
                && validSchematicPointShape( aDrawing["mid"] )
                && aDrawing.contains( "end" )
                && validSchematicPointShape( aDrawing["end"] );
+    }
+
+    if( kind == "image" )
+    {
+        return aDrawing.contains( "position" )
+               && validSchematicPointShape( aDrawing["position"] )
+               && aDrawing.contains( "scale" ) && aDrawing["scale"].is_number()
+               && aDrawing.contains( "mediaType" ) && aDrawing["mediaType"].is_string()
+               && aDrawing.contains( "sha256" ) && aDrawing["sha256"].is_string()
+               && aDrawing.contains( "description" ) && aDrawing["description"].is_string()
+               && aDrawing.contains( "dataBase64" ) && aDrawing["dataBase64"].is_string()
+               && aDrawing.contains( "byteCount" )
+               && aDrawing["byteCount"].is_number_unsigned();
     }
 
     if( kind == "rule_area" )
@@ -1934,6 +1972,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                            ? textExpression( drawing, uuid )
                                    : kind == "text_box"
                                            ? textBoxExpression( drawing, uuid )
+                                   : kind == "image"
+                                           ? schematicImageExpression( drawing, uuid )
                                    : kind == "polyline" || kind == "rectangle"
                                                      || kind == "circle" || kind == "arc"
                                                      || kind == "bezier"

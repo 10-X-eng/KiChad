@@ -177,6 +177,11 @@ for attempt in $(seq 1 30); do
         grep -Fq '(bezier' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(xy 155 100)' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(type reverse_hatch)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(image' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(at 180 90)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq '(scale 1.25)' "${project_dir}/live_apply.kicad_sch"
+        grep -Fq 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB' \
+            "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(bus_alias "ROOT_SIGNALS"' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(lib_id "Device:GND")' "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(reference "#PWR01")' "${project_dir}/live_apply.kicad_sch"
