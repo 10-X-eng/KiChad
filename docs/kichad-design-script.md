@@ -69,7 +69,20 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
       (width 0.25mm) (layer F.Cu))
-    (via LED_A (id led-a-via) (at 20mm 10mm) (diameter 0.8mm) (drill 0.4mm)))
+    (via LED_A (id led-a-via) (at 20mm 10mm) (diameter 0.8mm) (drill 0.4mm))
+    (zone LED_A
+      (id led-a-plane)
+      (name "LED copper plane")
+      (layers F.Cu)
+      (outline
+        (polygon
+          (point 1mm 1mm) (point 39mm 1mm) (point 39mm 29mm) (point 1mm 29mm)))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection thermal (thermal_gap 0.3mm) (thermal_spoke_width 0.35mm))
+      (islands remove_below (minimum_area 1mm2))
+      (fill solid)
+      (border diagonal_edge (pitch 0.5mm))))
 
   (rule default_clearance (minimum 0.2mm))
   (source R1
@@ -90,10 +103,54 @@ net identities remain stable across recompilation. Previewed board items use sta
 identities derived from the language namespace, project name, item kind, and authored logical ID;
 formatting and statement order do not affect those identities.
 
-Physical board quantities always carry explicit units (`mm`, `mil`, `um`, `nm`, or `in`), and
-rotations carry `deg`.  Generated items such as outlines, traces, arcs, and vias require logical
+Physical board quantities always carry explicit units (`mm`, `mil`, `um`, `nm`, or `in`), area
+thresholds use the corresponding square units (`mm2`, `mil2`, `um2`, `nm2`, or `in2`), and
+rotations carry `deg`.  Generated items such as outlines, traces, arcs, vias, and zones require logical
 `id` fields.  Those IDs are stable across formatting and statement reordering and are the source
 identity used by transactional backends; component placement uses the already-unique reference.
+
+### Copper zone form
+
+The canonical KDS version 1 copper-zone form is:
+
+```scheme
+(zone NET
+  (id LOGICAL_ID)
+  (name "OPTIONAL DISPLAY NAME")
+  (layers F.Cu In1.Cu B.Cu)
+  (outline
+    (polygon
+      (point X Y) (point X Y) (point X Y)
+      (hole (point X Y) (point X Y) (point X Y)))
+    (polygon ...))
+  (clearance DISTANCE)
+  (min_thickness DISTANCE)
+  (connection none|solid)
+  ; or: (connection thermal|pth_thermal
+  ;       (thermal_gap DISTANCE) (thermal_spoke_width DISTANCE))
+  (islands remove_all|keep_all)
+  ; or: (islands remove_below (minimum_area AREA))
+  (fill solid)
+  ; or: (fill hatched
+  ;       (thickness DISTANCE) (gap DISTANCE) (orientation ANGLE)
+  ;       (smoothing 0..1) (hole_min_area_ratio 0..1) (border minimum|hatch))
+  ; optional for hatched fill:
+  ; (hatch_offsets (layer F.Cu X Y) (layer B.Cu X Y))
+  (priority UNSIGNED_INTEGER)
+  (border solid|invisible)
+  ; or: (border diagonal_full|diagonal_edge (pitch DISTANCE))
+  (locked true|false))
+```
+
+`id`, `layers`, `outline`, `clearance`, `min_thickness`, `connection`, `islands`, and `fill`
+are required. `name` defaults to the logical ID, `priority` to zero, `border` to solid, and
+`locked` to false. Polygon closure is implicit, so the first point must not be repeated. Every
+outer line and hole needs at least three unique non-collinear points and may not self-intersect.
+Holes must be strictly inside and mutually disjoint; multiple outer polygons must also be disjoint.
+A zone is bounded to 32 polygons, 64 holes per polygon, and 8192 total points; layers must be
+distinct and present in the declared stackup. KDS validates these constraints before any editor
+connection or mutation. Hatched zones may additionally define one bounded offset per zone layer;
+solid zones reject hatch offsets instead of retaining ignored intent.
 
 ## Compiler pipeline
 
@@ -117,18 +174,26 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes rectangular outlines, component placement, straight traces,
-arcs, and vias. Placement requires exactly one live footprint with the KDS component reference and
+arcs, vias, and copper zones. A zone explicitly declares its net, stable ID, one or more copper
+layers, bounded polygon/hole geometry, clearance, minimum thickness, connection and thermal policy,
+island policy, solid or hatched fill, priority, border display, and lock state. No manufacturing
+setting is inherited silently. Zone creation and updates are committed through KiCad 10 IPC, after
+which KiCad's official refill operation is polled until every desired zone reports filled. Refill
+failure retains the recovery journal and aborts the apply result rather than claiming success.
+
+Placement requires exactly one live footprint with the KDS component reference and
 an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
 state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
 existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
-The backend still refuses stackup, zones, text, dimensions, keepouts, or any structurally retained
+The backend still refuses stackup, text, dimensions, keepouts, or any structurally retained
 form before mutation until that form has its own typed backend and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
-an isolated temporary project, starts its own build-tree PCB Editor, applies four managed items, and
+an isolated temporary project, starts its own build-tree PCB Editor, applies five managed items, and
 reapplies the unchanged source to verify updates reuse the same deterministic identities. It also
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
-and flipped child layers survive both applies.
+and flipped child layers survive both applies, and proves the fifth managed object is a filled
+net-connected copper zone with exact physical settings.
 
 ## Production support rule
 

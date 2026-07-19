@@ -537,8 +537,17 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form",
                       "(board (stackup ...) (outline (rect (id ID) (at X Y) (size W H))) "
                       "(place REF (at X Y) ...) (route NET (id ID) (from X Y) (to X Y) ...) "
-                      "(via NET (id ID) (at X Y) ...) (zone ...) (text ...) (dimension ...) "
+                      "(via NET (id ID) (at X Y) ...) (zone NET ...) (text ...) (dimension ...) "
                       "(keepout ...))" } },
+                  { { "form",
+                      "(zone NET (id ID) (layers F.Cu ...) "
+                      "(outline (polygon (point X Y) ... (hole (point X Y) ...))) "
+                      "(clearance D) (min_thickness D) "
+                      "(connection none|solid|thermal|pth_thermal "
+                      "(thermal_gap D) (thermal_spoke_width D)) "
+                      "(islands remove_all|keep_all|remove_below ...) "
+                      "(fill solid|hatched ...) "
+                      "(hatch_offsets (layer F.Cu X Y) ...))" } },
                   { { "form", "(rule NAME ...)" } },
                   { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "

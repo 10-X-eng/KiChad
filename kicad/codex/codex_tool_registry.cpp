@@ -20,12 +20,15 @@
 #include <kiid.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <set>
+#include <thread>
 #include <vector>
 
+#include <api/board/board_commands.pb.h>
 #include <api/board/board_types.pb.h>
 #include <api/common/commands/editor_commands.pb.h>
 #include <google/protobuf/util/field_mask_util.h>
@@ -51,6 +54,8 @@ constexpr size_t       MAX_PCB_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DESIGN_SCRIPT_BYTES = 1024 * 1024;
 constexpr size_t       MAX_DESIGN_STATE_BYTES = 4 * 1024 * 1024;
 constexpr size_t       MAX_PCB_FOOTPRINTS = 10000;
+constexpr size_t       MAX_PCB_ZONES = 10000;
+constexpr auto         MAX_ZONE_REFILL_WAIT = std::chrono::seconds( 30 );
 
 
 bool isInspectableExtension( const wxString& aExtension )
@@ -741,6 +746,8 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
         return "arc";
     if( aItem.Is<Via>() )
         return "via";
+    if( aItem.Is<Zone>() )
+        return "zone";
 
     return "other:" + aItem.type_url();
 }
@@ -909,6 +916,74 @@ bool queryPcbFootprintInventory( const KICHAD_IPC_CLIENT& aClient,
     }
 
     return true;
+}
+
+
+bool refillPcbZones( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+                     const std::set<std::string>& aExpectedZoneIds, std::string& aError )
+{
+    kiapi::board::commands::RefillZones refill;
+    refill.mutable_board()->CopyFrom( aTarget.document );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, refill, response, aError ) )
+        return false;
+
+    // RefillZones is accepted synchronously but KiCad performs the fill on the editor thread and
+    // reports AS_BUSY in the interim. Poll the authoritative zone objects until every desired KDS
+    // zone is present and filled. This also closes the race before the queued fill action starts.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
+    const auto deadline = std::chrono::steady_clock::now() + MAX_ZONE_REFILL_WAIT;
+    std::string lastError;
+
+    do
+    {
+        kiapi::common::commands::GetItems query;
+        query.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+        query.add_types( kiapi::common::types::KOT_PCB_ZONE );
+        kiapi::common::ApiResponse queryResponse;
+
+        if( aClient.Call( aTarget, query, queryResponse, lastError ) )
+        {
+            kiapi::common::commands::GetItemsResponse items;
+
+            if( !queryResponse.message().UnpackTo( &items )
+                || items.status() != kiapi::common::types::IRS_OK
+                || items.items_size() > static_cast<int>( MAX_PCB_ZONES ) )
+            {
+                aError = "KiCad returned an invalid or excessive zone inventory after refill";
+                return false;
+            }
+
+            std::set<std::string> filled;
+
+            for( const google::protobuf::Any& packed : items.items() )
+            {
+                kiapi::board::types::Zone zone;
+
+                if( !packed.UnpackTo( &zone ) )
+                {
+                    aError = "KiCad returned a non-zone in the zone refill inventory";
+                    return false;
+                }
+
+                if( aExpectedZoneIds.contains( zone.id().value() ) && zone.filled() )
+                    filled.emplace( zone.id().value() );
+            }
+
+            if( filled.size() == aExpectedZoneIds.size() )
+                return true;
+        }
+
+        std::this_thread::sleep_for( std::chrono::milliseconds( 25 ) );
+    } while( std::chrono::steady_clock::now() < deadline );
+
+    aError = "KiCad did not finish filling every managed KDS zone within 30 seconds";
+
+    if( !lastError.empty() )
+        aError += ": " + lastError;
+
+    return false;
 }
 
 
@@ -1637,6 +1712,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                               "message", "managed PCB reconciliation failed" ) );
         }
 
+        bool zoneMutation = false;
+        std::set<std::string> expectedZoneIds;
+
+        for( const JSON& managedOperation : managedOperations )
+        {
+            if( managedOperation.value( "itemType", "" ) == "zone" )
+                expectedZoneIds.emplace( managedOperation["itemId"].get<std::string>() );
+        }
+
+        for( const JSON& action : reconciled.actions )
+        {
+            if( action.value( "itemType", "" ) == "zone" )
+                zoneMutation = true;
+        }
+
         JSON applyJournal = { { "format", "kichad-kds-apply-journal" },
                               { "version", 1 },
                               { "sourcePath", sourceRelativePath },
@@ -1697,6 +1787,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             return failure( "transaction_failed", message );
         }
 
+        if( zoneMutation && !refillPcbZones( client, target, expectedZoneIds, pathError ) )
+        {
+            return failure( "zone_refill_failed",
+                            pathError + "; the committed board and retained journal can be "
+                                        "reconciled safely on the next apply" );
+        }
+
         if( !writeJsonAtomically( statePath, reconciled.nextState, pathError ) )
         {
             return failure( "state_write_failed",
@@ -1713,6 +1810,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "managedItems",
                            reconciled.nextState["managedPcbItems"].size() },
                          { "transaction", "committed" },
+                         { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };
         return success( payload );

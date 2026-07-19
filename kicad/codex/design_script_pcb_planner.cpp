@@ -14,6 +14,7 @@
 #include <array>
 #include <cstdint>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <string>
 
@@ -63,6 +64,36 @@ JSON vectorProto( const JSON& aVector )
 {
     return { { "xNm", std::to_string( aVector.at( "xNm" ).get<int64_t>() ) },
              { "yNm", std::to_string( aVector.at( "yNm" ).get<int64_t>() ) } };
+}
+
+
+JSON polyLineProto( const JSON& aLine )
+{
+    JSON nodes = JSON::array();
+
+    for( const JSON& node : aLine.at( "nodes" ) )
+        nodes.push_back( { { "point", vectorProto( node.at( "point" ) ) } } );
+
+    return { { "nodes", std::move( nodes ) }, { "closed", true } };
+}
+
+
+JSON polySetProto( const JSON& aPolygons )
+{
+    JSON polygons = JSON::array();
+
+    for( const JSON& polygon : aPolygons )
+    {
+        JSON holes = JSON::array();
+
+        for( const JSON& hole : polygon.at( "holes" ) )
+            holes.emplace_back( polyLineProto( hole ) );
+
+        polygons.push_back( { { "outline", polyLineProto( polygon.at( "outline" ) ) },
+                              { "holes", std::move( holes ) } } );
+    }
+
+    return { { "polygons", std::move( polygons ) } };
 }
 
 
@@ -179,6 +210,105 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
              { "item", std::move( item ) } };
 }
 
+
+JSON planZone( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "zone", logicalId );
+    const JSON& connection = aStatement.at( "connection" );
+    const JSON& islands = aStatement.at( "islands" );
+    const JSON& fill = aStatement.at( "fill" );
+    const JSON& border = aStatement.at( "border" );
+    const std::string connectionStyle = connection.at( "style" ).get<std::string>();
+    const std::string islandMode = islands.at( "mode" ).get<std::string>();
+    const std::string fillMode = fill.at( "mode" ).get<std::string>();
+    const std::string borderStyle = border.at( "style" ).get<std::string>();
+    JSON layers = JSON::array();
+
+    for( const JSON& layer : aStatement.at( "layers" ) )
+        layers.emplace_back( layerEnum( layer.get<std::string>() ) );
+
+    const std::map<std::string, std::string> connectionEnums = {
+        { "none", "ZCS_NONE" }, { "solid", "ZCS_FULL" },
+        { "thermal", "ZCS_THERMAL" }, { "pth_thermal", "ZCS_PTH_THERMAL" }
+    };
+    const std::map<std::string, std::string> islandEnums = {
+        { "remove_all", "IRM_ALWAYS" }, { "keep_all", "IRM_NEVER" },
+        { "remove_below", "IRM_AREA" }
+    };
+    const std::map<std::string, std::string> borderEnums = {
+        { "solid", "ZBS_SOLID" }, { "diagonal_full", "ZBS_DIAGONAL_FULL" },
+        { "diagonal_edge", "ZBS_DIAGONAL_EDGE" }, { "invisible", "ZBS_INVISIBLE" }
+    };
+    JSON layerProperties = JSON::array();
+
+    for( const JSON& property : aStatement.at( "layerProperties" ) )
+    {
+        layerProperties.push_back(
+                { { "layer", layerEnum( property.at( "layer" ).get<std::string>() ) },
+                  { "hatchingOffset", vectorProto( property.at( "offset" ) ) } } );
+    }
+
+    JSON item = {
+        { "id", { { "value", itemId } } },
+        { "type", "ZT_COPPER" },
+        { "layers", std::move( layers ) },
+        { "outline", polySetProto( aStatement.at( "polygons" ) ) },
+        { "name", aStatement.at( "name" ) },
+        { "copperSettings",
+          { { "connection",
+              { { "zoneConnection", connectionEnums.at( connectionStyle ) },
+                { "thermalSpokes",
+                  { { "width",
+                      { { "valueNm",
+                          std::to_string(
+                                  connection.at( "thermalSpokeWidthNm" ).get<int64_t>() ) } } },
+                    { "gap",
+                      { { "valueNm",
+                          std::to_string( connection.at( "thermalGapNm" ).get<int64_t>() ) } } } } } } },
+            { "clearance",
+              { { "valueNm", std::to_string( aStatement.at( "clearanceNm" ).get<int64_t>() ) } } },
+            { "minThickness",
+              { { "valueNm",
+                  std::to_string( aStatement.at( "minThicknessNm" ).get<int64_t>() ) } } },
+            { "islandMode", islandEnums.at( islandMode ) },
+            { "minIslandArea",
+              std::to_string( islands.at( "minimumAreaNm2" ).get<int64_t>() ) },
+            { "fillMode", fillMode == "solid" ? "ZFM_SOLID" : "ZFM_HATCHED" },
+            { "hatchSettings",
+              { { "thickness",
+                  { { "valueNm",
+                      std::to_string( fill.at( "thicknessNm" ).get<int64_t>() ) } } },
+                { "gap",
+                  { { "valueNm", std::to_string( fill.at( "gapNm" ).get<int64_t>() ) } } },
+                { "orientation",
+                  { { "valueDegrees", fill.at( "orientationDegrees" ) } } },
+                { "hatchSmoothingRatio", fill.at( "smoothingRatio" ) },
+                { "hatchHoleMinAreaRatio", fill.at( "holeMinimumAreaRatio" ) },
+                { "borderMode", fill.at( "borderMode" ).get<std::string>() == "minimum"
+                                          ? "ZHFBM_USE_MIN_ZONE_THICKNESS"
+                                          : "ZHFBM_USE_HATCH_THICKNESS" } } },
+            { "net", { { "name", aStatement.at( "net" ) } } },
+            { "teardrop", { { "type", "TDT_NONE" } } } } },
+        { "priority", aStatement.at( "priority" ) },
+        { "filled", false },
+        { "filledPolygons", JSON::array() },
+        { "border",
+          { { "style", borderEnums.at( borderStyle ) },
+            { "pitch",
+              { { "valueNm", std::to_string( border.at( "pitchNm" ).get<int64_t>() ) } } } } },
+        { "locked", lockedEnum( aStatement ) },
+        { "layerProperties", std::move( layerProperties ) }
+    };
+
+    return { { "action", "upsert" },
+             { "itemType", "zone" },
+             { "logicalId", logicalId },
+             { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
 } // namespace
 
 
@@ -267,6 +397,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             else if( kind == "via" )
             {
                 result.operations.emplace_back( planVia( statement, project ) );
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "zone" )
+            {
+                result.operations.emplace_back( planZone( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
             else if( kind == "place" )

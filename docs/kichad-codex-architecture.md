@@ -71,7 +71,8 @@ builds and test runs never invoke this mutating smoke test.
 `tools/smoke-kichad-kds-apply.sh --allow-mutation` is the self-contained compiler integration proof.
 It starts only its own build-tree PCB Editor, uses isolated settings and a temporary copy of the
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
-duplicate-free convergence. It also verifies reference-resolved placement through a narrow native
+duplicate-free convergence. It verifies a deterministic managed copper zone is filled by KiCad's
+official zone engine after each transaction, as well as reference-resolved placement through a narrow native
 footprint transform: the parent and pad UUIDs, schematic symbol path, and child geometry survive a
 front-to-back flip. Its cleanup targets only the process and directory it created.
 
@@ -94,7 +95,10 @@ managed-state records, and protobuf messages are compiler implementation details
 `*.kicad_kds_state` file records only deterministic ownership identities needed for idempotent
 reconciliation; a short-lived `*.kicad_kds_journal` safely carries ownership across an interrupted
 apply. Existing schematic-linked footprints are resolved uniquely by reference and transformed in
-place; they are never added to KDS ownership state. Both state files are project-confined and
+place; they are never added to KDS ownership state. Managed copper zones are committed unfilled,
+then KiCad's official refill command is polled until every desired zone is authoritatively present
+and filled. A rejected or timed-out refill retains the recovery journal, and the next apply safely
+reconciles and retries. Both state files are project-confined and
 included in whole-turn local history snapshots.
 
 The complete tool surface is capped at nine host functions. Each function accepts schema-validated

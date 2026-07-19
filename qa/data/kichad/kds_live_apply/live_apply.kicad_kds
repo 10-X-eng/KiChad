@@ -17,4 +17,17 @@
       (width 0.25mm) (layer F.Cu))
     (route Net1 (id first-arc) (from 35mm 25mm) (mid 40mm 30mm) (to 45mm 25mm)
       (width 0.25mm) (layer F.Cu))
-    (via Net1 (id first-via) (at 45mm 25mm) (diameter 0.8mm) (drill 0.4mm))))
+    (via Net1 (id first-via) (at 45mm 25mm) (diameter 0.8mm) (drill 0.4mm))
+    (zone Net1
+      (id ground-plane)
+      (name "Net1 live fill proof")
+      (layers F.Cu)
+      (outline
+        (polygon
+          (point 21mm 21mm) (point 59mm 21mm) (point 59mm 49mm) (point 21mm 49mm)))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection thermal (thermal_gap 0.3mm) (thermal_spoke_width 0.35mm))
+      (islands remove_below (minimum_area 1mm2))
+      (fill solid)
+      (border diagonal_edge (pitch 0.5mm)))))

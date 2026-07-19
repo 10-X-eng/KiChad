@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
   (board
     (stackup (copper_layers 4) (thickness 1.6mm))
     (place R1 (at 1mm 1mm))
-    (zone GND (layer F.Cu))))
+    (text "future annotation" (at 1mm 1mm))))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
@@ -106,6 +106,73 @@ BOOST_AUTO_TEST_CASE( MarksStructurallyPreservedStatementsAsUnsupported )
     BOOST_CHECK( !plan.fullyLowered );
     BOOST_CHECK_EQUAL( plan.counts["unsupported"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["placements"].get<int>(), 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersExplicitCopperZoneIntoDeterministicProtobufJson )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project zone_board)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net GND (pin R1 1) (pin R2 1))
+  (board
+    (zone GND
+      (id ground-plane)
+      (name "Ground plane")
+      (layers F.Cu B.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 20mm 0mm) (point 20mm 10mm) (point 0mm 10mm)
+          (hole (point 5mm 3mm) (point 7mm 3mm) (point 7mm 5mm) (point 5mm 5mm))))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection pth_thermal (thermal_gap 0.3mm) (thermal_spoke_width 0.35mm))
+      (islands remove_below (minimum_area 2mm2))
+      (fill hatched (thickness 0.3mm) (gap 0.4mm) (orientation 45deg)
+        (smoothing 0.25) (hole_min_area_ratio 0.1) (border hatch))
+      (hatch_offsets (layer F.Cu 0.1mm 0.2mm) (layer B.Cu -0.1mm 0mm))
+      (priority 7)
+      (border diagonal_full (pitch 0.6mm))
+      (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.counts["upserts"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemType"].get<std::string>(), "zone" );
+    checkProtobufJson<kiapi::board::types::Zone>( plan.operations[0]["item"] );
+    const nlohmann::json& item = plan.operations[0]["item"];
+    BOOST_CHECK_EQUAL( item["type"].get<std::string>(), "ZT_COPPER" );
+    BOOST_REQUIRE_EQUAL( item["layers"].size(), 2 );
+    BOOST_CHECK_EQUAL( item["copperSettings"]["connection"]["zoneConnection"].get<std::string>(),
+                       "ZCS_PTH_THERMAL" );
+    BOOST_CHECK_EQUAL( item["copperSettings"]["minIslandArea"].get<std::string>(),
+                       "2000000000000" );
+    BOOST_CHECK_EQUAL( item["copperSettings"]["fillMode"].get<std::string>(), "ZFM_HATCHED" );
+    BOOST_CHECK_EQUAL(
+            item["copperSettings"]["hatchSettings"]["thickness"]["valueNm"].get<std::string>(),
+            "300000" );
+    BOOST_REQUIRE_EQUAL( item["layerProperties"].size(), 2 );
+    BOOST_CHECK_EQUAL( item["layerProperties"][0]["layer"].get<std::string>(), "BL_F_Cu" );
+    BOOST_CHECK_EQUAL( item["layerProperties"][0]["hatchingOffset"]["xNm"].get<std::string>(),
+                       "100000" );
+    BOOST_CHECK_EQUAL( item["layerProperties"][0]["hatchingOffset"]["yNm"].get<std::string>(),
+                       "200000" );
+    BOOST_CHECK_EQUAL( item["layerProperties"][1]["layer"].get<std::string>(), "BL_B_Cu" );
+    BOOST_CHECK_EQUAL( item["layerProperties"][1]["hatchingOffset"]["xNm"].get<std::string>(),
+                       "-100000" );
+    BOOST_CHECK_EQUAL( item["layerProperties"][1]["hatchingOffset"]["yNm"].get<std::string>(),
+                       "0" );
+    BOOST_REQUIRE_EQUAL( item["outline"]["polygons"][0]["holes"].size(), 1 );
+    BOOST_REQUIRE_EQUAL( item["outline"]["polygons"][0]["holes"][0]["nodes"].size(), 4 );
+    BOOST_CHECK( !item["filled"].get<bool>() );
+    BOOST_CHECK_EQUAL( item["locked"].get<std::string>(), "LS_LOCKED" );
 }
 
 

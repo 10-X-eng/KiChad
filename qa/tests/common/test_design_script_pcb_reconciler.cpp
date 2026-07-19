@@ -34,7 +34,18 @@ const std::string SOURCE = R"KDS((kichad_design
     (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
     (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
       (width 0.25mm) (layer F.Cu))
-    (via SIGNAL (id via-a) (at 3mm 4mm) (diameter 0.8mm) (drill 0.4mm))))
+    (via SIGNAL (id via-a) (at 3mm 4mm) (diameter 0.8mm) (drill 0.4mm))
+    (zone SIGNAL
+      (id signal-pour)
+      (layers B.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 20mm 0mm) (point 20mm 10mm) (point 0mm 10mm)))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection solid)
+      (islands keep_all)
+      (fill solid))))
 )KDS";
 
 
@@ -86,17 +97,26 @@ BOOST_FIXTURE_TEST_CASE( CreatesThenIdempotentlyUpdatesManagedItems, FIXTURE )
     RECONCILER::RESULT first =
             RECONCILER::Reconcile( operations, nullptr, JSON::array(), Context() );
     BOOST_REQUIRE_MESSAGE( first.ok, first.diagnostics.dump() );
-    BOOST_CHECK_EQUAL( first.counts["create"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( first.counts["create"].get<int>(), 4 );
     BOOST_CHECK_EQUAL( first.counts["update"].get<int>(), 0 );
-    BOOST_REQUIRE_EQUAL( first.nextState["managedPcbItems"].size(), 3 );
+    BOOST_REQUIRE_EQUAL( first.nextState["managedPcbItems"].size(), 4 );
 
     RECONCILER::RESULT repeated =
             RECONCILER::Reconcile( operations, first.nextState, Inventory(), Context() );
     BOOST_REQUIRE_MESSAGE( repeated.ok, repeated.diagnostics.dump() );
     BOOST_CHECK_EQUAL( repeated.counts["create"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeated.counts["update"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( repeated.counts["update"].get<int>(), 4 );
     BOOST_CHECK_EQUAL( repeated.counts["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeated.nextState.dump(), first.nextState.dump() );
+    auto zoneUpdate = std::find_if(
+            repeated.actions.begin(), repeated.actions.end(),
+            []( const JSON& action ) { return action.value( "itemType", "" ) == "zone"; } );
+    BOOST_REQUIRE( zoneUpdate != repeated.actions.end() );
+    BOOST_CHECK_EQUAL( ( *zoneUpdate )["fieldMask"].dump(),
+                       JSON::array( { "type", "layers", "outline", "name",
+                                      "copper_settings", "priority", "filled",
+                                      "filled_polygons", "border", "locked",
+                                      "layer_properties" } ).dump() );
 }
 
 
@@ -111,12 +131,15 @@ BOOST_FIXTURE_TEST_CASE( DeletesOnlyPreviouslyManagedObsoleteItems, FIXTURE )
     RECONCILER::RESULT changed =
             RECONCILER::Reconcile( reduced, first.nextState, Inventory(), Context() );
     BOOST_REQUIRE_MESSAGE( changed.ok, changed.diagnostics.dump() );
-    BOOST_CHECK_EQUAL( changed.counts["update"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( changed.counts["update"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( changed.counts["delete"].get<int>(), 1 );
-    BOOST_REQUIRE_EQUAL( changed.actions.size(), 3 );
-    BOOST_CHECK_EQUAL( changed.actions[2]["action"].get<std::string>(), "delete" );
-    BOOST_CHECK_EQUAL( changed.actions[2]["logicalId"].get<std::string>(), "trace-a" );
-    BOOST_REQUIRE_EQUAL( changed.nextState["managedPcbItems"].size(), 2 );
+    BOOST_REQUIRE_EQUAL( changed.actions.size(), 4 );
+    auto deleted = std::find_if(
+            changed.actions.begin(), changed.actions.end(),
+            []( const JSON& action ) { return action.value( "action", "" ) == "delete"; } );
+    BOOST_REQUIRE( deleted != changed.actions.end() );
+    BOOST_CHECK_EQUAL( ( *deleted )["logicalId"].get<std::string>(), "trace-a" );
+    BOOST_REQUIRE_EQUAL( changed.nextState["managedPcbItems"].size(), 3 );
 }
 
 
@@ -197,11 +220,18 @@ BOOST_FIXTURE_TEST_CASE( ResolvesSchematicFootprintPlacementWithoutTakingOwnersh
     RECONCILER::RESULT placed =
             RECONCILER::Reconcile( desired, nullptr, inventory, Context() );
     BOOST_REQUIRE_MESSAGE( placed.ok, placed.diagnostics.dump() );
-    BOOST_CHECK_EQUAL( placed.counts["create"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( placed.counts["create"].get<int>(), 4 );
     BOOST_CHECK_EQUAL( placed.counts["placement"].get<int>(), 1 );
-    BOOST_REQUIRE_EQUAL( placed.nextState["managedPcbItems"].size(), 3 );
-    BOOST_REQUIRE_EQUAL( placed.actions.size(), 4 );
-    const JSON& action = placed.actions.back();
+    BOOST_REQUIRE_EQUAL( placed.nextState["managedPcbItems"].size(), 4 );
+    BOOST_REQUIRE_EQUAL( placed.actions.size(), 5 );
+    auto placementAction = std::find_if(
+            placed.actions.begin(), placed.actions.end(),
+            []( const JSON& candidate )
+            {
+                return candidate.value( "component", "" ) == "R1";
+            } );
+    BOOST_REQUIRE( placementAction != placed.actions.end() );
+    const JSON& action = *placementAction;
     BOOST_CHECK_EQUAL( action["action"].get<std::string>(), "update" );
     BOOST_CHECK_EQUAL( action["itemType"].get<std::string>(), "footprint" );
     BOOST_CHECK_EQUAL( action["itemId"].get<std::string>(), footprintId );

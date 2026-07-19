@@ -45,7 +45,26 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
       (width 0.25mm) (layer F.Cu))
     (route LED_A (id led-a-arc) (from 20mm 10mm) (mid 22mm 12mm) (to 24mm 10mm)
       (width 0.25mm) (layer F.Cu))
-    (via LED_A (id led-a-via) (at 24mm 10mm) (diameter 0.8mm) (drill 0.4mm)))
+    (via LED_A (id led-a-via) (at 24mm 10mm) (diameter 0.8mm) (drill 0.4mm))
+    (zone LED_A
+      (id led-a-pour)
+      (name "LED copper pour")
+      (layers F.Cu)
+      (outline
+        (polygon
+          (point 1mm 1mm) (point 39mm 1mm) (point 39mm 29mm) (point 1mm 29mm)
+          (hole
+            (point 10mm 10mm) (point 12mm 10mm) (point 12mm 12mm) (point 10mm 12mm))))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection thermal (thermal_gap 0.3mm) (thermal_spoke_width 0.35mm))
+      (islands remove_below (minimum_area 1mm2))
+      (fill hatched (thickness 0.3mm) (gap 0.4mm) (orientation 45deg)
+        (smoothing 0.25) (hole_min_area_ratio 0.1) (border hatch))
+      (hatch_offsets (layer F.Cu 0.1mm -0.2mm))
+      (priority 3)
+      (border diagonal_edge (pitch 0.5mm))
+      (locked true)))
   (rule default_clearance (minimum 0.2mm))
   (source R1
     (manufacturer "Yageo")
@@ -81,13 +100,25 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
     BOOST_CHECK_EQUAL( first.ir["schematic"]["components"].size(), 2 );
     BOOST_CHECK_EQUAL( first.ir["schematic"]["nets"].size(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["pinConnections"].get<size_t>(), 2 );
-    BOOST_CHECK_EQUAL( first.plan["counts"]["boardStatements"].get<size_t>(), 6 );
+    BOOST_CHECK_EQUAL( first.plan["counts"]["boardStatements"].get<size_t>(), 7 );
     BOOST_CHECK( first.plan["boardFullyTyped"].get<bool>() );
     BOOST_CHECK_EQUAL( first.ir["pcb"][1]["logicalId"].get<std::string>(), "board-edge" );
     BOOST_CHECK_EQUAL( first.ir["pcb"][3]["kind"].get<std::string>(), "trace" );
     BOOST_CHECK_EQUAL( first.ir["pcb"][3]["widthNm"].get<int64_t>(), 250000 );
     BOOST_CHECK_EQUAL( first.ir["pcb"][4]["kind"].get<std::string>(), "arc" );
     BOOST_CHECK_EQUAL( first.ir["pcb"][5]["drillNm"].get<int64_t>(), 400000 );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][6]["kind"].get<std::string>(), "zone" );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][6]["polygons"][0]["holes"].size(), 1 );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][6]["islands"]["minimumAreaNm2"].get<int64_t>(),
+                       1000000000000LL );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][6]["fill"]["orientationDegrees"].get<double>(),
+                       45.0 );
+    BOOST_REQUIRE_EQUAL( first.ir["pcb"][6]["layerProperties"].size(), 1 );
+    BOOST_CHECK_EQUAL( first.ir["pcb"][6]["layerProperties"][0]["layer"].get<std::string>(),
+                       "F.Cu" );
+    BOOST_CHECK_EQUAL(
+            first.ir["pcb"][6]["layerProperties"][0]["offset"]["yNm"].get<int64_t>(),
+            -200000 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["sourcingRecords"].get<size_t>(), 1 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["checks"].get<size_t>(), 3 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["outputs"].get<size_t>(), 3 );
@@ -165,6 +196,127 @@ BOOST_AUTO_TEST_CASE( EnforcesStackupAndSinglePlacementSemantics )
     {
         BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
     }
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeCopperZoneIntent )
+{
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project bad_zone)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net GND (pin R1 1) (pin R2 1))
+  (board
+    (stackup (copper_layers 4) (thickness 1.6mm))
+    (zone GND
+      (id gnd-pour)
+      (layers F.Cu F.Cu In3.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 10mm 0mm) (point 0mm 0mm)
+          (hole (point 1mm 1mm) (point 2mm 1mm))))
+      (clearance -0.1mm)
+      (min_thickness 0mm)
+      (connection solid (thermal_gap 0.2mm))
+      (islands keep_all (minimum_area 1mm2))
+      (fill solid (gap 0.5mm))
+      (hatch_offsets (layer F.Cu 0mm 0mm))
+      (priority -1)
+      (border solid (pitch 0.5mm))
+      (locked maybe))
+    (zone GND
+      (id self-crossing)
+      (layers F.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 10mm 10mm) (point 0mm 10mm)
+          (point 10mm 0mm) (point 10mm -2mm)))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection solid)
+      (islands keep_all)
+      (fill solid))
+    (zone GND
+      (id outside-hole)
+      (layers F.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 10mm 0mm) (point 10mm 10mm) (point 0mm 10mm)
+          (hole (point 20mm 20mm) (point 21mm 20mm) (point 21mm 21mm))))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection solid)
+      (islands keep_all)
+      (fill solid))
+    (zone GND
+      (id invalid-hatch-offset)
+      (layers F.Cu B.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 10mm 0mm) (point 10mm 10mm) (point 0mm 10mm)))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection solid)
+      (islands keep_all)
+      (fill hatched (thickness 0.3mm) (gap 0.4mm) (orientation 0deg))
+      (hatch_offsets
+        (layer F.Cu 0mm 0mm)
+        (layer F.Cu 0.1mm 0.1mm)
+        (layer In1.Cu 0mm 0mm)))))
+)KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !result.ok );
+    const std::string diagnostics = result.diagnostics.dump();
+
+    for( const char* code : { "invalid_zone_layers", "duplicate_zone_point",
+                              "invalid_zone_polygon", "invalid_zone_clearance",
+                              "invalid_zone_min_thickness", "unexpected_zone_thermal_setting",
+                              "unexpected_zone_minimum_island_area",
+                              "unexpected_solid_zone_fill_setting", "invalid_zone_priority",
+                              "unexpected_zone_hatch_offset",
+                              "unexpected_zone_border_pitch", "invalid_zone_locked",
+                              "zone_layer_outside_stackup",
+                              "self_intersecting_zone_polygon",
+                              "zone_hole_outside_polygon", "invalid_zone_hatch_offset" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( BoundsCopperZoneGeometryBeforePlanning )
+{
+    std::string oversized = R"KDS((kichad_design
+  (version 1)
+  (project bounded_zone)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net GND (pin R1 1) (pin R2 1))
+  (board
+    (zone GND
+      (id too-many-points)
+      (layers F.Cu)
+      (outline (polygon )KDS";
+
+    for( int point = 0; point < 8193; ++point )
+        oversized += "(point " + std::to_string( point ) + "nm 0nm)";
+
+    oversized += R"KDS())
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection solid)
+      (islands keep_all)
+      (fill solid))))
+)KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( oversized );
+    BOOST_CHECK( !result.ok );
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "too_many_zone_points" ),
+                    std::string::npos );
 }
 
 
@@ -311,6 +463,8 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK( description["deterministic"].get<bool>() );
     BOOST_CHECK( !description["hostCodeExecution"].get<bool>() );
     BOOST_CHECK_GE( description["topLevelForms"].size(), 10 );
+    BOOST_CHECK_NE( description.dump().find( "thermal_spoke_width" ), std::string::npos );
+    BOOST_CHECK_NE( description.dump().find( "hatch_offsets" ), std::string::npos );
 }
 
 

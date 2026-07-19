@@ -16,9 +16,11 @@
 
 #include <atomic>
 #include <import_export.h>
+#include <api/board/board_commands.pb.h>
 #include <api/board/board_types.pb.h>
 #include <api/common/envelope.pb.h>
 #include <api/common/commands/editor_commands.pb.h>
+#include <google/protobuf/empty.pb.h>
 #include <kiid.h>
 #include <kinng.h>
 #include <filesystem>
@@ -1126,6 +1128,221 @@ BOOST_AUTO_TEST_CASE( AppliesKdsPlacementAsNarrowSchematicFootprintUpdate )
 }
 
 
+BOOST_AUTO_TEST_CASE( RefillsManagedKdsZonesAndRecoversARejectedRefill )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName socketPath( fixture.Root(), wxS( "api-zone-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-zone-token";
+    const std::string commitId = "aaaaaaaa-aaaa-8aaa-8aaa-aaaaaaaaaaaa";
+    kiapi::board::types::Zone liveZone;
+    bool rejectNextRefill = true;
+    bool sawRefill = false;
+    int commitCount = 0;
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetItemsById>() )
+                {
+                    kiapi::common::commands::GetItemsById get;
+                    kiapi::common::commands::GetItemsResponse items;
+                    request.message().UnpackTo( &get );
+
+                    for( const auto& id : get.items() )
+                    {
+                        if( !liveZone.id().value().empty() && id.value() == liveZone.id().value() )
+                            items.add_items()->PackFrom( liveZone );
+                    }
+
+                    items.set_status( kiapi::common::types::IRS_OK );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( items );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetItems>() )
+                {
+                    kiapi::common::commands::GetItems get;
+                    kiapi::common::commands::GetItemsResponse items;
+                    request.message().UnpackTo( &get );
+
+                    if( get.types_size() == 1
+                        && get.types( 0 ) == kiapi::common::types::KOT_PCB_ZONE )
+                    {
+                        if( !liveZone.id().value().empty() )
+                            items.add_items()->PackFrom( liveZone );
+
+                        items.set_status( kiapi::common::types::IRS_OK );
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( items );
+                    }
+                    else
+                    {
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                    }
+                }
+                else if( request.message().Is<kiapi::common::commands::BeginCommit>() )
+                {
+                    kiapi::common::commands::BeginCommitResponse begin;
+                    begin.mutable_id()->set_value( commitId );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( begin );
+                }
+                else if( request.message().Is<kiapi::common::commands::CreateItems>() )
+                {
+                    kiapi::common::commands::CreateItems create;
+                    kiapi::common::commands::CreateItemsResponse created;
+                    request.message().UnpackTo( &create );
+                    auto* result = created.add_created_items();
+
+                    if( create.items_size() == 1 && create.items( 0 ).UnpackTo( &liveZone ) )
+                    {
+                        result->mutable_status()->set_code( kiapi::common::commands::ISC_OK );
+                        result->mutable_item()->PackFrom( liveZone );
+                    }
+                    else
+                    {
+                        result->mutable_status()->set_code(
+                                kiapi::common::commands::ISC_INVALID_DATA );
+                    }
+
+                    created.set_status( kiapi::common::types::IRS_OK );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( created );
+                }
+                else if( request.message().Is<kiapi::common::commands::UpdateItems>() )
+                {
+                    kiapi::common::commands::UpdateItems update;
+                    kiapi::common::commands::UpdateItemsResponse updated;
+                    request.message().UnpackTo( &update );
+                    auto* result = updated.add_updated_items();
+
+                    if( update.items_size() == 1 && update.items( 0 ).UnpackTo( &liveZone ) )
+                    {
+                        result->mutable_status()->set_code( kiapi::common::commands::ISC_OK );
+                        result->mutable_item()->PackFrom( liveZone );
+                    }
+                    else
+                    {
+                        result->mutable_status()->set_code(
+                                kiapi::common::commands::ISC_INVALID_DATA );
+                    }
+
+                    updated.set_status( kiapi::common::types::IRS_OK );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( updated );
+                }
+                else if( request.message().Is<kiapi::common::commands::EndCommit>() )
+                {
+                    kiapi::common::commands::EndCommit end;
+                    request.message().UnpackTo( &end );
+
+                    if( end.action() == kiapi::common::commands::CMA_COMMIT )
+                        ++commitCount;
+
+                    kiapi::common::commands::EndCommitResponse ended;
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( ended );
+                }
+                else if( request.message().Is<kiapi::board::commands::RefillZones>() )
+                {
+                    if( rejectNextRefill )
+                    {
+                        rejectNextRefill = false;
+                        response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                        response.mutable_status()->set_error_message( "injected refill failure" );
+                    }
+                    else
+                    {
+                        sawRefill = true;
+                        liveZone.set_filled( true );
+                        google::protobuf::Empty empty;
+                        response.mutable_status()->set_status( kiapi::common::AS_OK );
+                        response.mutable_message()->PackFrom( empty );
+                    }
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; },
+                                  [&fixture]() { return fixture.Root(); } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project managed_zone)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net GND (pin R1 1) (pin R2 1))
+  (board
+    (zone GND
+      (id ground-plane)
+      (layers F.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 20mm 0mm) (point 20mm 10mm) (point 0mm 10mm)))
+      (clearance 0.2mm)
+      (min_thickness 0.25mm)
+      (connection solid)
+      (islands keep_all)
+      (fill solid))))
+)KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "zone.kicad_kds" },
+                                                { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    const std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON failed = registry.Handle( "design", { { "operation", "apply" },
+                                                { "path", "zone.kicad_kds" },
+                                                { "boardPath", "design.kicad_pcb" },
+                                                { "expectedSha256", hash } } );
+    BOOST_REQUIRE( !failed.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( failed )["error"]["code"].get<std::string>(),
+                       "zone_refill_failed" );
+    BOOST_CHECK_EQUAL( commitCount, 1 );
+    BOOST_CHECK( !liveZone.id().value().empty() );
+    BOOST_CHECK( !liveZone.filled() );
+    BOOST_CHECK( wxFileExists( wxFileName( fixture.Root(),
+                                           wxS( "zone.kicad_kds_journal" ) ).GetFullPath() ) );
+
+    JSON recovered = registry.Handle( "design", { { "operation", "apply" },
+                                                   { "path", "zone.kicad_kds" },
+                                                   { "boardPath", "design.kicad_pcb" },
+                                                   { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( recovered.at( "success" ).get<bool>(), recovered.dump() );
+    JSON data = envelope( recovered )["data"];
+    BOOST_CHECK_EQUAL( data["counts"]["update"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( data["zonesRefilled"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( commitCount, 2 );
+    BOOST_CHECK( sawRefill );
+    BOOST_CHECK( liveZone.filled() );
+    BOOST_CHECK( !wxFileExists( wxFileName( fixture.Root(),
+                                            wxS( "zone.kicad_kds_journal" ) ).GetFullPath() ) );
+    server.Stop();
+}
+
+
 BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
 {
     wxString projectPath;
@@ -1171,8 +1388,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                  { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
-    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 5 );
     BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
 
     JSON repeated = registry.Handle( "design", { { "operation", "apply" },
@@ -1182,7 +1400,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     JSON repeatedData = envelope( repeated )["data"];
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 5 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
 
@@ -1235,6 +1453,24 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_CHECK_EQUAL( via["padStack"]["drill"]["diameter"]["xNm"].get<std::string>(),
                        "400000" );
     BOOST_CHECK_EQUAL( via["net"]["name"].get<std::string>(), "Net1" );
+
+    JSON zone = getOne( "zone" );
+    BOOST_CHECK_EQUAL( zone["id"]["value"].get<std::string>(),
+                       stableUuid( "zone", "ground-plane" ) );
+    BOOST_CHECK_EQUAL( zone["type"].get<std::string>(), "ZT_COPPER" );
+    BOOST_REQUIRE_EQUAL( zone["layers"].size(), 1 );
+    BOOST_CHECK_EQUAL( zone["layers"][0].get<std::string>(), "BL_F_Cu" );
+    BOOST_CHECK( zone["filled"].get<bool>() );
+    BOOST_CHECK_EQUAL( zone["name"].get<std::string>(), "Net1 live fill proof" );
+    BOOST_CHECK_EQUAL( zone["copperSettings"]["net"]["name"].get<std::string>(), "Net1" );
+    BOOST_CHECK_EQUAL(
+            zone["copperSettings"]["connection"]["thermalSpokes"]["width"]["valueNm"]
+                    .get<std::string>(),
+            "350000" );
+    BOOST_CHECK_EQUAL( zone["copperSettings"]["minIslandArea"].get<std::string>(),
+                       "1000000000000" );
+    BOOST_REQUIRE_EQUAL( zone["outline"]["polygons"].size(), 1 );
+    BOOST_REQUIRE_EQUAL( zone["outline"]["polygons"][0]["outline"]["nodes"].size(), 4 );
 
     JSON footprint = getOne( "footprint" );
     BOOST_CHECK_EQUAL( footprint["id"]["value"].get<std::string>(),
