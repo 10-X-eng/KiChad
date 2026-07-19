@@ -157,8 +157,11 @@ bool CreateFabricationVerificationSnapshot(
         PRIVATE_TEMPORARY_DIRECTORY& aSnapshot, std::string& aError );
 nlohmann::json BuildFabricationPlan( const nlohmann::json& aIr,
                                      const std::string& aFileStem );
-bool RunNativeKiCadFabrication( const wxFileName& aBoard, const nlohmann::json& aPlan,
-                                const wxFileName& aStaging, std::string& aError );
+bool RunNativeKiCadFabrication( const wxFileName& aBoard,
+                                const wxFileName& aSchematic,
+                                const nlohmann::json& aPlan,
+                                const wxFileName& aStaging,
+                                std::string& aError );
 bool ValidateExactNativeFormat( const wxFileName& aPath, const std::string& aRoot,
                                 const std::string& aVersion, std::string& aError );
 bool ValidateBoardFabricationIntent( const wxFileName& aBoard, const nlohmann::json& aIr,

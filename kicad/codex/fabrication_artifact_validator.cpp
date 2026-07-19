@@ -11,12 +11,15 @@
 
 #include "fabrication_artifact_validator.h"
 
+#include "lossless_sexpr_document.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <string_view>
 #include <vector>
@@ -38,6 +41,9 @@ constexpr size_t MAX_XML_NODES = 2'000'000;
 constexpr size_t MAX_XML_DEPTH = 256;
 constexpr size_t MAX_VRML_DEPTH = 1024;
 constexpr size_t MAX_DRILL_HOLE_ROWS = 100'000;
+constexpr size_t MAX_NETLIST_COMPONENTS = 100'000;
+constexpr size_t MAX_NETLIST_NETS = 250'000;
+constexpr size_t MAX_NETLIST_NODES = 1'000'000;
 
 
 bool boundedFile( const std::filesystem::path& aPath, std::string& aError )
@@ -606,6 +612,203 @@ bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateBoardStatistics(
             aError = "board statistics contains a malformed drill-hole row";
             return false;
         }
+    }
+
+    return true;
+}
+
+
+bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
+        const std::filesystem::path& aPath, const nlohmann::json& aPlan,
+        std::string& aError )
+{
+    if( !boundedFile( aPath, aError ) )
+        return false;
+
+    std::ifstream input( aPath, std::ios::binary );
+    std::string source( ( std::istreambuf_iterator<char>( input ) ),
+                        std::istreambuf_iterator<char>() );
+
+    if( input.bad() || source.find( '\0' ) != std::string::npos )
+    {
+        aError = "KiCad netlist could not be read safely";
+        return false;
+    }
+
+    std::unique_ptr<KICHAD::LOSSLESS_SEXPR_DOCUMENT> document =
+            KICHAD::LOSSLESS_SEXPR_DOCUMENT::Parse( std::move( source ), &aError );
+
+    if( !document || document->Roots().size() != 1
+        || document->ListHead( document->Roots().front() ) != "export" )
+    {
+        if( aError.empty() )
+            aError = "KiCad netlist has no unique export root";
+
+        return false;
+    }
+
+    const auto directList = [&]( size_t aParent, const std::string& aHead )
+    {
+        size_t match = KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE;
+
+        for( size_t child : document->Nodes().at( aParent ).children )
+        {
+            if( document->Nodes().at( child ).kind
+                        != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+                || document->ListHead( child ) != aHead )
+            {
+                continue;
+            }
+
+            if( match != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE )
+                return KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE;
+
+            match = child;
+        }
+
+        return match;
+    };
+    const auto scalar = [&]( size_t aParent, const std::string& aHead )
+    {
+        const size_t field = directList( aParent, aHead );
+
+        if( field == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+            || document->Nodes().at( field ).children.size() != 2
+            || document->Nodes().at( document->Nodes().at( field ).children[1] ).kind
+                       == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST )
+        {
+            return std::string();
+        }
+
+        return document->AtomText( document->Nodes().at( field ).children[1] );
+    };
+    const size_t root = document->Roots().front();
+    const size_t design = directList( root, "design" );
+    const size_t components = directList( root, "components" );
+    const size_t nets = directList( root, "nets" );
+
+    if( scalar( root, "version" ) != "E"
+        || design == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+        || components == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+        || nets == KICHAD::LOSSLESS_SEXPR_DOCUMENT::NO_NODE
+        || !scalar( design, "tool" ).starts_with( "Eeschema 10.0.4" )
+        || std::filesystem::path( scalar( design, "source" ) ).filename()
+                   != aPlan.at( "fileStem" ).get<std::string>() + ".kicad_sch" )
+    {
+        aError = "KiCad netlist has the wrong version, source, or native producer";
+        return false;
+    }
+
+    std::set<std::string> actualReferences;
+
+    for( size_t child : document->Nodes().at( components ).children )
+    {
+        if( document->Nodes().at( child ).kind
+                    != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+            || document->ListHead( child ) != "comp" )
+        {
+            continue;
+        }
+
+        const std::string reference = scalar( child, "ref" );
+
+        if( reference.empty() || !actualReferences.emplace( reference ).second
+            || actualReferences.size() > MAX_NETLIST_COMPONENTS )
+        {
+            aError = "KiCad netlist has an empty, duplicate, or excessive component reference";
+            return false;
+        }
+    }
+
+    std::set<std::string> expectedReferences;
+
+    for( const JSON& reference : aPlan.at( "expectedNetlistReferences" ) )
+        expectedReferences.emplace( reference.get<std::string>() );
+
+    if( actualReferences != expectedReferences )
+    {
+        aError = "KiCad netlist component references differ from compiled KDS";
+        return false;
+    }
+
+    using NETLIST_NODE = std::pair<std::string, std::string>;
+    std::map<std::string, std::set<NETLIST_NODE>> actualNets;
+    size_t totalNodes = 0;
+
+    for( size_t child : document->Nodes().at( nets ).children )
+    {
+        if( document->Nodes().at( child ).kind
+                    != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+            || document->ListHead( child ) != "net" )
+        {
+            continue;
+        }
+
+        const std::string name = scalar( child, "name" );
+        std::set<NETLIST_NODE> nodes;
+
+        if( name.empty() || actualNets.contains( name )
+            || actualNets.size() >= MAX_NETLIST_NETS )
+        {
+            aError = "KiCad netlist has an empty, duplicate, or excessive net";
+            return false;
+        }
+
+        for( size_t netChild : document->Nodes().at( child ).children )
+        {
+            if( document->Nodes().at( netChild ).kind
+                        != KICHAD::LOSSLESS_SEXPR_DOCUMENT::NODE_KIND::LIST
+                || document->ListHead( netChild ) != "node" )
+            {
+                continue;
+            }
+
+            const std::string reference = scalar( netChild, "ref" );
+            const std::string pin = scalar( netChild, "pin" );
+
+            if( reference.empty() || pin.empty()
+                || !nodes.emplace( reference, pin ).second
+                || ++totalNodes > MAX_NETLIST_NODES )
+            {
+                aError = "KiCad netlist has an invalid, duplicate, or excessive node";
+                return false;
+            }
+        }
+
+        actualNets.emplace( name, std::move( nodes ) );
+    }
+
+    std::map<std::string, std::set<NETLIST_NODE>> expectedNets;
+
+    for( const JSON& net : aPlan.at( "expectedNetlistNets" ) )
+    {
+        std::set<NETLIST_NODE> nodes;
+
+        for( const JSON& node : net.at( "nodes" ) )
+        {
+            if( !node.is_object() || !node.contains( "reference" )
+                || !node["reference"].is_string() || !node.contains( "pin" )
+                || !node["pin"].is_string()
+                || !nodes.emplace( node["reference"].get<std::string>(),
+                                   node["pin"].get<std::string>() ).second )
+            {
+                aError = "fabrication plan contains an invalid expected net node";
+                return false;
+            }
+        }
+
+        if( !expectedNets.emplace( net.at( "name" ).get<std::string>(),
+                                  std::move( nodes ) ).second )
+        {
+            aError = "fabrication plan contains a duplicate expected net";
+            return false;
+        }
+    }
+
+    if( actualNets != expectedNets )
+    {
+        aError = "KiCad netlist connectivity differs from compiled KDS";
+        return false;
     }
 
     return true;

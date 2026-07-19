@@ -299,7 +299,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v5`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v6`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -316,6 +316,7 @@ production-ready plan requires all of the following declarations in the same sid
 ; optional: (output pdf)
 ; optional: (output ipc2581)
 ; optional: (output odbpp)
+; optional: (output netlist)
 ; optional: (output assembly_svg)
 ; optional: (output assembly_dxf)
 ; optional: (output gencad)
@@ -350,7 +351,9 @@ page sizing, millimetre DXF units, and verifies exact filenames plus bounded XML
 `gencad` emits unique pin and footprint definitions with stored origin coordinates, `vrml` emits a
 millimetre model excluding DNP and unspecified parts, and `board_stats` emits typed millimetre JSON
 with board identity, outline, pad/via/component counts, and drill inventory. Each passes a dedicated
-format-aware parser before installation.
+format-aware parser before installation. `netlist` runs the native Eeschema exporter against the
+same private root-schematic snapshot used by ERC; KiChad parses the result and requires its exact
+component-reference and ref/pin connectivity sets to match compiled KDS intent.
 
 KiChad bounds and validates every artifact. The BOM reference set must equal all footprint-bearing
 KDS components, while the

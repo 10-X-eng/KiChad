@@ -1436,8 +1436,10 @@ bool runNativeFabricationCommand( const wxFileName& aCli,
 }
 
 
-bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
-                                const wxFileName& aStaging, std::string& aError )
+bool runNativeKiCadFabrication( const wxFileName& aBoard,
+                                const wxFileName& aSchematic,
+                                const JSON& aPlan, const wxFileName& aStaging,
+                                std::string& aError )
 {
     wxFileName cli;
 
@@ -1581,6 +1583,12 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard, const JSON& aPlan,
                           "--exclude-footprints-without-pads", "--subtract-holes-from-board",
                           "--subtract-holes-from-copper", aBoard.GetFullPath().ToStdString() };
         }
+        else if( kind == "netlist" )
+        {
+            arguments = { "sch", "export", "netlist", "--output", output.string(),
+                          "--format", "kicadsexpr",
+                          aSchematic.GetFullPath().ToStdString() };
+        }
         else
         {
             aError = "fabrication plan contains an unsupported native job";
@@ -1605,8 +1613,8 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         "erc", "drc", "sourcing", "fabrication"
     };
     static constexpr const char* OUTPUT_ORDER[] = {
-        "gerbers", "drill", "ipcd356", "ipc2581", "odbpp", "pick_place", "bom", "step",
-        "pdf", "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
+        "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
+        "step", "pdf", "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
         "gerbers", "drill", "ipcd356", "pick_place", "bom"
@@ -1694,9 +1702,13 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     JSON jobs = JSON::array();
     std::set<std::string> bomReferences;
     std::set<std::string> placementReferences;
+    std::set<std::string> netlistReferences;
+    JSON expectedNetlistNets = JSON::array();
 
     for( const JSON& component : aIr.at( "schematic" ).at( "components" ) )
     {
+        netlistReferences.emplace( component.at( "reference" ).get<std::string>() );
+
         if( !component.contains( "footprint" ) || !component.at( "footprint" ).is_string() )
             continue;
 
@@ -1705,6 +1717,24 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
 
         if( !component.value( "dnp", false ) )
             placementReferences.emplace( reference );
+    }
+
+    for( const JSON& net : aIr.at( "schematic" ).at( "nets" ) )
+    {
+        std::set<std::pair<std::string, std::string>> nodes;
+        JSON plannedNodes = JSON::array();
+
+        for( const JSON& pin : net.at( "pins" ) )
+        {
+            nodes.emplace( pin.at( "component" ).get<std::string>(),
+                           pin.at( "number" ).get<std::string>() );
+        }
+
+        for( const auto& [reference, pin] : nodes )
+            plannedNodes.push_back( { { "reference", reference }, { "pin", pin } } );
+
+        expectedNetlistNets.push_back( { { "name", net.at( "name" ) },
+                                         { "nodes", std::move( plannedNodes ) } } );
     }
 
     for( const char* kind : OUTPUT_ORDER )
@@ -1728,6 +1758,10 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         else if( std::string_view( kind ) == "ipcd356" )
         {
             job["relativePath"] = "electrical-test/" + aFileStem + ".d356";
+        }
+        else if( std::string_view( kind ) == "netlist" )
+        {
+            job["relativePath"] = "netlist/" + aFileStem + ".net";
         }
         else if( std::string_view( kind ) == "ipc2581" )
         {
@@ -1786,13 +1820,15 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v5" },
+    return { { "profile", "kichad-production-10.0.4-v6" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
              { "issues", std::move( issues ) },
              { "expectedBomReferences", bomReferences },
              { "expectedPlacementReferences", placementReferences },
+             { "expectedNetlistReferences", netlistReferences },
+             { "expectedNetlistNets", std::move( expectedNetlistNets ) },
              { "jobs", std::move( jobs ) } };
 }
 
@@ -3237,6 +3273,16 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path == "netlist/" + fileStem + ".net" )
+        {
+            kind = "netlist";
+
+            if( !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
+                        iterator->path(), aPlan, aError ) )
+            {
+                return false;
+            }
+        }
         else if( path.starts_with( "manufacturing/" )
                  && path.ends_with( ".ipc2581.xml" ) )
         {
@@ -3440,6 +3486,8 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "drill export is missing Excellon, map, or report artifacts";
         else if( kind == "ipcd356" && counts["ipcd356"] != 1 )
             aError = "IPC-D-356 export did not produce exactly one electrical-test artifact";
+        else if( kind == "netlist" && counts["netlist"] != 1 )
+            aError = "netlist export did not produce exactly one connectivity artifact";
         else if( kind == "ipc2581" && counts["ipc2581"] != 1 )
             aError = "IPC-2581 export did not produce exactly one manufacturing artifact";
         else if( kind == "odbpp" && counts["odbpp"] != 1 )
@@ -5403,10 +5451,11 @@ nlohmann::json KICHAD::CODEX_TOOLS::BuildFabricationPlan(
 
 
 bool KICHAD::CODEX_TOOLS::RunNativeKiCadFabrication(
-        const wxFileName& aBoard, const nlohmann::json& aPlan,
-        const wxFileName& aStaging, std::string& aError )
+        const wxFileName& aBoard, const wxFileName& aSchematic,
+        const nlohmann::json& aPlan, const wxFileName& aStaging,
+        std::string& aError )
 {
-    return runNativeKiCadFabrication( aBoard, aPlan, aStaging, aError );
+    return runNativeKiCadFabrication( aBoard, aSchematic, aPlan, aStaging, aError );
 }
 
 

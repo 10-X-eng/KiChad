@@ -6799,7 +6799,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(verified_on YYYY-MM-DD) (quantity N) [(unit_price TEXT) (notes TEXT)])" } },
                   { { "form", "(check erc|drc|sourcing|footprints|fabrication)" } },
                   { { "form",
-                      "(output gerbers|drill|ipcd356|ipc2581|odbpp|pick_place|bom|step|pdf|"
+                      "(output gerbers|drill|ipcd356|netlist|ipc2581|odbpp|pick_place|bom|step|pdf|"
                       "assembly_svg|assembly_dxf|gencad|vrml|board_stats)" } }
           } ) },
         { "compilerPasses",
@@ -7295,9 +7295,9 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "output" )
         {
             static const std::set<std::string> allowed = {
-                "gerbers", "drill", "ipcd356", "ipc2581", "odbpp", "pick_place", "bom",
-                "step", "pdf", "assembly_svg", "assembly_dxf", "gencad", "vrml",
-                "board_stats"
+                "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp",
+                "pick_place", "bom", "step", "pdf", "assembly_svg", "assembly_dxf",
+                "gencad", "vrml", "board_stats"
             };
             JSON output = compileEnumeratedFacet( *document, formNode, "output", allowed, result );
             const std::string kind = output.value( "kind", "" );

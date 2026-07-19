@@ -198,6 +198,7 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output gerbers)
   (output drill)
   (output ipcd356)
+  (output netlist)
   (output ipc2581)
   (output odbpp)
   (output pick_place)
@@ -350,6 +351,43 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
             if( !write( output, source ) )
             {
                 aError = "could not write fake IPC-D-356 output";
+                return false;
+            }
+        }
+        else if( kind == "netlist" )
+        {
+            const std::string stem = aPlan.at( "fileStem" ).get<std::string>();
+            std::string source =
+                    "(export (version \"E\")"
+                    " (design (source \"" + stem
+                    + ".kicad_sch\") (tool \"Eeschema 10.0.4-KiChad\"))"
+                      " (components";
+
+            for( const JSON& reference : aPlan.at( "expectedNetlistReferences" ) )
+                source += " (comp (ref " + reference.dump() + "))";
+
+            source += ") (nets";
+            size_t code = 1;
+
+            for( const JSON& net : aPlan.at( "expectedNetlistNets" ) )
+            {
+                source += " (net (code \"" + std::to_string( code++ ) + "\") (name "
+                          + net.at( "name" ).dump() + ")";
+
+                for( const JSON& node : net.at( "nodes" ) )
+                {
+                    source += " (node (ref " + node.at( "reference" ).dump()
+                              + ") (pin " + node.at( "pin" ).dump() + "))";
+                }
+
+                source += ")";
+            }
+
+            source += "))\n";
+
+            if( !write( output, source ) )
+            {
+                aError = "could not write fake KiCad netlist output";
                 return false;
             }
         }
@@ -664,14 +702,17 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v5" );
+                       "kichad-production-10.0.4-v6" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 14 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 15 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"][0].get<std::string>(), "U1" );
+    BOOST_CHECK_EQUAL( data["expectedNetlistReferences"].size(), 1 );
+    BOOST_CHECK_EQUAL( data["expectedNetlistReferences"][0].get<std::string>(), "U1" );
+    BOOST_CHECK( data["expectedNetlistNets"].empty() );
     BOOST_CHECK( std::find( data["jobs"][0]["layers"].begin(),
                             data["jobs"][0]["layers"].end(), JSON( "F.Paste" ) )
                  != data["jobs"][0]["layers"].end() );
@@ -759,12 +800,13 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
                 aReport = nativeReport( aCheck, aPath, dirtyCheck == aCheck, waiver );
                 return true;
             },
-            [&]( const wxFileName& aBoard, const JSON& aPlan, const wxFileName& aStaging,
-                 std::string& aError )
+            [&]( const wxFileName& aBoard, const wxFileName& aSchematic,
+                 const JSON& aPlan, const wxFileName& aStaging, std::string& aError )
             {
                 ++fabricationCalls;
                 fabricationUsedSnapshot =
-                        fabricationUsedSnapshot && aBoard.GetPath() != fixture.Root();
+                        fabricationUsedSnapshot && aBoard.GetPath() != fixture.Root()
+                        && aSchematic.GetPath() != fixture.Root();
 
                 if( fabricationFailure )
                 {
@@ -1007,7 +1049,7 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "waived" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 23 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 24 );
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
@@ -1023,6 +1065,9 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/electrical-test/"
                                       "fabrication_clean.d356" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/netlist/"
+                                      "fabrication_clean.net" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/manufacturing/"
                                       "fabrication_clean.ipc2581.xml" ) ) );
@@ -1166,7 +1211,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 16 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 17 );
 
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
@@ -1178,6 +1223,9 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName electricalTestPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/electrical-test/fabrication_component.d356" ) );
+    wxFileName netlistPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/netlist/fabrication_component.net" ) );
     wxFileName ipc2581Path(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/manufacturing/fabrication_component.ipc2581.xml" ) );
@@ -1188,6 +1236,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
     BOOST_REQUIRE( electricalTestPath.FileExists() );
+    BOOST_REQUIRE( netlistPath.FileExists() );
     BOOST_REQUIRE( ipc2581Path.FileExists() );
     BOOST_REQUIRE( odbPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
@@ -1198,6 +1247,11 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     const std::string electricalTest = readText( electricalTestPath );
     BOOST_CHECK_NE( electricalTest.find( "327TEST_A" ), std::string::npos );
     BOOST_CHECK_NE( electricalTest.find( "327TEST_B" ), std::string::npos );
+    const std::string netlist = readText( netlistPath );
+    BOOST_CHECK_NE( netlist.find( "(name \"TEST_A\")" ), std::string::npos );
+    BOOST_CHECK_NE( netlist.find( "(name \"TEST_B\")" ), std::string::npos );
+    BOOST_CHECK_NE( netlist.find( "(ref \"R1\")" ), std::string::npos );
+    BOOST_CHECK_NE( netlist.find( "(ref \"R2\")" ), std::string::npos );
     const std::string ipc2581 = readText( ipc2581Path );
     BOOST_CHECK_NE( ipc2581.find( "<IPC-2581 revision=\"C\"" ), std::string::npos );
     BOOST_CHECK_NE( ipc2581.find( "<Component refDes=\"R1\"" ), std::string::npos );

@@ -89,10 +89,12 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v5` profile requires explicit stackup intent, ERC, DRC,
+sidecar. The fixed `kichad-production-10.0.4-v6` profile requires explicit stackup intent, ERC, DRC,
 sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
 outputs; STEP, PDF, IPC-2581C XML, ODB++, front/back assembly SVG/DXF, GenCAD, VRML, and typed board
-statistics are optional declarations. Each auxiliary artifact has an exact planned path and a
+statistics are optional declarations. A native Eeschema netlist can also be declared and is matched
+against the exact compiled KDS component and ref/pin connectivity sets. Each auxiliary artifact has
+an exact planned path and a
 dedicated bounded structural validator. IPC-2581 export uses one fixed
 millimetre/precision-6 representation and is parsed to verify its schema identity, native producer,
 board step, stackup, layers, and KDS component references. ODB++ uses one fixed ODB 8.1

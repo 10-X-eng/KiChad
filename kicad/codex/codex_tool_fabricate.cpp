@@ -268,12 +268,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
     const wxString verificationProjectPath =
             wxString::FromUTF8( verificationSnapshot.Path().string().c_str() );
     wxFileName verificationBoard;
+    wxFileName verificationSchematic;
 
     if( !KICHAD::CODEX_TOOLS::ResolveProjectFile( verificationProjectPath, boardRelativePath,
                              verificationBoard, pathError ) )
     {
         return failure( "verification_snapshot_failed",
                         "private board snapshot could not be resolved: " + pathError );
+    }
+
+    if( !KICHAD::CODEX_TOOLS::ResolveProjectFile(
+                verificationProjectPath, schematicRelativePath,
+                verificationSchematic, pathError ) )
+    {
+        return failure( "verification_snapshot_failed",
+                        "private schematic snapshot could not be resolved: " + pathError );
     }
 
     const auto decodeResult = [&]( const JSON& aResult, JSON& aData,
@@ -423,10 +432,12 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
             wxFileName::DirName( wxString::FromUTF8( staging.string().c_str() ) );
     std::string exportError;
     const bool exported = m_nativeFabricationRunner
-                                  ? m_nativeFabricationRunner( verificationBoard, plan,
-                                                               stagingDirectory, exportError )
-                                  : KICHAD::CODEX_TOOLS::RunNativeKiCadFabrication( verificationBoard, plan,
-                                                               stagingDirectory, exportError );
+                                  ? m_nativeFabricationRunner(
+                                            verificationBoard, verificationSchematic,
+                                            plan, stagingDirectory, exportError )
+                                  : KICHAD::CODEX_TOOLS::RunNativeKiCadFabrication(
+                                            verificationBoard, verificationSchematic,
+                                            plan, stagingDirectory, exportError );
 
     if( !exported )
     {
@@ -590,4 +601,3 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
                       { "transaction", "confirmed staged validation and atomic replacement" },
                       { "backupRetained", backupRetained } } );
 }
-

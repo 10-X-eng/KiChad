@@ -202,4 +202,44 @@ BOOST_AUTO_TEST_CASE( AcceptsTypedBoardStatisticsAndRejectsWrongIdentity )
 }
 
 
+BOOST_AUTO_TEST_CASE( AcceptsExactKiCadNetlistAndRejectsConnectivityDrift )
+{
+    ARTIFACT_FIXTURE fixture;
+    const JSON plan = {
+        { "fileStem", "controller" },
+        { "expectedNetlistReferences", JSON::array( { "R1", "R2" } ) },
+        { "expectedNetlistNets",
+          JSON::array(
+                  { { { "name", "SIGNAL" },
+                      { "nodes",
+                        JSON::array(
+                                { { { "reference", "R1" }, { "pin", "1" } },
+                                  { { "reference", "R2" }, { "pin", "1" } } } ) } } } ) }
+    };
+    const std::string valid =
+            "(export (version \"E\")"
+            " (design (source \"controller.kicad_sch\")"
+            " (tool \"Eeschema 10.0.4-KiChad\"))"
+            " (components (comp (ref \"R1\")) (comp (ref \"R2\")))"
+            " (nets (net (code \"1\") (name \"SIGNAL\")"
+            " (node (ref \"R1\") (pin \"1\"))"
+            " (node (ref \"R2\") (pin \"1\")))))\n";
+    std::string error;
+    BOOST_CHECK_MESSAGE(
+            KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
+                    fixture.Write( "valid.net", valid ), plan, error ),
+            error );
+
+    error.clear();
+    std::string drifted = valid;
+    const size_t secondReference = drifted.rfind( "(ref \"R2\")" );
+    BOOST_REQUIRE_NE( secondReference, std::string::npos );
+    drifted.replace( secondReference, std::string( "(ref \"R2\")" ).size(),
+                     "(ref \"R1\")" );
+    BOOST_CHECK( !KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
+            fixture.Write( "drifted.net", drifted ), plan, error ) );
+    BOOST_CHECK( !error.empty() );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()

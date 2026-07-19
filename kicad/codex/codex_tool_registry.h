@@ -28,8 +28,8 @@ public:
     using NATIVE_CHECK_RUNNER = std::function<bool( const std::string&, const wxFileName&,
                                                      std::string&, std::string& )>;
     using NATIVE_FABRICATION_RUNNER =
-            std::function<bool( const wxFileName&, const JSON&, const wxFileName&,
-                                std::string& )>;
+            std::function<bool( const wxFileName&, const wxFileName&, const JSON&,
+                                const wxFileName&, std::string& )>;
     static constexpr int SCHEMA_VERSION = 7;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,

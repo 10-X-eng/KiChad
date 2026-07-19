@@ -86,6 +86,7 @@
   (output gerbers)
   (output drill)
   (output ipcd356)
+  (output netlist)
   (output ipc2581)
   (output odbpp)
   (output pick_place)

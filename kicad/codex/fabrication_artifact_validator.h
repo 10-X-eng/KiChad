@@ -15,6 +15,8 @@
 #include <filesystem>
 #include <string>
 
+#include <nlohmann/json_fwd.hpp>
+
 
 namespace KICHAD::FABRICATION_ARTIFACT_VALIDATOR
 {
@@ -26,6 +28,9 @@ bool ValidateVrml( const std::filesystem::path& aPath, std::string& aError );
 bool ValidateBoardStatistics( const std::filesystem::path& aPath,
                               const std::string& aExpectedStem,
                               std::string& aError );
+bool ValidateKiCadNetlist( const std::filesystem::path& aPath,
+                           const nlohmann::json& aPlan,
+                           std::string& aError );
 
 } // namespace KICHAD::FABRICATION_ARTIFACT_VALIDATOR
 
