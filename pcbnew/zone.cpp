@@ -326,6 +326,8 @@ void ZONE::Serialize( google::protobuf::Any& aContainer ) const
     zone.mutable_border()->set_style(
             ToProtoEnum<ZONE_BORDER_DISPLAY_STYLE, types::ZoneBorderStyle>( m_borderStyle ) );
     zone.mutable_border()->mutable_pitch()->set_value_nm( m_borderHatchPitch );
+    zone.set_locked( IsLocked() ? kiapi::common::types::LockedState::LS_LOCKED
+                                : kiapi::common::types::LockedState::LS_UNLOCKED );
 
     aContainer.PackFrom( zone );
 }
@@ -412,6 +414,7 @@ bool ZONE::Deserialize( const google::protobuf::Any& aContainer )
 
     m_borderStyle = FromProtoEnum<ZONE_BORDER_DISPLAY_STYLE>( zone.border().style() );
     m_borderHatchPitch = zone.border().pitch().value_nm();
+    SetLocked( zone.locked() == kiapi::common::types::LockedState::LS_LOCKED );
 
     if( zone.filled() )
     {

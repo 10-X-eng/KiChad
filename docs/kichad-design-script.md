@@ -105,9 +105,10 @@ formatting and statement order do not affect those identities.
 
 Physical board quantities always carry explicit units (`mm`, `mil`, `um`, `nm`, or `in`), area
 thresholds use the corresponding square units (`mm2`, `mil2`, `um2`, `nm2`, or `in2`), and
-rotations carry `deg`.  Generated items such as outlines, traces, arcs, vias, and zones require logical
-`id` fields.  Those IDs are stable across formatting and statement reordering and are the source
-identity used by transactional backends; component placement uses the already-unique reference.
+rotations carry `deg`. Generated items such as outlines, traces, arcs, vias, zones, and keepouts
+require logical `id` fields. Those IDs are stable across formatting and statement reordering and
+are the source identity used by transactional backends; component placement uses the already-unique
+reference.
 
 ### Copper zone form
 
@@ -152,6 +153,37 @@ distinct and present in the declared stackup. KDS validates these constraints be
 connection or mutation. Hatched zones may additionally define one bounded offset per zone layer;
 solid zones reject hatch offsets instead of retaining ignored intent.
 
+### Keepout form
+
+The canonical KDS version 1 keepout form is:
+
+```scheme
+(keepout
+  (id LOGICAL_ID)
+  (name "OPTIONAL DISPLAY NAME")
+  (layers F.Cu In1.Cu B.Cu)
+  (outline
+    (polygon
+      (point X Y) (point X Y) (point X Y)
+      (hole (point X Y) (point X Y) (point X Y))))
+  (prohibit
+    (copper true|false)
+    (vias true|false)
+    (tracks true|false)
+    (pads true|false)
+    (footprints true|false))
+  (border solid|invisible)
+  ; or: (border diagonal_full|diagonal_edge (pitch DISTANCE))
+  (locked true|false))
+```
+
+`id`, `layers`, `outline`, and `prohibit` are required. Every prohibited category is explicit and
+at least one must be true, so an ineffective rule area is rejected. `name` defaults to the logical
+ID, `border` to solid, and `locked` to false. Keepouts use distinct copper layers present in the
+declared stackup and the same bounded, exact polygon topology contract as copper zones. They lower
+to KiCad's native `ZT_RULE_AREA` with placement-area behavior explicitly disabled; they are not
+copper zones and are never awaited as filled objects.
+
 ## Compiler pipeline
 
 1. Parse bounded, lossless s-expressions.
@@ -174,26 +206,29 @@ KiCad transaction. A project-confined apply journal makes an interrupted operati
 reconcilable on the next apply, while the whole turn remains revertible from local history.
 
 The apply backend currently executes rectangular outlines, component placement, straight traces,
-arcs, vias, and copper zones. A zone explicitly declares its net, stable ID, one or more copper
+arcs, vias, copper zones, and keepout rule areas. A zone explicitly declares its net, stable ID, one or more copper
 layers, bounded polygon/hole geometry, clearance, minimum thickness, connection and thermal policy,
 island policy, solid or hatched fill, priority, border display, and lock state. No manufacturing
 setting is inherited silently. Zone creation and updates are committed through KiCad 10 IPC, after
 which KiCad's official refill operation is polled until every desired zone reports filled. Refill
 failure retains the recovery journal and aborts the apply result rather than claiming success.
+Keepouts use a separate deterministic ownership type and exact `rule_area_settings` update mask, so
+their unfilled state is never confused with a failed copper refill.
 
 Placement requires exactly one live footprint with the KDS component reference and
 an existing schematic symbol path. It updates only position, rotation, front/back side, and lock
 state in place; footprint ownership, UUID, symbol path, fields, pads, and child UUIDs remain KiCad's
 existing objects. Missing, duplicate, or board-only footprint references abort before mutation.
-The backend still refuses stackup, text, dimensions, keepouts, or any structurally retained
-form before mutation until that form has its own typed backend and rollback coverage.
+The backend still refuses stackup, text, dimensions, or any structurally retained form before
+mutation until that form has its own typed backend and rollback coverage.
 
 Run `tools/smoke-kichad-kds-apply.sh --allow-mutation` for the opt-in live proof. The harness creates
-an isolated temporary project, starts its own build-tree PCB Editor, applies five managed items, and
+an isolated temporary project, starts its own build-tree PCB Editor, applies six managed items, and
 reapplies the unchanged source to verify updates reuse the same deterministic identities. It also
 places a schematic-linked footprint on the back side and proves its footprint/symbol/pad identities
-and flipped child layers survive both applies, and proves the fifth managed object is a filled
-net-connected copper zone with exact physical settings.
+and flipped child layers survive both applies. It proves the fifth managed object is a filled
+net-connected copper zone with exact physical settings and the sixth is a distinct unfilled, locked
+keepout with exact prohibited-item policy.
 
 ## Production support rule
 

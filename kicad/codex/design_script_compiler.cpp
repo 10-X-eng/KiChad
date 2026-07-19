@@ -548,6 +548,11 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(islands remove_all|keep_all|remove_below ...) "
                       "(fill solid|hatched ...) "
                       "(hatch_offsets (layer F.Cu X Y) ...))" } },
+                  { { "form",
+                      "(keepout (id ID) (layers F.Cu ...) "
+                      "(outline (polygon (point X Y) ... (hole (point X Y) ...))) "
+                      "(prohibit (copper BOOL) (vias BOOL) (tracks BOOL) "
+                      "(pads BOOL) (footprints BOOL)))" } },
                   { { "form", "(rule NAME ...)" } },
                   { { "form",
                       "(source REF (manufacturer NAME) (mpn PART) (supplier NAME) (sku PART) "

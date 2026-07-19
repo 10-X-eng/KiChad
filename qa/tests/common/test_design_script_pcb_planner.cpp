@@ -176,6 +176,49 @@ BOOST_AUTO_TEST_CASE( LowersExplicitCopperZoneIntoDeterministicProtobufJson )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersExplicitKeepoutIntoRuleAreaProtobufJson )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project rule_area_board)
+  (board
+    (keepout
+      (id no-routing)
+      (name "No routing")
+      (layers F.Cu B.Cu)
+      (outline
+        (polygon
+          (point 0mm 0mm) (point 10mm 0mm) (point 10mm 5mm) (point 0mm 5mm)))
+      (prohibit
+        (copper true) (vias true) (tracks true) (pads false) (footprints false))
+      (border diagonal_full (pitch 0.4mm))
+      (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemType"].get<std::string>(), "rule_area" );
+    checkProtobufJson<kiapi::board::types::Zone>( plan.operations[0]["item"] );
+    const nlohmann::json& item = plan.operations[0]["item"];
+    BOOST_CHECK_EQUAL( item["type"].get<std::string>(), "ZT_RULE_AREA" );
+    BOOST_CHECK( item["ruleAreaSettings"]["keepoutCopper"].get<bool>() );
+    BOOST_CHECK( item["ruleAreaSettings"]["keepoutTracks"].get<bool>() );
+    BOOST_CHECK( !item["ruleAreaSettings"]["keepoutPads"].get<bool>() );
+    BOOST_CHECK( !item["ruleAreaSettings"]["placementEnabled"].get<bool>() );
+    BOOST_CHECK_EQUAL( item["ruleAreaSettings"]["placementSourceType"].get<std::string>(),
+                       "PRST_UNKNOWN" );
+    BOOST_CHECK_EQUAL( item["border"]["pitch"]["valueNm"].get<std::string>(), "400000" );
+    BOOST_CHECK_EQUAL( item["locked"].get<std::string>(), "LS_LOCKED" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
+                       KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                               "rule_area_board", "rule_area", "no-routing" ) );
+}
+
+
 BOOST_AUTO_TEST_CASE( FullyLowersTypedComponentPlacement )
 {
     const std::string source = R"KDS((kichad_design

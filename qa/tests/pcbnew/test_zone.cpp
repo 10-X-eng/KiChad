@@ -38,6 +38,9 @@
 #include <zone.h>
 #include <zone_utils.h>
 
+#include <api/board/board_types.pb.h>
+#include <google/protobuf/any.pb.h>
+
 
 struct ZONE_TEST_FIXTURE
 {
@@ -100,6 +103,31 @@ BOOST_AUTO_TEST_CASE( MultipleLayers )
     BOOST_TEST( zone.GetFirstLayer() == F_Cu );
 
     BOOST_TEST( zone.IsOnCopperLayer() == true );
+}
+
+
+BOOST_AUTO_TEST_CASE( ProtobufPreservesLockedState )
+{
+    std::unique_ptr<ZONE> source =
+            CreateSquareZone( m_board, BOX2I( VECTOR2I( 0, 0 ), VECTOR2I( 1000000, 1000000 ) ),
+                              F_Cu );
+    source->SetLocked( true );
+    google::protobuf::Any packed;
+    source->Serialize( packed );
+    kiapi::board::types::Zone message;
+    BOOST_REQUIRE( packed.UnpackTo( &message ) );
+    BOOST_CHECK_EQUAL( message.locked(), kiapi::common::types::LS_LOCKED );
+
+    ZONE restored( &m_board );
+    BOOST_REQUIRE( restored.Deserialize( packed ) );
+    BOOST_CHECK( restored.IsLocked() );
+
+    source->SetLocked( false );
+    source->Serialize( packed );
+    BOOST_REQUIRE( packed.UnpackTo( &message ) );
+    BOOST_CHECK_EQUAL( message.locked(), kiapi::common::types::LS_UNLOCKED );
+    BOOST_REQUIRE( restored.Deserialize( packed ) );
+    BOOST_CHECK( !restored.IsLocked() );
 }
 
 /**

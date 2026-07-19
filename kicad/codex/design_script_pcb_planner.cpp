@@ -309,6 +309,57 @@ JSON planZone( const JSON& aStatement, const std::string& aProject )
              { "item", std::move( item ) } };
 }
 
+
+JSON planKeepout( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "rule_area", logicalId );
+    const JSON& prohibitions = aStatement.at( "prohibitions" );
+    const JSON& border = aStatement.at( "border" );
+    const std::string borderStyle = border.at( "style" ).get<std::string>();
+    const std::map<std::string, std::string> borderEnums = {
+        { "solid", "ZBS_SOLID" }, { "diagonal_full", "ZBS_DIAGONAL_FULL" },
+        { "diagonal_edge", "ZBS_DIAGONAL_EDGE" }, { "invisible", "ZBS_INVISIBLE" }
+    };
+    JSON layers = JSON::array();
+
+    for( const JSON& layer : aStatement.at( "layers" ) )
+        layers.emplace_back( layerEnum( layer.get<std::string>() ) );
+
+    JSON item = {
+        { "id", { { "value", itemId } } },
+        { "type", "ZT_RULE_AREA" },
+        { "layers", std::move( layers ) },
+        { "outline", polySetProto( aStatement.at( "polygons" ) ) },
+        { "name", aStatement.at( "name" ) },
+        { "ruleAreaSettings",
+          { { "keepoutCopper", prohibitions.at( "copper" ) },
+            { "keepoutVias", prohibitions.at( "vias" ) },
+            { "keepoutTracks", prohibitions.at( "tracks" ) },
+            { "keepoutPads", prohibitions.at( "pads" ) },
+            { "keepoutFootprints", prohibitions.at( "footprints" ) },
+            { "placementEnabled", false },
+            { "placementSourceType", "PRST_UNKNOWN" },
+            { "placementSource", "" } } },
+        { "priority", 0 },
+        { "filled", false },
+        { "filledPolygons", JSON::array() },
+        { "border",
+          { { "style", borderEnums.at( borderStyle ) },
+            { "pitch",
+              { { "valueNm", std::to_string( border.at( "pitchNm" ).get<int64_t>() ) } } } } },
+        { "locked", lockedEnum( aStatement ) },
+        { "layerProperties", JSON::array() }
+    };
+
+    return { { "action", "upsert" },
+             { "itemType", "rule_area" },
+             { "logicalId", logicalId },
+             { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
 } // namespace
 
 
@@ -402,6 +453,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             else if( kind == "zone" )
             {
                 result.operations.emplace_back( planZone( statement, project ) );
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "keepout" )
+            {
+                result.operations.emplace_back( planKeepout( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
             else if( kind == "place" )

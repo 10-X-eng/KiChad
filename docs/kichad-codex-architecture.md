@@ -55,7 +55,7 @@ components, connectivity, board intent, design rules, sourcing, verification, an
 `pcb` discovers the matching open board and instance token through KiCad 10's supported protobuf IPC
 API.  Its bounded `describe` operation exposes exact protobuf JSON fields and nested enum values, so
 the model does not infer message shapes.  It can read typed live items and create, field-mask update,
-or delete footprints, traces, vias, arcs, zones, graphics, and text.  Each mutation requires the
+or delete footprints, traces, vias, arcs, copper zones, rule areas, graphics, and text. Each mutation requires the
 pre-turn snapshot and is enclosed by KiCad `BeginCommit`/`EndCommit`; any validation, item-status,
 transport, or commit failure drops the pending commit.  IPC requests have bounded timeouts and
 execute off the wxWidgets UI thread; socket paths and instance tokens are not returned to the model.
@@ -72,9 +72,11 @@ builds and test runs never invoke this mutating smoke test.
 It starts only its own build-tree PCB Editor, uses isolated settings and a temporary copy of the
 committed fixture, applies the KDS sidecar, and repeats the apply to prove stable object identity and
 duplicate-free convergence. It verifies a deterministic managed copper zone is filled by KiCad's
-official zone engine after each transaction, as well as reference-resolved placement through a narrow native
-footprint transform: the parent and pad UUIDs, schematic symbol path, and child geometry survive a
-front-to-back flip. Its cleanup targets only the process and directory it created.
+official zone engine after each transaction and a distinct managed keepout remains an unfilled,
+locked rule area with exact prohibited-item settings. It also verifies reference-resolved placement
+through a narrow native footprint transform: the parent and pad UUIDs, schematic symbol path, and
+child geometry survive a front-to-back flip. Its cleanup targets only the process and directory it
+created.
 
 `tools/generate-codex-protocol-schema.sh` regenerates the installed app-server's experimental JSON
 Schema and TypeScript contract under the ignored `build/` tree.  This is the review/update path for
@@ -98,7 +100,8 @@ apply. Existing schematic-linked footprints are resolved uniquely by reference a
 place; they are never added to KDS ownership state. Managed copper zones are committed unfilled,
 then KiCad's official refill command is polled until every desired zone is authoritatively present
 and filled. A rejected or timed-out refill retains the recovery journal, and the next apply safely
-reconciles and retries. Both state files are project-confined and
+reconciles and retries. Keepout rule areas use their own ownership namespace and exact protobuf
+field mask; they never participate in copper-fill completion polling. Both state files are project-confined and
 included in whole-turn local history snapshots.
 
 The complete tool surface is capped at nine host functions. Each function accepts schema-validated

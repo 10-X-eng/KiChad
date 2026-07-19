@@ -1388,7 +1388,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                                  { "expectedSha256", hash } } );
     BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
     JSON firstData = envelope( applied )["data"];
-    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 5 );
+    BOOST_CHECK_EQUAL( firstData["managedItems"].get<int>(), 6 );
     BOOST_CHECK_EQUAL( firstData["counts"]["placement"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["zonesRefilled"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( firstData["transaction"].get<std::string>(), "committed" );
@@ -1400,7 +1400,7 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
     BOOST_REQUIRE_MESSAGE( repeated.at( "success" ).get<bool>(), repeated.dump() );
     JSON repeatedData = envelope( repeated )["data"];
     BOOST_CHECK_EQUAL( repeatedData["counts"]["create"].get<int>(), 0 );
-    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 5 );
+    BOOST_CHECK_EQUAL( repeatedData["counts"]["update"].get<int>(), 6 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["delete"].get<int>(), 0 );
     BOOST_CHECK_EQUAL( repeatedData["counts"]["placement"].get<int>(), 1 );
 
@@ -1471,6 +1471,23 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                        "1000000000000" );
     BOOST_REQUIRE_EQUAL( zone["outline"]["polygons"].size(), 1 );
     BOOST_REQUIRE_EQUAL( zone["outline"]["polygons"][0]["outline"]["nodes"].size(), 4 );
+
+    JSON keepout = getOne( "rule_area" );
+    BOOST_CHECK_EQUAL( keepout["id"]["value"].get<std::string>(),
+                       stableUuid( "rule_area", "no-routing" ) );
+    BOOST_CHECK_EQUAL( keepout["type"].get<std::string>(), "ZT_RULE_AREA" );
+    BOOST_REQUIRE_EQUAL( keepout["layers"].size(), 1 );
+    BOOST_CHECK_EQUAL( keepout["layers"][0].get<std::string>(), "BL_B_Cu" );
+    BOOST_CHECK( keepout["ruleAreaSettings"]["keepoutCopper"].get<bool>() );
+    BOOST_CHECK( keepout["ruleAreaSettings"]["keepoutVias"].get<bool>() );
+    BOOST_CHECK( keepout["ruleAreaSettings"]["keepoutTracks"].get<bool>() );
+    BOOST_CHECK( !keepout["ruleAreaSettings"].value( "keepoutPads", false ) );
+    BOOST_CHECK( keepout["ruleAreaSettings"]["keepoutFootprints"].get<bool>() );
+    BOOST_CHECK( !keepout["ruleAreaSettings"].value( "placementEnabled", false ) );
+    BOOST_CHECK_EQUAL( keepout["border"]["pitch"]["valueNm"].get<std::string>(), "400000" );
+    BOOST_CHECK_EQUAL( keepout["locked"].get<std::string>(), "LS_LOCKED" );
+    BOOST_CHECK( !keepout.value( "filled", false ) );
+    BOOST_REQUIRE_EQUAL( keepout["outline"]["polygons"][0]["outline"]["nodes"].size(), 4 );
 
     JSON footprint = getOne( "footprint" );
     BOOST_CHECK_EQUAL( footprint["id"]["value"].get<std::string>(),

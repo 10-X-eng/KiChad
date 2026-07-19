@@ -686,7 +686,7 @@ void validateStackupLayers( const JSON& aStatements, RESULT& aResult )
                             "microvias must connect adjacent copper layers" );
             }
         }
-        else if( kind == "zone" )
+        else if( kind == "zone" || kind == "keepout" )
         {
             for( const JSON& layer : statement.value( "layers", JSON::array() ) )
             {
@@ -695,8 +695,11 @@ void validateStackupLayers( const JSON& aStatements, RESULT& aResult )
                 if( copperLayer( layerName )
                     && copperLayerIndex( layerName, copperLayers ) < 0 )
                 {
-                    diagnostic( aResult, "error", "zone_layer_outside_stackup",
-                                "zone layer " + layerName
+                    const std::string code = kind == "zone"
+                                                     ? "zone_layer_outside_stackup"
+                                                     : "keepout_layer_outside_stackup";
+                    diagnostic( aResult, "error", code,
+                                kind + " layer " + layerName
                                         + " is not present in the declared stackup" );
                 }
             }
@@ -1769,6 +1772,152 @@ JSON compileZone( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "typed", true } };
 }
 
+
+JSON compileKeepoutProhibitions( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult )
+{
+    std::map<std::string, size_t> fields;
+    collectFields( aDocument, aNode, 1,
+                   { "copper", "vias", "tracks", "pads", "footprints" }, fields,
+                   aResult, "keepout prohibit" );
+    JSON prohibitions = JSON::object();
+    bool any = false;
+
+    for( const char* field : { "copper", "vias", "tracks", "pads", "footprints" } )
+    {
+        bool prohibited = false;
+
+        if( !fields.contains( field )
+            || !parseBooleanForm( aDocument, fields[field], prohibited ) )
+        {
+            diagnostic( aResult, "error", "invalid_keepout_prohibition",
+                        "keepout prohibit requires explicit true or false values for copper, "
+                        "vias, tracks, pads, and footprints" );
+        }
+
+        prohibitions[field] = prohibited;
+        any = any || prohibited;
+    }
+
+    if( !any )
+    {
+        diagnostic( aResult, "error", "empty_keepout",
+                    "keepout must prohibit at least one board item category" );
+    }
+
+    return prohibitions;
+}
+
+
+JSON compileKeepout( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
+                     std::set<std::string>& aLogicalIds )
+{
+    std::map<std::string, size_t> fields;
+    collectFields( aDocument, aNode, 1,
+                   { "id", "name", "layers", "outline", "prohibit", "border", "locked" },
+                   fields, aResult, "keepout" );
+    std::string logicalId;
+    std::string name;
+    JSON layers = JSON::array();
+    JSON polygons = JSON::array();
+    JSON prohibitions = JSON::object();
+    JSON border = { { "style", "solid" }, { "pitchNm", 0 } };
+    bool locked = false;
+
+    if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
+        || !validIdentifier( logicalId ) )
+    {
+        diagnostic( aResult, "error", "invalid_board_id",
+                    "keepout requires a bounded (id LOGICAL_ID)" );
+    }
+    else if( !aLogicalIds.emplace( logicalId ).second )
+    {
+        diagnostic( aResult, "error", "duplicate_board_id",
+                    "board logical id " + logicalId + " occurs more than once" );
+    }
+
+    name = logicalId;
+
+    if( fields.contains( "name" )
+        && ( !parseScalarForm( aDocument, fields["name"], name ) || name.empty()
+             || name.size() > MAX_ZONE_NAME_BYTES ) )
+    {
+        diagnostic( aResult, "error", "invalid_keepout_name",
+                    "keepout name must contain 1 through 256 UTF-8 bytes" );
+    }
+
+    if( !fields.contains( "layers" ) )
+    {
+        diagnostic( aResult, "error", "invalid_keepout_layers",
+                    "keepout requires one layers declaration" );
+    }
+    else
+    {
+        const DOCUMENT::NODE& layerNode = aDocument.Nodes()[fields["layers"]];
+        std::set<std::string> uniqueLayers;
+
+        if( layerNode.children.size() < 2 || layerNode.children.size() > 33 )
+        {
+            diagnostic( aResult, "error", "invalid_keepout_layers",
+                        "keepout layers requires 1 through 32 copper layers" );
+        }
+
+        for( size_t i = 1; i < layerNode.children.size(); ++i )
+        {
+            std::string layer;
+
+            if( !scalarText( aDocument, layerNode.children[i], layer )
+                || !copperLayer( layer ) || !uniqueLayers.emplace( layer ).second )
+            {
+                diagnostic( aResult, "error", "invalid_keepout_layers",
+                            "keepout layers must be distinct KiCad copper-layer names" );
+                continue;
+            }
+
+            layers.push_back( layer );
+        }
+    }
+
+    if( !fields.contains( "outline" ) )
+    {
+        diagnostic( aResult, "error", "invalid_keepout_outline",
+                    "keepout requires an explicit polygon outline" );
+    }
+    else
+    {
+        polygons = compileZoneOutline( aDocument, fields["outline"], aResult );
+    }
+
+    if( !fields.contains( "prohibit" ) )
+    {
+        diagnostic( aResult, "error", "invalid_keepout_prohibition",
+                    "keepout requires an explicit prohibit declaration" );
+    }
+    else
+    {
+        prohibitions = compileKeepoutProhibitions( aDocument, fields["prohibit"], aResult );
+    }
+
+    if( fields.contains( "border" ) )
+        border = compileZoneBorder( aDocument, fields["border"], aResult );
+
+    if( fields.contains( "locked" )
+        && !parseBooleanForm( aDocument, fields["locked"], locked ) )
+    {
+        diagnostic( aResult, "error", "invalid_keepout_locked",
+                    "keepout locked must be true or false" );
+    }
+
+    return { { "kind", "keepout" },
+             { "logicalId", logicalId },
+             { "name", name },
+             { "layers", std::move( layers ) },
+             { "polygons", std::move( polygons ) },
+             { "prohibitions", std::move( prohibitions ) },
+             { "border", std::move( border ) },
+             { "locked", locked },
+             { "typed", true } };
+}
+
 } // namespace
 
 
@@ -1831,6 +1980,11 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
         else if( head == "zone" )
         {
             result.statements.emplace_back( compileZone( aDocument, child, result, logicalIds ) );
+        }
+        else if( head == "keepout" )
+        {
+            result.statements.emplace_back(
+                    compileKeepout( aDocument, child, result, logicalIds ) );
         }
         else
         {

@@ -431,7 +431,7 @@ kiapi::common::types::KiCadObjectType pcbObjectType( const std::string& aItemTyp
         return KOT_PCB_VIA;
     if( aItemType == "arc" )
         return KOT_PCB_ARC;
-    if( aItemType == "zone" )
+    if( aItemType == "zone" || aItemType == "rule_area" )
         return KOT_PCB_ZONE;
     if( aItemType == "shape" )
         return KOT_PCB_SHAPE;
@@ -454,7 +454,7 @@ std::unique_ptr<google::protobuf::Message> newPcbItem( const std::string& aItemT
         return std::make_unique<Via>();
     if( aItemType == "arc" )
         return std::make_unique<Arc>();
-    if( aItemType == "zone" )
+    if( aItemType == "zone" || aItemType == "rule_area" )
         return std::make_unique<Zone>();
     if( aItemType == "shape" )
         return std::make_unique<BoardGraphicShape>();
@@ -747,7 +747,14 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
     if( aItem.Is<Via>() )
         return "via";
     if( aItem.Is<Zone>() )
+    {
+        Zone zone;
+
+        if( aItem.UnpackTo( &zone ) && zone.type() == ZT_RULE_AREA )
+            return "rule_area";
+
         return "zone";
+    }
 
     return "other:" + aItem.type_url();
 }
@@ -1279,7 +1286,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
     pcbSchema["properties"]["itemType"] =
             { { "type", "string" },
               { "enum", JSON::array(
-                                { "footprint", "trace", "via", "arc", "zone", "shape", "text" } ) },
+                                { "footprint", "trace", "via", "arc", "zone", "rule_area",
+                                  "shape", "text" } ) },
               { "description", "KiCad 10 protobuf board item type." } };
     pcbSchema["properties"]["messagePath"] =
             { { "type", "string" }, { "maxLength", 512 },
@@ -2066,11 +2074,24 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handlePcb(
 
         JSON   items = JSON::array();
         size_t resultBytes = 0;
+        size_t totalItems = 0;
+        bool   resultCapacityReached = false;
 
         for( const google::protobuf::Any& item : itemsResponse.items() )
         {
-            if( items.size() >= static_cast<size_t>( limit ) )
-                break;
+            if( ( itemType == "zone" || itemType == "rule_area" )
+                && pcbAnyType( item ) != itemType )
+            {
+                continue;
+            }
+
+            ++totalItems;
+
+            if( resultCapacityReached || items.size() >= static_cast<size_t>( limit ) )
+            {
+                resultCapacityReached = true;
+                continue;
+            }
 
             std::unique_ptr<google::protobuf::Message> message = newPcbItem( itemType );
 
@@ -2098,17 +2119,19 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handlePcb(
                 return failure( "ipc_failed", status.ToString() );
 
             if( resultBytes + serialized.size() > MAX_PCB_RESULT_BYTES )
-                break;
+            {
+                resultCapacityReached = true;
+                continue;
+            }
 
             resultBytes += serialized.size();
             items.emplace_back( JSON::parse( serialized ) );
         }
 
         payload["itemType"] = itemType;
-        payload["totalItems"] = itemsResponse.items_size();
+        payload["totalItems"] = totalItems;
         payload["items"] = std::move( items );
-        payload["resultTruncated"] =
-                payload["items"].size() < static_cast<size_t>( itemsResponse.items_size() );
+        payload["resultTruncated"] = payload["items"].size() < totalItems;
         return success( payload );
     }
 

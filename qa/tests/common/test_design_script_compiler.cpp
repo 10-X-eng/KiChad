@@ -287,6 +287,68 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeCopperZoneIntent )
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesExplicitKeepoutPoliciesAndRejectsAmbiguousIntent )
+{
+    const std::string valid = R"KDS((kichad_design
+  (version 1)
+  (project keepout_board)
+  (board
+    (stackup (copper_layers 4) (thickness 1.6mm))
+    (keepout
+      (id antenna-clearance)
+      (name "Antenna clearance")
+      (layers F.Cu B.Cu)
+      (outline
+        (polygon
+          (point 1mm 1mm) (point 9mm 1mm) (point 9mm 7mm) (point 1mm 7mm)
+          (hole (point 3mm 3mm) (point 4mm 3mm) (point 4mm 4mm))))
+      (prohibit
+        (copper true) (vias true) (tracks true) (pads false) (footprints true))
+      (border diagonal_edge (pitch 0.5mm))
+      (locked true))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( valid );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( compiled.ir["pcb"].size(), 2 );
+    const nlohmann::json& keepout = compiled.ir["pcb"][1];
+    BOOST_CHECK_EQUAL( keepout["kind"].get<std::string>(), "keepout" );
+    BOOST_CHECK_EQUAL( keepout["logicalId"].get<std::string>(), "antenna-clearance" );
+    BOOST_CHECK( keepout["prohibitions"]["copper"].get<bool>() );
+    BOOST_CHECK( !keepout["prohibitions"]["pads"].get<bool>() );
+    BOOST_CHECK_EQUAL( keepout["polygons"][0]["holes"].size(), 1 );
+    BOOST_CHECK_EQUAL( keepout["border"]["pitchNm"].get<int64_t>(), 500000 );
+    BOOST_CHECK( compiled.plan["boardFullyTyped"].get<bool>() );
+
+    const std::string invalid = R"KDS((kichad_design
+  (version 1)
+  (project bad_keepout)
+  (board
+    (stackup (copper_layers 2) (thickness 1.6mm))
+    (keepout
+      (id ineffective)
+      (layers F.Cu F.Cu In1.Cu)
+      (outline
+        (polygon (point 0mm 0mm) (point 5mm 0mm) (point 5mm 5mm)))
+      (prohibit
+        (copper false) (vias false) (tracks false) (pads false) (footprints false))
+      (border solid (pitch 0.5mm))
+      (locked maybe))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT rejected =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalid );
+    BOOST_CHECK( !rejected.ok );
+    const std::string diagnostics = rejected.diagnostics.dump();
+
+    for( const char* code : { "invalid_keepout_layers", "empty_keepout",
+                              "unexpected_zone_border_pitch", "invalid_keepout_locked",
+                              "keepout_layer_outside_stackup" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCopperZoneGeometryBeforePlanning )
 {
     std::string oversized = R"KDS((kichad_design
@@ -465,6 +527,7 @@ BOOST_AUTO_TEST_CASE( DescribesAStableVersionedLanguageWithoutHostExecution )
     BOOST_CHECK_GE( description["topLevelForms"].size(), 10 );
     BOOST_CHECK_NE( description.dump().find( "thermal_spoke_width" ), std::string::npos );
     BOOST_CHECK_NE( description.dump().find( "hatch_offsets" ), std::string::npos );
+    BOOST_CHECK_NE( description.dump().find( "prohibit" ), std::string::npos );
 }
 
 

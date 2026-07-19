@@ -30,4 +30,15 @@
       (connection thermal (thermal_gap 0.3mm) (thermal_spoke_width 0.35mm))
       (islands remove_below (minimum_area 1mm2))
       (fill solid)
-      (border diagonal_edge (pitch 0.5mm)))))
+      (border diagonal_edge (pitch 0.5mm)))
+    (keepout
+      (id no-routing)
+      (name "No routing live proof")
+      (layers B.Cu)
+      (outline
+        (polygon
+          (point 50mm 22mm) (point 58mm 22mm) (point 58mm 28mm) (point 50mm 28mm)))
+      (prohibit
+        (copper true) (vias true) (tracks true) (pads false) (footprints true))
+      (border diagonal_full (pitch 0.4mm))
+      (locked true))))
