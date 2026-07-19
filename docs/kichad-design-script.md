@@ -87,6 +87,16 @@ same source; it never needs to reconstruct design intent from KiCad serializatio
       (mirror x)))
   (net LED_A (pin R1 1 1) (pin LED1 1 1))
   (no_connect LED1 1 2)
+  (wire led-stub
+    (sheet power)
+    (from 40mm 40mm)
+    (to 50mm 40mm)
+    (stroke default default))
+  (junction led-branch
+    (sheet power)
+    (at 50mm 40mm)
+    (diameter auto)
+    (color default))
 
   (board
     (stackup
@@ -280,6 +290,46 @@ location. A missing unit or pin aborts before mutation. Native `kicad-cli sch ex
 validation proves the final files load and that the expected component references and net nodes are
 present. Cached library symbols are reconciled by library ID inside `lib_symbols`; unmanaged cache
 entries are preserved, and a same-ID unmanaged collision is rejected rather than overwritten.
+
+Schematic electrical drawing primitives are top-level, stable-ID KDS forms with explicit sheet
+ownership. A wire or bus is one native segment, and a bus entry uses the same endpoint spelling;
+this keeps geometry easy for an LLM to inspect while avoiding signed-size conventions in authored
+source:
+
+```scheme
+(wire sensor-leg
+  (sheet analog)
+  (from 40mm 40mm)
+  (to 55mm 40mm)
+  (stroke default default))
+
+(bus sample-bus
+  (sheet analog)
+  (from 40mm 55mm)
+  (to 80mm 55mm)
+  (stroke 0.5mm dash))
+
+(bus_entry sample-entry
+  (sheet analog)
+  (from 50mm 53.73mm)
+  (to 51.27mm 55mm)
+  (stroke default solid))
+
+(junction sensor-branch
+  (sheet analog)
+  (at 55mm 40mm)
+  (diameter 0.8mm)
+  (color #11223380))
+```
+
+Stroke width is either `default` (native zero-width/net-class policy) or a bounded physical width;
+the style is `default`, `solid`, `dash`, `dot`, `dash_dot`, or `dash_dot_dot`. Bus entries must be
+diagonal and no more than 10 mm on either axis. Junction diameter is `auto` or a bounded physical
+diameter, and color is `default` or `#RRGGBB[AA]`. Drawing IDs are unique across these forms and
+compile to stable UUIDv8 identities. Zero-length segments, missing or unknown sheets, duplicate
+fields, duplicate IDs, invalid styles, and out-of-range geometry fail compilation before mutation.
+The lossless reconciler updates or removes only previously managed drawing UUIDs, while KiCad's
+native schematic loader validates the complete result.
 
 ### Library dependencies and project tables
 
@@ -698,7 +748,7 @@ reconcilable on the next apply, while the whole turn remains revertible from loc
 
 The apply backend currently executes nested native schematic hierarchy, confined project-local
 symbol resolution, multi-unit component placement, global-net connectivity, explicit no-connect
-state, complete native project symbol/footprint tables, physical
+state, native wires/junctions/buses/bus entries, complete native project symbol/footprint tables, physical
 board stackups, the complete global Board Setup
 constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,
@@ -776,7 +826,7 @@ executable with native parser validation, atomic installation, journaling, and r
 Project-local non-derived symbol content, component unit placement, connectivity, and no-connect
 state are executable with lossless reconciliation, stable identity, native netlist validation,
 journaling, rollback, and a disposable live integration proof. Derived symbols, global installed
-symbol content, library authoring, footprint/model content, wires/buses, and other schematic drawing
-forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
+symbol content, library authoring, footprint/model content, labels, bus aliases, and other schematic
+drawing forms remain non-executable until their own lossless backends and rollback tests land. Nested sheet
 hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

@@ -100,6 +100,13 @@ for attempt in $(seq 1 30); do
             "${project_dir}/live_apply.kicad_sch"
         grep -Fq '(uuid "11111111-2222-4333-8444-555555555555")' \
             "${project_dir}/live_apply.kicad_sch"
+        for expected in '(wire' '(junction' '(bus' '(bus_entry'; do
+            if ! grep -Fq "$expected" "${project_dir}/live_apply.kicad_sch"; then
+                echo "Applied root schematic is missing native KDS drawing: $expected" >&2
+                sed -n '1,320p' "${project_dir}/live_apply.kicad_sch" >&2
+                exit 1
+            fi
+        done
         echo "KiChad live KDS apply smoke test passed."
         exit 0
     fi

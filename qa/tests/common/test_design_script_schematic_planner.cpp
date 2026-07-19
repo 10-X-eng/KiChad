@@ -237,6 +237,40 @@ BOOST_AUTO_TEST_CASE( TreatsAnUndeclaredHierarchyAsACompleteNoOp )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersCanonicalWiresBusesEntriesAndJunctionsToNativeItems )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project schematic_drawings)
+  (sheet root (parent none) (file "schematic_drawings.kicad_sch") (title "Drawings"))
+  (wire signal-leg (sheet root) (from 20mm 20mm) (to 30mm 20mm)
+    (stroke default default))
+  (bus control-bus (sheet root) (from 20mm 30mm) (to 40mm 30mm)
+    (stroke 0.5mm dash_dot))
+  (bus_entry control-entry (sheet root) (from 25mm 28.73mm) (to 26.27mm 30mm)
+    (stroke default solid))
+  (junction signal-junction (sheet root) (at 30mm 20mm)
+    (diameter 0.8mm) (color #11223380))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 4 );
+    const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
+    BOOST_CHECK_NE( native.find( "(wire\n" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(bus\n" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(bus_entry\n" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 1.27 1.27)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(width 0.5)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(type dash_dot)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(diameter 0.8)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(color 17 34 51 0.50196078)" ), std::string::npos );
+}
+
+
 BOOST_AUTO_TEST_CASE( ExportsGeneratedHierarchyForOptInNativeValidation )
 {
     wxString exportDirectory;

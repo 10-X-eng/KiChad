@@ -1255,6 +1255,76 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
 }
 
 
+BOOST_AUTO_TEST_CASE( CompilesCanonicalNativeSchematicDrawingPrimitives )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project schematic_drawings)
+  (sheet root (parent none) (file "schematic_drawings.kicad_sch") (title "Drawings"))
+  (wire signal-leg (sheet root) (from 20mm 20mm) (to 30mm 20mm)
+    (stroke default default))
+  (bus control-bus (sheet root) (from 20mm 30mm) (to 40mm 30mm)
+    (stroke 0.5mm dash_dot))
+  (bus_entry control-entry (sheet root) (from 25mm 28.73mm) (to 26.27mm 30mm)
+    (stroke default solid))
+  (junction signal-junction (sheet root) (at 30mm 20mm)
+    (diameter 0.8mm) (color #11223380))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
+    const nlohmann::json& drawings = result.ir["schematic"]["drawings"];
+    BOOST_REQUIRE_EQUAL( drawings.size(), 4 );
+    BOOST_CHECK_EQUAL( drawings[0]["kind"], "wire" );
+    BOOST_CHECK_EQUAL( drawings[0]["stroke"]["widthNm"], 0 );
+    BOOST_CHECK_EQUAL( drawings[1]["stroke"]["widthNm"], 500000 );
+    BOOST_CHECK_EQUAL( drawings[1]["stroke"]["lineStyle"], "dash_dot" );
+    BOOST_CHECK_EQUAL( drawings[2]["to"]["xNm"], 26270000 );
+    BOOST_CHECK_EQUAL( drawings[3]["diameterNm"], 800000 );
+    BOOST_CHECK_EQUAL( drawings[3]["color"]["a"], 128 );
+    BOOST_CHECK_EQUAL( result.plan["counts"]["drawings"], 4 );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeSchematicDrawingPrimitives )
+{
+    const std::vector<std::string> programs = {
+        R"KDS((kichad_design (version 1) (project no_hierarchy)
+          (wire w (sheet root) (from 1mm 1mm) (to 2mm 1mm)
+            (stroke default default))))KDS",
+        R"KDS((kichad_design (version 1) (project bad_sheet)
+          (sheet root (parent none) (file "bad_sheet.kicad_sch") (title "Bad"))
+          (junction j (sheet missing) (at 1mm 1mm)
+            (diameter auto) (color default))))KDS",
+        R"KDS((kichad_design (version 1) (project duplicate_id)
+          (sheet root (parent none) (file "duplicate_id.kicad_sch") (title "Bad"))
+          (wire same (sheet root) (from 1mm 1mm) (to 2mm 1mm)
+            (stroke default default))
+          (junction same (sheet root) (at 2mm 1mm)
+            (diameter auto) (color default))))KDS",
+        R"KDS((kichad_design (version 1) (project zero_length)
+          (sheet root (parent none) (file "zero_length.kicad_sch") (title "Bad"))
+          (bus b (sheet root) (from 1mm 1mm) (to 1mm 1mm)
+            (stroke default default))))KDS",
+        R"KDS((kichad_design (version 1) (project flat_entry)
+          (sheet root (parent none) (file "flat_entry.kicad_sch") (title "Bad"))
+          (bus_entry e (sheet root) (from 1mm 1mm) (to 2mm 1mm)
+            (stroke default default))))KDS",
+        R"KDS((kichad_design (version 1) (project bad_stroke)
+          (sheet root (parent none) (file "bad_stroke.kicad_sch") (title "Bad"))
+          (wire w (sheet root) (from 1mm 1mm) (to 2mm 1mm)
+            (stroke 0.001mm zigzag))))KDS"
+    };
+
+    for( const std::string& program : programs )
+    {
+        const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
+                KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+        BOOST_CHECK_MESSAGE( !result.ok, program );
+    }
+}
+
+
 BOOST_AUTO_TEST_CASE( BoundsCanonicalProjectLibraryTablesBeforePlanning )
 {
     std::string source = R"KDS((kichad_design

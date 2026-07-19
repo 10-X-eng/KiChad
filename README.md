@@ -76,7 +76,8 @@ byte-idempotent, injects a native-validation failure to prove exact rollback, an
 resulting hierarchy through the real `kicad-cli` schematic loader. The same proof resolves exact
 project-local resistor symbols, places units on root and child sheets with rotation/mirroring,
 attaches a project-global net and explicit no-connect state to resolved pin coordinates, and checks
-the exported netlist for both components and both net nodes. It also applies and
+the exported netlist for both components and both net nodes. The native schematic proof also
+reconciles stable-ID wires, junctions, buses, and diagonal bus entries. It also applies and
 reads back the one authored physical stackup—including finish, impedance policy, bevelled edge
 connector, edge plating, masks, paste, silkscreen, copper, and locked dielectric properties—through
 KiCad's native stackup API. The same live proof applies and reads back the complete global Board

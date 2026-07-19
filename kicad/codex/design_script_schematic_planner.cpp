@@ -18,6 +18,7 @@
 #include <cctype>
 #include <cstdint>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <set>
 #include <sstream>
@@ -418,6 +419,104 @@ std::string noConnectExpression( int64_t aX, int64_t aY, const std::string& aUui
 }
 
 
+std::string strokeExpression( const JSON& aStroke )
+{
+    std::ostringstream output;
+    output << "    (stroke\n"
+           << "      (width "
+           << millimetres( aStroke.at( "widthNm" ).get<int64_t>() ) << ")\n"
+           << "      (type " << aStroke.at( "lineStyle" ).get<std::string>() << ")\n"
+           << "    )\n";
+    return output.str();
+}
+
+
+std::string schematicLineExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& from = aDrawing.at( "from" );
+    const JSON& to = aDrawing.at( "to" );
+    const std::string kind = aDrawing.at( "kind" ).get<std::string>();
+    std::ostringstream output;
+
+    if( kind == "bus_entry" )
+    {
+        const int64_t dx = to.at( "xNm" ).get<int64_t>()
+                           - from.at( "xNm" ).get<int64_t>();
+        const int64_t dy = to.at( "yNm" ).get<int64_t>()
+                           - from.at( "yNm" ).get<int64_t>();
+        output << "(bus_entry\n"
+               << "    (at " << millimetres( from.at( "xNm" ).get<int64_t>() ) << ' '
+               << millimetres( from.at( "yNm" ).get<int64_t>() ) << ")\n"
+               << "    (size " << millimetres( dx ) << ' ' << millimetres( dy ) << ")\n";
+    }
+    else
+    {
+        output << '(' << kind << "\n"
+               << "    (pts\n"
+               << "      (xy " << millimetres( from.at( "xNm" ).get<int64_t>() ) << ' '
+               << millimetres( from.at( "yNm" ).get<int64_t>() ) << ")\n"
+               << "      (xy " << millimetres( to.at( "xNm" ).get<int64_t>() ) << ' '
+               << millimetres( to.at( "yNm" ).get<int64_t>() ) << ")\n"
+               << "    )\n";
+    }
+
+    output << strokeExpression( aDrawing.at( "stroke" ) )
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
+std::string alphaChannel( int aAlpha )
+{
+    if( aAlpha == 0 )
+        return "0";
+
+    if( aAlpha == 255 )
+        return "1";
+
+    std::ostringstream output;
+    output << std::fixed << std::setprecision( 8 )
+           << static_cast<double>( aAlpha ) / 255.0;
+    std::string result = output.str();
+
+    while( !result.empty() && result.back() == '0' )
+        result.pop_back();
+
+    return result;
+}
+
+
+std::string junctionExpression( const JSON& aDrawing, const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    int red = 0;
+    int green = 0;
+    int blue = 0;
+    int alpha = 0;
+
+    if( !aDrawing.at( "color" ).is_null() )
+    {
+        red = aDrawing.at( "color" ).at( "r" ).get<int>();
+        green = aDrawing.at( "color" ).at( "g" ).get<int>();
+        blue = aDrawing.at( "color" ).at( "b" ).get<int>();
+        alpha = aDrawing.at( "color" ).at( "a" ).get<int>();
+    }
+
+    std::ostringstream output;
+    output << "(junction\n"
+           << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ")\n"
+           << "    (diameter " << millimetres( aDrawing.at( "diameterNm" ).get<int64_t>() )
+           << ")\n"
+           << "    (color " << red << ' ' << green << ' ' << blue << ' '
+           << alphaChannel( alpha ) << ")\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
 bool validSheetShape( const JSON& aSheet )
 {
     if( !aSheet.is_object() || !aSheet.contains( "id" ) || !aSheet["id"].is_string()
@@ -461,6 +560,71 @@ bool validSheetShape( const JSON& aSheet )
     }
 
     return true;
+}
+
+
+bool validDrawingShape( const JSON& aDrawing )
+{
+    if( !aDrawing.is_object() || !aDrawing.contains( "kind" )
+        || !aDrawing["kind"].is_string() || !aDrawing.contains( "id" )
+        || !aDrawing["id"].is_string() || aDrawing["id"].get<std::string>().empty()
+        || !aDrawing.contains( "sheet" ) || !aDrawing["sheet"].is_string() )
+    {
+        return false;
+    }
+
+    const std::string kind = aDrawing["kind"].get<std::string>();
+
+    if( kind == "junction" )
+    {
+        if( !aDrawing.contains( "position" ) || !aDrawing["position"].is_object()
+            || !aDrawing["position"].contains( "xNm" )
+            || !aDrawing["position"]["xNm"].is_number_integer()
+            || !aDrawing["position"].contains( "yNm" )
+            || !aDrawing["position"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "diameterNm" )
+            || !aDrawing["diameterNm"].is_number_integer()
+            || !aDrawing.contains( "color" )
+            || !( aDrawing["color"].is_null() || aDrawing["color"].is_object() ) )
+        {
+            return false;
+        }
+
+        if( aDrawing["color"].is_object() )
+        {
+            for( const char* channel : { "r", "g", "b", "a" } )
+            {
+                if( !aDrawing["color"].contains( channel )
+                    || !aDrawing["color"][channel].is_number_integer() )
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    if( kind != "wire" && kind != "bus" && kind != "bus_entry" )
+        return false;
+
+    for( const char* point : { "from", "to" } )
+    {
+        if( !aDrawing.contains( point ) || !aDrawing[point].is_object()
+            || !aDrawing[point].contains( "xNm" )
+            || !aDrawing[point]["xNm"].is_number_integer()
+            || !aDrawing[point].contains( "yNm" )
+            || !aDrawing[point]["yNm"].is_number_integer() )
+        {
+            return false;
+        }
+    }
+
+    return aDrawing.contains( "stroke" ) && aDrawing["stroke"].is_object()
+           && aDrawing["stroke"].contains( "widthNm" )
+           && aDrawing["stroke"]["widthNm"].is_number_integer()
+           && aDrawing["stroke"].contains( "lineStyle" )
+           && aDrawing["stroke"]["lineStyle"].is_string();
 }
 
 
@@ -533,7 +697,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     RESULT result;
     result.counts = { { "files", 0 }, { "sheets", 0 }, { "pins", 0 },
                       { "components", 0 }, { "netEndpoints", 0 },
-                      { "noConnects", 0 }, { "librarySymbols", 0 },
+                      { "noConnects", 0 }, { "drawings", 0 }, { "librarySymbols", 0 },
                       { "managedItems", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -550,6 +714,8 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
         || !aCompilerIr["schematic"]["nets"].is_array()
         || !aCompilerIr["schematic"].contains( "noConnects" )
         || !aCompilerIr["schematic"]["noConnects"].is_array()
+        || !aCompilerIr["schematic"].contains( "drawings" )
+        || !aCompilerIr["schematic"]["drawings"].is_array()
         || !aExistingScreenUuids.is_object() || !aResolvedSymbols.is_object() )
     {
         diagnostic( result, "invalid_compiler_ir",
@@ -562,9 +728,17 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     const JSON& sourceComponents = aCompilerIr["schematic"]["components"];
     const JSON& sourceNets = aCompilerIr["schematic"]["nets"];
     const JSON& sourceNoConnects = aCompilerIr["schematic"]["noConnects"];
+    const JSON& sourceDrawings = aCompilerIr["schematic"]["drawings"];
 
     if( sourceSheets.empty() )
     {
+        if( !sourceDrawings.empty() )
+        {
+            diagnostic( result, "invalid_schematic_ir",
+                        "schematic drawings require a declared hierarchy" );
+            return result;
+        }
+
         result.fullyLowered = true;
         return result;
     }
@@ -816,6 +990,30 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     }
 
     std::map<std::string, std::vector<JSON>> connectivityBySheet;
+    std::map<std::string, std::vector<JSON>> drawingsBySheet;
+
+    for( const JSON& drawing : sourceDrawings )
+    {
+        if( !validDrawingShape( drawing )
+            || !sheets.contains( drawing.value( "sheet", "" ) ) )
+        {
+            diagnostic( result, "invalid_schematic_ir",
+                        "schematic IR contains a malformed drawing or sheet reference" );
+            continue;
+        }
+
+        const std::string kind = drawing["kind"].get<std::string>();
+        const std::string id = drawing["id"].get<std::string>();
+        const std::string uuid = stableUuid( project, "schematic_" + kind, id );
+        JSON planned = { { "kind", kind },
+                         { "logicalId", id },
+                         { "uuid", uuid },
+                         { "source", kind == "junction"
+                                               ? junctionExpression( drawing, uuid )
+                                               : schematicLineExpression( drawing, uuid ) } };
+        drawingsBySheet[drawing["sheet"].get<std::string>()].push_back(
+                std::move( planned ) );
+    }
 
     const auto addEndpoint = [&]( const JSON& aEndpoint, const std::string& aNetName,
                                   bool aNoConnect )
@@ -945,6 +1143,15 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                 connectivity["file"] = file;
                 items.push_back( connectivity );
                 JSON ownership = connectivity;
+                ownership.erase( "source" );
+                managedItems.push_back( std::move( ownership ) );
+            }
+
+            for( JSON drawing : drawingsBySheet[id] )
+            {
+                drawing["file"] = file;
+                items.push_back( drawing );
+                JSON ownership = std::move( drawing );
                 ownership.erase( "source" );
                 managedItems.push_back( std::move( ownership ) );
             }
@@ -1085,6 +1292,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                         + net.value( "pins", JSON::array() ).size();
 
     result.counts["noConnects"] = sourceNoConnects.size();
+    result.counts["drawings"] = sourceDrawings.size();
 
     for( const auto& [ sheet, symbols ] : librariesBySheet )
         result.counts["librarySymbols"] = result.counts["librarySymbols"].get<size_t>()

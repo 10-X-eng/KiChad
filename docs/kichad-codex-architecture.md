@@ -138,6 +138,12 @@ container while unrelated cache entries retain their bytes. Any unresolved, deri
 unmanaged-colliding symbol aborts before installation. The same atomic file journal and native
 hierarchy netlist validation cover sheets, cached symbols, placed units, connectivity, and rollback.
 
+Native schematic wires, junctions, buses, and bus entries flow through the same compiler/planner
+boundary. KDS authors endpoints rather than KiCad's signed bus-entry size, carries explicit
+sheet ownership and stable human-readable IDs, and lowers styling into bounded native stroke,
+junction-diameter, and RGBA fields. The reconciler proves kind/UUID agreement before touching an
+existing direct item, so an unmanaged collision or stale kind aborts instead of claiming user data.
+
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and
 rows before project-confined atomic replacement. The apply journal retains the exact prior presence

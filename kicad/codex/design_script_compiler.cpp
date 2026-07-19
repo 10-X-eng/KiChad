@@ -817,6 +817,291 @@ JSON compileNoConnect( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+bool parseSchematicPoint( const DOCUMENT& aDocument, size_t aNode, JSON& aPoint )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string xText;
+    std::string yText;
+    int64_t x = 0;
+    int64_t y = 0;
+
+    if( node.children.size() != 3
+        || !scalarText( aDocument, node.children[1], xText )
+        || !scalarText( aDocument, node.children[2], yText )
+        || !parseDistance( xText, x ) || !parseDistance( yText, y )
+        || x < 0 || y < 0 || x > 2'000'000'000 || y > 2'000'000'000 )
+    {
+        return false;
+    }
+
+    aPoint = { { "xNm", x }, { "yNm", y } };
+    return true;
+}
+
+
+bool parseSchematicStroke( const DOCUMENT& aDocument, size_t aNode, JSON& aStroke )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string widthText;
+    std::string lineStyle;
+    int64_t width = 0;
+    static const std::set<std::string> STYLES = {
+        "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
+    };
+
+    if( node.children.size() != 3
+        || !scalarText( aDocument, node.children[1], widthText )
+        || !scalarText( aDocument, node.children[2], lineStyle )
+        || !STYLES.contains( lineStyle )
+        || ( widthText != "default"
+             && ( !parseDistance( widthText, width ) || width < 10'000
+                  || width > 10'000'000 ) ) )
+    {
+        return false;
+    }
+
+    aStroke = { { "widthNm", widthText == "default" ? 0 : width },
+                { "lineStyle", lineStyle } };
+    return true;
+}
+
+
+JSON compileSchematicLine( const DOCUMENT& aDocument, size_t aNode,
+                           const std::string& aKind,
+                           KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_" + aKind,
+                    aKind + " requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON line = { { "kind", aKind }, { "id", id } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_" + aKind + "_field",
+                        aKind + " field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet )
+                || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_" + aKind + "_sheet",
+                            aKind + " sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                line["sheet"] = sheet;
+            }
+        }
+        else if( head == "from" || head == "to" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_" + aKind + "_point",
+                            aKind + " " + head + " requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                line[head] = std::move( point );
+            }
+        }
+        else if( head == "stroke" )
+        {
+            JSON stroke;
+
+            if( !parseSchematicStroke( aDocument, child, stroke ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_" + aKind + "_stroke",
+                            aKind + " stroke requires default or 0.01 mm through 10 mm and "
+                                    "a native line style" );
+            }
+            else
+            {
+                line["stroke"] = std::move( stroke );
+            }
+        }
+        else
+        {
+            diagnostic( aResult, "error", "unknown_schematic_" + aKind + "_field",
+                        aKind + " supports sheet, from, to, and stroke" );
+        }
+    }
+
+    for( const char* required : { "sheet", "from", "to", "stroke" } )
+    {
+        if( !line.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_" + aKind + "_field",
+                        aKind + " " + id + " is missing " + required );
+        }
+    }
+
+    if( line.contains( "from" ) && line.contains( "to" ) && line["from"] == line["to"] )
+    {
+        diagnostic( aResult, "error", "zero_length_schematic_" + aKind,
+                    aKind + " " + id + " must have distinct endpoints" );
+    }
+
+    if( aKind == "bus_entry" && line.contains( "from" ) && line.contains( "to" ) )
+    {
+        const int64_t dx = line["to"]["xNm"].get<int64_t>()
+                           - line["from"]["xNm"].get<int64_t>();
+        const int64_t dy = line["to"]["yNm"].get<int64_t>()
+                           - line["from"]["yNm"].get<int64_t>();
+
+        if( dx == 0 || dy == 0 || std::abs( dx ) > 10'000'000
+            || std::abs( dy ) > 10'000'000 )
+        {
+            diagnostic( aResult, "error", "invalid_schematic_bus_entry_geometry",
+                        "bus_entry must be diagonal and at most 10 mm on each axis" );
+        }
+    }
+
+    return line;
+}
+
+
+JSON compileSchematicJunction( const DOCUMENT& aDocument, size_t aNode,
+                               KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_junction",
+                    "junction requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON junction = { { "kind", "junction" }, { "id", id } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_junction_field",
+                        "junction field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" )
+        {
+            std::string sheet;
+
+            if( !parseSingleValueForm( aDocument, child, sheet )
+                || !validIdentifier( sheet ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_junction_sheet",
+                            "junction sheet must be a bounded sheet ID" );
+            }
+            else
+            {
+                junction["sheet"] = sheet;
+            }
+        }
+        else if( head == "at" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_junction_position",
+                            "junction at requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                junction["position"] = std::move( point );
+            }
+        }
+        else if( head == "diameter" )
+        {
+            std::string value;
+            int64_t diameter = 0;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "auto"
+                     && ( !parseDistance( value, diameter ) || diameter < 10'000
+                          || diameter > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_junction_diameter",
+                            "junction diameter requires auto or 0.01 mm through 10 mm" );
+            }
+            else
+            {
+                junction["diameterNm"] = value == "auto" ? 0 : diameter;
+            }
+        }
+        else if( head == "color" )
+        {
+            std::string value;
+            JSON color;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "default" && !parseHexColor( value, color ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_junction_color",
+                            "junction color requires default or #RRGGBB[AA]" );
+            }
+            else if( value == "default" )
+            {
+                junction["color"] = nullptr;
+            }
+            else
+            {
+                junction["color"] = {
+                    { "r", std::lround( color["r"].get<double>() * 255.0 ) },
+                    { "g", std::lround( color["g"].get<double>() * 255.0 ) },
+                    { "b", std::lround( color["b"].get<double>() * 255.0 ) },
+                    { "a", std::lround( color["a"].get<double>() * 255.0 ) }
+                };
+            }
+        }
+        else
+        {
+            diagnostic( aResult, "error", "unknown_schematic_junction_field",
+                        "junction supports sheet, at, diameter, and color" );
+        }
+    }
+
+    for( const char* required : { "sheet", "position", "diameterNm", "color" } )
+    {
+        if( !junction.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_junction_field",
+                        "junction " + id + " is missing " + required );
+        }
+    }
+
+    return junction;
+}
+
+
 JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
                     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
                     std::vector<std::string>& aReferencedComponents )
@@ -2299,6 +2584,12 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form", "(net NAME (pin REF UNIT NUMBER) (pin REF UNIT NUMBER) ...)" } },
                   { { "form", "(no_connect REF UNIT NUMBER)" } },
                   { { "form",
+                      "(wire|bus|bus_entry ID (sheet ID) (from X Y) (to X Y) "
+                      "(stroke default|WIDTH default|solid|dash|dot|dash_dot|dash_dot_dot))" } },
+                  { { "form",
+                      "(junction ID (sheet ID) (at X Y) (diameter auto|SIZE) "
+                      "(color default|#RRGGBB[AA]))" } },
+                  { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
                       "(title TEXT) [(at X Y) (size W H) "
                       "(pin NAME input|output|bidirectional|tri_state|passive "
@@ -2458,7 +2749,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "libraries", JSON::array() },
         { "schematic",
           { { "sheets", JSON::array() }, { "components", JSON::array() },
-            { "nets", JSON::array() }, { "noConnects", JSON::array() } } },
+            { "nets", JSON::array() }, { "noConnects", JSON::array() },
+            { "drawings", JSON::array() } } },
         { "pcb", JSON::array() },
         { "rules", nullptr },
         { "netClasses", nullptr },
@@ -2484,6 +2776,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    checkKinds;
     std::set<std::string>    outputKinds;
     std::set<std::string>    connectedPins;
+    std::set<std::string>    schematicDrawingIds;
     std::vector<std::string> referencedComponents;
     std::vector<std::string> referencedNets;
     size_t                   pinConnections = 0;
@@ -2584,6 +2877,32 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             result.ir["schematic"]["noConnects"].emplace_back(
                     compileNoConnect( *document, formNode, result, referencedComponents,
                                       connectedPins, pinConnections ) );
+        }
+        else if( form == "wire" || form == "bus" || form == "bus_entry" )
+        {
+            JSON drawing = compileSchematicLine( *document, formNode, form, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "junction" )
+        {
+            JSON drawing = compileSchematicJunction( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
         }
         else if( form == "sheet" )
         {
@@ -3010,6 +3329,30 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     for( const JSON& noConnect : result.ir["schematic"]["noConnects"] )
         validateEndpointUnit( noConnect );
 
+    for( const JSON& drawing : result.ir["schematic"]["drawings"] )
+    {
+        if( !drawing.is_object() || !drawing.contains( "sheet" )
+            || !drawing["sheet"].is_string() )
+        {
+            continue;
+        }
+
+        const std::string sheet = drawing["sheet"].get<std::string>();
+
+        if( sheets.empty() )
+        {
+            diagnostic( result, "error", "schematic_drawing_without_hierarchy",
+                        "schematic drawing " + drawing.value( "id", "" )
+                                + " requires a declared root sheet" );
+        }
+        else if( !sheetsById.contains( sheet ) )
+        {
+            diagnostic( result, "error", "unresolved_schematic_drawing_sheet",
+                        "schematic drawing " + drawing.value( "id", "" )
+                                + " references undeclared sheet " + sheet );
+        }
+    }
+
     if( result.ir["libraries"].size() > MAX_LIBRARIES )
     {
         diagnostic( result, "error", "too_many_libraries",
@@ -3090,7 +3433,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     if( !result.ir["schematic"]["components"].empty()
         || !result.ir["schematic"]["nets"].empty()
-        || !result.ir["schematic"]["noConnects"].empty() )
+        || !result.ir["schematic"]["noConnects"].empty()
+        || !result.ir["schematic"]["drawings"].empty() )
         passes.emplace_back( "schematic" );
 
     if( !result.ir["pcb"].empty() )
@@ -3119,6 +3463,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "components", result.ir["schematic"]["components"].size() },
             { "nets", result.ir["schematic"]["nets"].size() },
             { "noConnects", result.ir["schematic"]["noConnects"].size() },
+            { "drawings", result.ir["schematic"]["drawings"].size() },
             { "pinConnections", pinConnections },
             { "boardStatements", result.ir["pcb"].size() },
             { "rules", result.ir["rules"].is_object() ? 1 : 0 },
