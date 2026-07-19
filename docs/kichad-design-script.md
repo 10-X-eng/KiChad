@@ -874,6 +874,13 @@ repeat apply changes zero schematic files, injects a failed native validator and
 root-file rollback, recovers from the retained journal, and finally exports a non-empty netlist
 through KiCad's real schematic loader.
 
+Before applying the sidecar, the same smoke proof invokes KiChad's native `verify` tool against the
+current-format root schematic and board. This exercises the real sibling KiCad 10.0.4 CLI rather
+than an emulated rule checker: ERC must return a clean structured report, while the intentionally
+incomplete pre-apply board must return its four DRC violations and one schematic-parity warning in
+the correct categories. KDS `(check ...)` declarations are still compiler intent; apply does not
+yet execute them as an automatic production gate.
+
 ## Production support rule
 
 A form is documented as executable only after it has all of the following coverage:

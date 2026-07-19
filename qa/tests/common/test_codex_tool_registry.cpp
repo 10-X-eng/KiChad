@@ -16,6 +16,7 @@
 #include <kicad/codex/kicad_ipc_client.h>
 
 #include <atomic>
+#include <build_version.h>
 #include <import_export.h>
 #include <api/board/board_commands.pb.h>
 #include <api/board/board_types.pb.h>
@@ -146,8 +147,13 @@ public:
         BOOST_REQUIRE( wxFileName::Mkdir( m_root, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
 
         write( wxS( "design.kicad_pro" ), wxS( "{}\n" ) );
+        write( wxS( "design.kicad_sch" ),
+               wxS( "(kicad_sch (version 20260306)\n"
+                    "  (generator \"eeschema\")\n"
+                    "  (generator_version \"10.0\")\n"
+                    ")\n" ) );
         write( wxS( "design.kicad_pcb" ),
-               wxS( "(kicad_pcb (version 20250524)\n"
+               wxS( "(kicad_pcb (version 20260206)\n"
                     "  (general (thickness 1.6))\n"
                     "  (footprint \"Package_SO:SOIC-8_3.9x4.9mm_P1.27mm\"\n"
                     "    (property \"Reference\" \"U1\")\n"
@@ -206,17 +212,137 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     CODEX_TOOL_REGISTRY registry( []() { return wxString(); } );
     JSON                specs = registry.Specs();
 
-    BOOST_REQUIRE_EQUAL( specs.size(), 4 );
+    BOOST_REQUIRE_EQUAL( specs.size(), 5 );
     BOOST_CHECK_EQUAL( specs[0]["name"].get<std::string>(), "project" );
     BOOST_CHECK_EQUAL( specs[1]["name"].get<std::string>(), "inspect" );
     BOOST_CHECK_EQUAL( specs[2]["name"].get<std::string>(), "design" );
     BOOST_CHECK_EQUAL( specs[3]["name"].get<std::string>(), "pcb" );
+    BOOST_CHECK_EQUAL( specs[4]["name"].get<std::string>(), "verify" );
     const JSON& designOperations =
             specs[2]["inputSchema"]["properties"]["operation"]["enum"];
     BOOST_REQUIRE_EQUAL( designOperations.size(), 6 );
     BOOST_CHECK_EQUAL( designOperations[1].get<std::string>(), "read" );
     BOOST_CHECK_EQUAL( designOperations[3].get<std::string>(), "preview" );
     BOOST_CHECK_EQUAL( designOperations[5].get<std::string>(), "apply" );
+    const JSON& verifyOperations =
+            specs[4]["inputSchema"]["properties"]["operation"]["enum"];
+    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 2 );
+    BOOST_CHECK_EQUAL( verifyOperations[0].get<std::string>(), "erc" );
+    BOOST_CHECK_EQUAL( verifyOperations[1].get<std::string>(), "drc" );
+}
+
+
+BOOST_AUTO_TEST_CASE( ReturnsBoundedStructuredNativeErcResults )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    int                  calls = 0;
+    const std::string    nativeVersion( GetMajorMinorPatchVersion().ToUTF8() );
+    CODEX_TOOL_REGISTRY  registry(
+            [&fixture]() { return fixture.Root(); }, {}, {}, {},
+            [&]( const std::string& aCheck, const wxFileName& aPath, std::string& aReport,
+                 std::string& )
+            {
+                ++calls;
+                BOOST_CHECK_EQUAL( aCheck, "erc" );
+                BOOST_CHECK_EQUAL( aPath.GetFullName(), wxS( "design.kicad_sch" ) );
+                const JSON item = { { "description", "R1 pin 1" },
+                                    { "pos", { { "x", 10.0 }, { "y", 20.0 } } },
+                                    { "uuid", "11111111-1111-4111-8111-111111111111" } };
+                const JSON error = { { "type", "pin_not_connected" },
+                                     { "description", "Pin is not connected" },
+                                     { "severity", "error" },
+                                     { "items", JSON::array( { item } ) } };
+                const JSON warning = { { "type", "label_dangling" },
+                                       { "description", "Label is not connected" },
+                                       { "severity", "warning" },
+                                       { "items", JSON::array( { item } ) } };
+                const JSON excluded = { { "type", "pin_not_connected" },
+                                        { "description", "Approved test point" },
+                                        { "severity", "error" },
+                                        { "items", JSON::array( { item } ) },
+                                        { "excluded", true },
+                                        { "comment", "TP waiver" } };
+                aReport = JSON( { { "$schema", "https://schemas.kicad.org/erc.v1.json" },
+                                  { "source", "design.kicad_sch" },
+                                  { "date", "volatile and intentionally omitted" },
+                                  { "kicad_version", nativeVersion },
+                                  { "coordinate_units", "mm" },
+                                  { "included_severities",
+                                    JSON::array( { "error", "warning", "exclusion" } ) },
+                                  { "ignored_checks",
+                                    JSON::array( { { { "key", "pin_to_pin" },
+                                                      { "description", "Pin conflict" } } } ) },
+                                  { "sheets",
+                                    JSON::array(
+                                            { { { "path", "/" },
+                                                { "uuid_path", "/root" },
+                                                { "violations",
+                                                  JSON::array( { error, warning, excluded } ) } } } ) } } )
+                                  .dump();
+                return true;
+            } );
+
+    JSON first = registry.Handle( "verify", { { "operation", "erc" },
+                                                { "path", "design.kicad_sch" },
+                                                { "offset", 1 },
+                                                { "limit", 1 } } );
+    BOOST_REQUIRE_MESSAGE( first.at( "success" ).get<bool>(), first.dump() );
+    JSON firstData = envelope( first )["data"];
+    BOOST_CHECK_EQUAL( firstData["kicadVersion"].get<std::string>(), nativeVersion );
+    BOOST_CHECK( !firstData["clean"].get<bool>() );
+    BOOST_CHECK( firstData["waiversPresent"].get<bool>() );
+    BOOST_CHECK_EQUAL( firstData["counts"]["total"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["errors"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["warnings"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["exclusions"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["counts"]["categories"]["erc"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( firstData["ignoredChecksCount"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["returnedViolations"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( firstData["violations"][0]["severity"].get<std::string>(), "warning" );
+    BOOST_CHECK_EQUAL( firstData["violations"][0]["sheetPath"].get<std::string>(), "/" );
+    BOOST_CHECK_EQUAL( firstData["nextOffset"].get<int>(), 2 );
+    BOOST_CHECK( firstData["resultTruncated"].get<bool>() );
+    BOOST_CHECK( !firstData.contains( "date" ) );
+
+    JSON last = registry.Handle( "verify", { { "operation", "erc" },
+                                               { "path", "design.kicad_sch" },
+                                               { "offset", 2 },
+                                               { "limit", 1 } } );
+    BOOST_REQUIRE_MESSAGE( last.at( "success" ).get<bool>(), last.dump() );
+    JSON lastData = envelope( last )["data"];
+    BOOST_CHECK( lastData["violations"][0]["excluded"].get<bool>() );
+    BOOST_CHECK( !lastData["resultTruncated"].get<bool>() );
+    BOOST_CHECK( !lastData.contains( "nextOffset" ) );
+    BOOST_CHECK_EQUAL( calls, 2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsNativeVerificationVersionMismatch )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    CODEX_TOOL_REGISTRY registry(
+            [&fixture]() { return fixture.Root(); }, {}, {}, {},
+            []( const std::string&, const wxFileName&, std::string& aReport, std::string& )
+            {
+                aReport = JSON( { { "$schema", "https://schemas.kicad.org/drc.v1.json" },
+                                  { "source", "design.kicad_pcb" },
+                                  { "date", "2026-01-01T00:00:00Z" },
+                                  { "kicad_version", "9.0.0" },
+                                  { "coordinate_units", "mm" },
+                                  { "included_severities",
+                                    JSON::array( { "error", "warning", "exclusion" } ) },
+                                  { "ignored_checks", JSON::array() },
+                                  { "violations", JSON::array() },
+                                  { "unconnected_items", JSON::array() },
+                                  { "schematic_parity", JSON::array() } } )
+                                  .dump();
+                return true;
+            } );
+    JSON result = registry.Handle(
+            "verify", { { "operation", "drc" }, { "path", "design.kicad_pcb" } } );
+    BOOST_REQUIRE( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "version_mismatch" );
 }
 
 
@@ -433,7 +559,7 @@ BOOST_AUTO_TEST_CASE( ConfinesProjectFootprintSourcesUsedByPlacement )
     wxFileName footprint( library.GetFullPath(), wxS( "R.kicad_mod" ) );
     wxFFile file( footprint.GetFullPath(), wxS( "wb" ) );
     BOOST_REQUIRE( file.IsOpened() );
-    BOOST_REQUIRE( file.Write( wxS( "(footprint \"R\" (version 20240108)\n)\n" ) ) );
+    BOOST_REQUIRE( file.Write( wxS( "(footprint \"R\" (version 20260206)\n)\n" ) ) );
     BOOST_REQUIRE( file.Close() );
 
     JSON inventoried = registry.Handle(
@@ -600,6 +726,18 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedArgumentsAndDocuments )
     BOOST_CHECK( !result.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
                        "snapshot_required" );
+
+    result = registry.Handle(
+            "verify", { { "operation", "erc" }, { "path", "design.kicad_pcb" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(), "invalid_path" );
+
+    result = registry.Handle( "verify", { { "operation", "drc" },
+                                            { "path", "design.kicad_pcb" },
+                                            { "offset", "zero" } } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "invalid_arguments" );
 }
 
 
@@ -2127,6 +2265,25 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignAgainstLivePcbEditorWhenRequested )
                                   []( const wxFileName&, std::string& ) { return true; } );
     const std::string sourceName = source.GetFullName().ToStdString();
     const std::string boardName = board.GetFullName().ToStdString();
+    JSON nativeErc = registry.Handle(
+            "verify", { { "operation", "erc" }, { "path", "live_apply.kicad_sch" } } );
+    BOOST_REQUIRE_MESSAGE( nativeErc.at( "success" ).get<bool>(), nativeErc.dump() );
+    JSON nativeErcData = envelope( nativeErc )["data"];
+    BOOST_CHECK( nativeErcData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( nativeErcData["counts"]["total"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( nativeErcData["kicadVersion"].get<std::string>(),
+                       std::string( GetMajorMinorPatchVersion().ToUTF8() ) );
+
+    JSON nativeDrc = registry.Handle(
+            "verify", { { "operation", "drc" }, { "path", boardName } } );
+    BOOST_REQUIRE_MESSAGE( nativeDrc.at( "success" ).get<bool>(), nativeDrc.dump() );
+    JSON nativeDrcData = envelope( nativeDrc )["data"];
+    BOOST_CHECK( !nativeDrcData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( nativeDrcData["counts"]["total"].get<int>(), 5 );
+    BOOST_CHECK_EQUAL( nativeDrcData["counts"]["categories"]["drc"].get<int>(), 4 );
+    BOOST_CHECK_EQUAL(
+            nativeDrcData["counts"]["categories"]["schematicParity"].get<int>(), 1 );
+
     JSON compiled = registry.Handle( "design", { { "operation", "compile" },
                                                   { "path", sourceName } } );
     BOOST_REQUIRE_MESSAGE( compiled.at( "success" ).get<bool>(), compiled.dump() );

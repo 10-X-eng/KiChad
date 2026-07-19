@@ -42,7 +42,9 @@ project context and bounded, read-only KiCad 10 design inspection without shell 
 the `design` call reads exact source, compiles, previews, atomically saves, and transactionally
 applies reusable `.kicad_kds` project sidecars, and the `pcb` call exposes the exact protobuf field
 schema and connects directly to the open PCB Editor through KiCad 10's protobuf IPC API for bounded
-live reads and snapshot-gated, native undoable transactions.
+live reads and snapshot-gated, native undoable transactions. The read-only `verify` call runs the
+matching sibling KiCad 10.0.4 ERC or DRC engine (including DRC schematic parity), rejects reports
+from any other KiCad version, and returns complete counts plus bounded pageable violations.
 
 KiChad forces the Codex app-server's built-in web search to live, high-context mode for new and
 resumed project conversations. The embedded agent instructions require current manufacturer,
@@ -105,7 +107,9 @@ UUID in the same native transaction. Repeat apply proves it is not duplicated; r
 restoring its placement proves exact deletion and recreation with the same identity. The committed
 board, schematic, symbol, and footprint fixtures are serialized in the exact formats emitted by
 KiCad 10.0.4, and the smoke test rejects stale fixture versions before opening the editor. The
-harness never connects to or stops an existing KiChad process.
+harness also runs the native `verify` tool against the current-format schematic and board, proving
+the real 10.0.4 ERC/DRC JSON contracts and schematic-parity category. It never connects to or stops
+an existing KiChad process.
 
 Developers can run `tools/generate-codex-protocol-schema.sh` to inspect the exact protocol exposed
 by their installed Codex app-server without committing generated schemas.

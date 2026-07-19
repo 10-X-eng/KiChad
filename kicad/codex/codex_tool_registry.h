@@ -25,13 +25,16 @@ class CODEX_TOOL_REGISTRY
 {
 public:
     using JSON = nlohmann::json;
-    static constexpr int SCHEMA_VERSION = 4;
+    using NATIVE_CHECK_RUNNER = std::function<bool( const std::string&, const wxFileName&,
+                                                     std::string&, std::string& )>;
+    static constexpr int SCHEMA_VERSION = 5;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
                                   std::function<wxString()> aIpcSocketDirectoryProvider = {},
                                   std::function<bool( const wxFileName&, std::string& )>
-                                          aSchematicValidator = {} );
+                                          aSchematicValidator = {},
+                                  NATIVE_CHECK_RUNNER aNativeCheckRunner = {} );
 
     JSON Specs() const;
     JSON Handle( const std::string& aTool, const JSON& aArguments ) const;
@@ -47,6 +50,7 @@ private:
                        bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
     JSON handlePcb( const JSON& aArguments, const wxString& aProjectPath,
                     bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
+    JSON handleVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON success( const JSON& aPayload ) const;
     JSON failure( const std::string& aCode, const std::string& aMessage ) const;
     wxString projectPath() const;
@@ -55,6 +59,7 @@ private:
     std::function<bool()>     m_mutationGuard;
     std::function<wxString()> m_ipcSocketDirectoryProvider;
     std::function<bool( const wxFileName&, std::string& )> m_schematicValidator;
+    NATIVE_CHECK_RUNNER m_nativeCheckRunner;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

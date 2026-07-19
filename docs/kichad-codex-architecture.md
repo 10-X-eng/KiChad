@@ -36,9 +36,10 @@ The panel's **Revert turn** action closes open editors through the normal KiCad 
 that exact pre-turn state.  If a snapshot cannot be established, mutating native tools stay locked;
 read-only conversation and inspection can continue.
 
-The first four advertised native tools are `project`, `inspect`, `design`, and `pcb`.  `project`
-reports the active design context and snapshot gate.  `inspect` parses KiCad 10 schematic, board, symbol, and
-footprint s-expressions in-process and returns structural summaries or bounded matching expressions.
+The first five advertised native tools are `project`, `inspect`, `design`, `pcb`, and `verify`.
+`project` reports the active design context and snapshot gate.  `inspect` parses KiCad 10 schematic,
+board, symbol, and footprint s-expressions in-process and returns structural summaries or bounded
+matching expressions.
 It accepts only existing project-relative paths, resolves symlinks before enforcing the project
 root, checks the file extension against the document root, caps input/output sizes, and never writes.
 `design` is the compiler front end for reusable `.kicad_kds` KiChad Design Script sidecars.  It
@@ -64,6 +65,15 @@ execute off the wxWidgets UI thread; socket paths and instance tokens are not re
 KiChad persists the required API-enabled setting in its isolated configuration before it launches
 editor children.  If a previous transaction response was lost, the next mutation first drops that
 client's orphaned commit and retries `BeginCommit` once.
+
+`verify` runs the sibling executable from the exact same KiChad installation as a bounded,
+read-only KiCad backend. `erc` accepts only a project-confined `.kicad_sch`; `drc` accepts only a
+project-confined `.kicad_pcb` and always enables schematic parity. Both request KiCad's JSON report
+with errors, warnings, and exclusions in millimetres. KiChad rejects malformed reports, a source or
+schema mismatch, and any report whose exact major/minor/patch version differs from the host. The
+model receives complete severity and category counts, explicit ignored-check/waiver state, and a
+bounded pageable list with the volatile report date removed. The current backend verifies the
+on-disk artifact named by `path`; it does not silently save a dirty editor document.
 
 `tools/smoke-kichad-live-ipc.sh` provides an explicit, opt-in integration proof against an already
 open disposable board copy.  It creates, commits, field-mask updates, commits, deletes, and commits a
@@ -175,7 +185,7 @@ The complete tool surface is capped at nine host functions. Each function accept
 requests and returns structured results; functionality is added to these tools
 instead of creating narrowly named one-off tools.
 
-1. `design` — load, save, compile, preview, apply, and verify a versioned `.kicad_kds` sidecar.
+1. `design` — load, save, compile, preview, and apply a versioned `.kicad_kds` sidecar.
 2. `project` — create/open projects, read context, set stackup/rules/net classes, and manage whole
    turn snapshots.
 3. `source_parts` — verify MPNs/datasheets, query live distributor availability, and maintain the
@@ -186,7 +196,8 @@ instead of creating narrowly named one-off tools.
 6. `board` — inspect and mutate the live board through the KiCad 10 IPC API and transactions,
    including placement, copper, routing, zones, vias, constraints, and dimensions.
 7. `inspect` — return compact structured design context plus rendered schematic/PCB/3D images.
-8. `verify` — run structured ERC, DRC, connectivity, sourcing, and manufacturability checks.
+8. `verify` — run structured checks. Native ERC and DRC (including schematic parity) are
+   implemented; connectivity, sourcing, and manufacturability gates remain to be added here.
 9. `fabricate` — generate and verify Gerber, drill, position, BOM, and other fabrication outputs
    behind an explicit final-action permission gate.
 

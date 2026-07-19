@@ -83,7 +83,7 @@ for attempt in $(seq 1 30); do
         exit 1
     fi
 
-    if "$test_binary" \
+    if KICAD_CONFIG_HOME="$config_dir" KICAD_RUN_FROM_BUILD_DIR=1 "$test_binary" \
         --run_test=CodexToolRegistry/AppliesReusableDesignAgainstLivePcbEditorWhenRequested \
         --log_level=message; then
         if ! KICAD_RUN_FROM_BUILD_DIR=1 "$kicad_cli_binary" sch export netlist \

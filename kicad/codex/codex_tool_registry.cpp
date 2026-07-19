@@ -24,6 +24,7 @@
 #include <libraries/library_table_parser.h>
 
 #include <algorithm>
+#include <array>
 #include <boost/process.hpp>
 #include <chrono>
 #include <filesystem>
@@ -67,10 +68,15 @@ constexpr size_t       MAX_PROJECT_LIBRARY_TABLE_BYTES = 1024 * 1024;
 constexpr size_t       MAX_PROJECT_LIBRARY_ROWS = 256;
 constexpr size_t       MAX_SCHEMATIC_FILE_BYTES = 16 * 1024 * 1024;
 constexpr size_t       MAX_SCHEMATIC_INVENTORY_BYTES = 32 * 1024 * 1024;
+constexpr wxFileOffset MAX_VERIFICATION_REPORT_BYTES = 64 * 1024 * 1024;
+constexpr size_t       MAX_VERIFICATION_RESULT_BYTES = 240 * 1024;
+constexpr size_t       MAX_VERIFICATION_IGNORED_CHECKS = 200;
+constexpr size_t       MAX_VERIFICATION_IGNORED_BYTES = 64 * 1024;
 constexpr size_t       MAX_PCB_FOOTPRINTS = 10000;
 constexpr size_t       MAX_PCB_ZONES = 10000;
 constexpr auto         MAX_ZONE_REFILL_WAIT = std::chrono::seconds( 30 );
 constexpr auto         MAX_SCHEMATIC_VALIDATION_WAIT = std::chrono::seconds( 30 );
+constexpr auto         MAX_NATIVE_CHECK_WAIT = std::chrono::seconds( 60 );
 
 
 struct PROJECT_LIBRARY_TABLE_UPDATE
@@ -898,19 +904,59 @@ bool schematicScreenUuid( const std::string& aSource, std::string& aUuid,
 }
 
 
+bool findNativeKiCadCli( wxFileName& aCli )
+{
+    wxFileName executable( wxStandardPaths::Get().GetExecutablePath() );
+#ifdef __WXMSW__
+    const wxString cliName = wxS( "kicad-cli.exe" );
+#else
+    const wxString cliName = wxS( "kicad-cli" );
+#endif
+    wxFileName sibling( executable.GetPath(), cliName );
+
+    if( sibling.FileExists() && sibling.IsFileExecutable() )
+    {
+        aCli = sibling;
+        return true;
+    }
+
+    wxString runFromBuild;
+
+    if( !wxGetEnv( wxS( "KICAD_RUN_FROM_BUILD_DIR" ), &runFromBuild )
+        || runFromBuild != wxS( "1" ) )
+    {
+        return false;
+    }
+
+    wxFileName root = wxFileName::DirName( executable.GetPath() );
+
+    for( int depth = 0; depth < 6 && root.GetDirCount() > 0; ++depth )
+    {
+        wxFileName candidate = root;
+        candidate.AppendDir( wxS( "kicad" ) );
+        candidate.SetFullName( cliName );
+
+        if( candidate.FileExists() && candidate.IsFileExecutable() )
+        {
+            aCli = candidate;
+            return true;
+        }
+
+        root.RemoveLastDir();
+    }
+
+    return false;
+}
+
+
 bool validateNativeSchematicHierarchy( const wxFileName& aRootSchematic,
                                        std::string& aError )
 {
     namespace bp = boost::process;
 
-    wxFileName executable( wxStandardPaths::Get().GetExecutablePath() );
-#ifdef __WXMSW__
-    wxFileName cli( executable.GetPath(), wxS( "kicad-cli.exe" ) );
-#else
-    wxFileName cli( executable.GetPath(), wxS( "kicad-cli" ) );
-#endif
+    wxFileName cli;
 
-    if( !cli.FileExists() || !cli.IsFileExecutable() )
+    if( !findNativeKiCadCli( cli ) )
     {
         aError = "the sibling kicad-cli native schematic validator is unavailable";
         return false;
@@ -997,6 +1043,129 @@ bool validateNativeSchematicHierarchy( const wxFileName& aRootSchematic,
 
     if( stderrLog.FileExists() )
         wxRemoveFile( stderrLog.GetFullPath() );
+
+    return aError.empty();
+}
+
+
+bool runNativeKiCadCheck( const std::string& aCheck, const wxFileName& aInput,
+                          std::string& aReport, std::string& aError )
+{
+    namespace bp = boost::process;
+
+    wxFileName cli;
+
+    if( !findNativeKiCadCli( cli ) )
+    {
+        aError = "the sibling kicad-cli verification backend is unavailable";
+        return false;
+    }
+
+    wxFileName temporaryRoot = wxFileName::DirName( wxFileName::GetTempDir() );
+    temporaryRoot.AppendDir( wxS( "kichad-verify-" ) + KIID().AsString() );
+
+    if( !wxFileName::Mkdir( temporaryRoot.GetFullPath(), 0700 ) )
+    {
+        aError = "could not create a private native verification directory";
+        return false;
+    }
+
+    wxFileName reportPath( temporaryRoot.GetFullPath(), wxS( "report.json" ) );
+    wxFileName stdoutLog( temporaryRoot.GetFullPath(), wxS( "stdout.log" ) );
+    wxFileName stderrLog( temporaryRoot.GetFullPath(), wxS( "stderr.log" ) );
+    std::vector<std::string> arguments = aCheck == "erc"
+                                                 ? std::vector<std::string>{ "sch", "erc" }
+                                                 : std::vector<std::string>{ "pcb", "drc" };
+    arguments.insert( arguments.end(), { "--format", "json", "--units", "mm",
+                                         "--severity-all" } );
+
+    if( aCheck == "drc" )
+        arguments.push_back( "--schematic-parity" );
+
+    arguments.insert( arguments.end(),
+                      { "--output", reportPath.GetFullPath().ToStdString(),
+                        aInput.GetFullPath().ToStdString() } );
+
+    bool finished = false;
+    int  exitCode = -1;
+
+    try
+    {
+        bp::child process( cli.GetFullPath().ToStdString(), bp::args( arguments ),
+                           bp::std_out > stdoutLog.GetFullPath().ToStdString(),
+                           bp::std_err > stderrLog.GetFullPath().ToStdString() );
+        const auto deadline = std::chrono::steady_clock::now() + MAX_NATIVE_CHECK_WAIT;
+        std::error_code processError;
+
+        while( process.running( processError ) && !processError
+               && std::chrono::steady_clock::now() < deadline )
+        {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        }
+
+        finished = !process.running( processError ) && !processError;
+
+        if( !finished )
+        {
+            process.terminate();
+            process.wait();
+
+            if( processError )
+                aError = "native verification process failed: " + processError.message();
+        }
+        else
+        {
+            exitCode = process.exit_code();
+        }
+    }
+    catch( const std::exception& error )
+    {
+        aError = std::string( "could not run native KiCad verification: " ) + error.what();
+    }
+
+    if( aError.empty() && ( !finished || exitCode != 0 || !reportPath.FileExists() ) )
+    {
+        aError = !finished ? "native KiCad verification exceeded 60 seconds"
+                           : "native KiCad could not complete the requested check";
+
+        if( stderrLog.FileExists() )
+        {
+            wxFile errorFile( stderrLog.GetFullPath(), wxFile::read );
+            const wxFileOffset length = errorFile.IsOpened() ? errorFile.Length() : 0;
+
+            if( length > 0 )
+            {
+                const size_t bounded = std::min<size_t>( static_cast<size_t>( length ), 4096 );
+                std::string detail( bounded, '\0' );
+
+                if( errorFile.Read( detail.data(), detail.size() )
+                    == static_cast<wxFileOffset>( detail.size() ) )
+                {
+                    aError += ": " + detail;
+                }
+            }
+        }
+    }
+
+    if( aError.empty() )
+    {
+        wxFile reportFile( reportPath.GetFullPath(), wxFile::read );
+        const wxFileOffset length = reportFile.IsOpened() ? reportFile.Length() : wxInvalidOffset;
+
+        if( length <= 0 || length > MAX_VERIFICATION_REPORT_BYTES )
+        {
+            aError = "native verification report must contain 1 byte to 64 MiB";
+        }
+        else
+        {
+            aReport.resize( static_cast<size_t>( length ) );
+
+            if( reportFile.Read( aReport.data(), aReport.size() ) != length )
+                aError = "could not read the complete native verification report";
+        }
+    }
+
+    wxFileName::Rmdir( temporaryRoot.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
 
     return aError.empty();
 }
@@ -2534,11 +2703,13 @@ CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPath
                                           std::function<bool()> aMutationGuard,
                                           std::function<wxString()> aIpcSocketDirectoryProvider,
                                           std::function<bool( const wxFileName&, std::string& )>
-                                                  aSchematicValidator ) :
+                                                  aSchematicValidator,
+                                          NATIVE_CHECK_RUNNER aNativeCheckRunner ) :
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
         m_mutationGuard( std::move( aMutationGuard ) ),
         m_ipcSocketDirectoryProvider( std::move( aIpcSocketDirectoryProvider ) ),
-        m_schematicValidator( std::move( aSchematicValidator ) )
+        m_schematicValidator( std::move( aSchematicValidator ) ),
+        m_nativeCheckRunner( std::move( aNativeCheckRunner ) )
 {}
 
 
@@ -2662,6 +2833,30 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Specs() const
                          "Coordinates and distances in protobuf JSON are nanometers." },
                        { "inputSchema", std::move( pcbSchema ) } } );
 
+    JSON verifySchema = { { "type", "object" },
+                          { "additionalProperties", false },
+                          { "required", JSON::array( { "operation", "path" } ) } };
+    verifySchema["properties"]["operation"] =
+            { { "type", "string" }, { "enum", JSON::array( { "erc", "drc" } ) } };
+    verifySchema["properties"]["path"] =
+            { { "type", "string" }, { "maxLength", 4096 },
+              { "description",
+                "Project-relative .kicad_sch for ERC or .kicad_pcb for DRC." } };
+    verifySchema["properties"]["offset"] =
+            { { "type", "integer" }, { "minimum", 0 }, { "maximum", 1000000 },
+              { "description", "Zero-based violation offset; defaults to 0." } };
+    verifySchema["properties"]["limit"] =
+            { { "type", "integer" }, { "minimum", 1 }, { "maximum", 200 },
+              { "description", "Maximum violations returned; defaults to 100." } };
+
+    specs.push_back( { { "type", "function" },
+                       { "name", "verify" },
+                       { "description",
+                         "Run the matching KiCad 10 native ERC or DRC backend read-only. DRC "
+                         "also checks schematic parity. Returns complete severity/category "
+                         "counts and a bounded, pageable structured violation list." },
+                       { "inputSchema", std::move( verifySchema ) } } );
+
     return specs;
 }
 
@@ -2694,6 +2889,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
 
         if( aTool == "pcb" )
             return handlePcb( aArguments, aProjectPath, aMutationAvailable, aIpcSocketDirectory );
+
+        if( aTool == "verify" )
+            return handleVerify( aArguments, aProjectPath );
 
         return failure( "unknown_tool", "The requested tool is not advertised by KiChad" );
     }
@@ -4735,6 +4933,345 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleInspect(
     payload["totalMatches"] = matches.size();
     payload["expressions"] = std::move( expressions );
     payload["resultTruncated"] = payload["expressions"].size() < matches.size();
+    return success( payload );
+}
+
+
+CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleVerify(
+        const JSON& aArguments, const wxString& aProjectPath ) const
+{
+    if( !aArguments.is_object() || !aArguments.contains( "operation" )
+        || !aArguments["operation"].is_string() || !aArguments.contains( "path" )
+        || !aArguments["path"].is_string() )
+    {
+        return failure( "invalid_arguments", "verify.operation and verify.path must be strings" );
+    }
+
+    const std::string operation = aArguments["operation"].get<std::string>();
+    const std::string relativePath = aArguments["path"].get<std::string>();
+
+    if( operation != "erc" && operation != "drc" )
+        return failure( "invalid_arguments", "verify.operation must be 'erc' or 'drc'" );
+
+    int offset = 0;
+    int limit = 100;
+
+    if( aArguments.contains( "offset" ) )
+    {
+        if( !aArguments["offset"].is_number_integer() )
+            return failure( "invalid_arguments", "verify.offset must be an integer" );
+
+        const int64_t parsedOffset = aArguments["offset"].get<int64_t>();
+
+        if( parsedOffset < 0 || parsedOffset > 1000000 )
+            return failure( "invalid_arguments", "verify.offset must be between 0 and 1000000" );
+
+        offset = static_cast<int>( parsedOffset );
+    }
+
+    if( aArguments.contains( "limit" ) )
+    {
+        if( !aArguments["limit"].is_number_integer() )
+            return failure( "invalid_arguments", "verify.limit must be an integer" );
+
+        const int64_t parsedLimit = aArguments["limit"].get<int64_t>();
+
+        if( parsedLimit < 1 || parsedLimit > 200 )
+            return failure( "invalid_arguments", "verify.limit must be between 1 and 200" );
+
+        limit = static_cast<int>( parsedLimit );
+    }
+
+    if( !wxFileName::DirExists( aProjectPath ) )
+        return failure( "project_unavailable", "No readable project directory is active" );
+
+    wxFileName resolved;
+    std::string pathError;
+
+    if( !resolveProjectFile( aProjectPath, relativePath, resolved, pathError ) )
+        return failure( "invalid_path", pathError );
+
+    const wxString expectedExtension = operation == "erc" ? wxS( "kicad_sch" )
+                                                            : wxS( "kicad_pcb" );
+
+    if( resolved.GetExt() != expectedExtension )
+    {
+        return failure( "invalid_path", operation == "erc"
+                                                ? "ERC requires a .kicad_sch file"
+                                                : "DRC requires a .kicad_pcb file" );
+    }
+
+    std::string reportSource;
+    std::string checkError;
+    const bool ran = m_nativeCheckRunner
+                             ? m_nativeCheckRunner( operation, resolved, reportSource, checkError )
+                             : runNativeKiCadCheck( operation, resolved, reportSource, checkError );
+
+    if( !ran )
+    {
+        if( checkError.empty() )
+            checkError = "native KiCad verification failed without an error message";
+
+        return failure( "check_failed", checkError );
+    }
+
+    if( reportSource.empty() || reportSource.size() > MAX_VERIFICATION_REPORT_BYTES )
+    {
+        return failure( "invalid_report",
+                        "native verification report must contain 1 byte to 64 MiB" );
+    }
+
+    JSON report = JSON::parse( reportSource, nullptr, false );
+
+    if( report.is_discarded() || !report.is_object() )
+        return failure( "invalid_report", "native verification report is not valid JSON" );
+
+    const auto hasString = [&]( const char* aName )
+    {
+        return report.contains( aName ) && report[aName].is_string();
+    };
+
+    if( !hasString( "$schema" ) || !hasString( "source" ) || !hasString( "date" )
+        || !hasString( "kicad_version" ) || !hasString( "coordinate_units" )
+        || !report.contains( "included_severities" )
+        || !report["included_severities"].is_array() || !report.contains( "ignored_checks" )
+        || !report["ignored_checks"].is_array() )
+    {
+        return failure( "invalid_report", "native verification report is missing required fields" );
+    }
+
+    const std::string expectedSchema = operation == "erc"
+                                               ? "https://schemas.kicad.org/erc.v1.json"
+                                               : "https://schemas.kicad.org/drc.v1.json";
+    const std::string nativeVersion( GetMajorMinorPatchVersion().ToUTF8() );
+
+    if( report["$schema"].get<std::string>() != expectedSchema
+        || report["coordinate_units"].get<std::string>() != "mm"
+        || report["source"].get<std::string>()
+                   != std::string( resolved.GetFullName().ToUTF8() ) )
+    {
+        return failure( "invalid_report",
+                        "native verification report schema, units, or source does not match" );
+    }
+
+    if( report["kicad_version"].get<std::string>() != nativeVersion )
+    {
+        return failure( "version_mismatch",
+                        "native verification report was not produced by this KiChad version" );
+    }
+
+    std::set<std::string> includedSeverities;
+
+    for( const JSON& severity : report["included_severities"] )
+    {
+        if( !severity.is_string() )
+            return failure( "invalid_report", "included severity is not a string" );
+
+        includedSeverities.emplace( severity.get<std::string>() );
+    }
+
+    if( report["included_severities"].size() != 3
+        || includedSeverities != std::set<std::string>{ "error", "exclusion", "warning" } )
+    {
+        return failure( "invalid_report",
+                        "native verification report does not include every severity" );
+    }
+
+    JSON ignoredChecks = JSON::array();
+    size_t ignoredCheckBytes = 0;
+
+    for( const JSON& ignored : report["ignored_checks"] )
+    {
+        if( !ignored.is_object() || !ignored.contains( "key" ) || !ignored["key"].is_string()
+            || !ignored.contains( "description" ) || !ignored["description"].is_string() )
+        {
+            return failure( "invalid_report", "ignored check entry is malformed" );
+        }
+
+        const size_t entryBytes = ignored.dump().size();
+
+        if( ignoredChecks.size() < MAX_VERIFICATION_IGNORED_CHECKS
+            && ignoredCheckBytes + entryBytes <= MAX_VERIFICATION_IGNORED_BYTES )
+        {
+            ignoredChecks.push_back( ignored );
+            ignoredCheckBytes += entryBytes;
+        }
+    }
+
+    JSON violations = JSON::array();
+    JSON categoryCounts = JSON::object();
+    size_t total = 0;
+    size_t errors = 0;
+    size_t warnings = 0;
+    size_t exclusions = 0;
+    size_t other = 0;
+    size_t resultBytes = ignoredCheckBytes;
+    bool   resultByteLimited = false;
+    bool   malformedViolation = false;
+
+    const auto visitViolation = [&]( const std::string& aCategory, const JSON& aViolation,
+                                     const std::string& aSheetPath = std::string(),
+                                     const std::string& aSheetUuidPath = std::string() )
+    {
+        if( !aViolation.is_object() || !aViolation.contains( "type" )
+            || !aViolation["type"].is_string() || !aViolation.contains( "description" )
+            || !aViolation["description"].is_string() || !aViolation.contains( "severity" )
+            || !aViolation["severity"].is_string() || !aViolation.contains( "items" )
+            || !aViolation["items"].is_array()
+            || ( aViolation.contains( "excluded" ) && !aViolation["excluded"].is_boolean() )
+            || ( aViolation.contains( "comment" ) && !aViolation["comment"].is_string() ) )
+        {
+            malformedViolation = true;
+            return;
+        }
+
+        for( const JSON& item : aViolation["items"] )
+        {
+            if( !item.is_object() || !item.contains( "uuid" ) || !item["uuid"].is_string()
+                || !item.contains( "description" ) || !item["description"].is_string()
+                || !item.contains( "pos" ) || !item["pos"].is_object()
+                || !item["pos"].contains( "x" ) || !item["pos"]["x"].is_number()
+                || !item["pos"].contains( "y" ) || !item["pos"]["y"].is_number() )
+            {
+                malformedViolation = true;
+                return;
+            }
+        }
+
+        const std::string severity = aViolation["severity"].get<std::string>();
+
+        if( severity != "error" && severity != "warning" && severity != "exclusion" )
+        {
+            malformedViolation = true;
+            return;
+        }
+
+        const bool excluded = ( aViolation.contains( "excluded" )
+                                && aViolation["excluded"].get<bool>() )
+                              || severity == "exclusion";
+
+        if( excluded )
+            ++exclusions;
+        else if( severity == "error" )
+            ++errors;
+        else if( severity == "warning" )
+            ++warnings;
+        else
+            ++other;
+
+        categoryCounts[aCategory] = categoryCounts[aCategory].get<size_t>() + 1;
+        const size_t index = total++;
+
+        if( index < static_cast<size_t>( offset )
+            || violations.size() >= static_cast<size_t>( limit ) || resultByteLimited )
+        {
+            return;
+        }
+
+        JSON item = aViolation;
+        item["category"] = aCategory;
+
+        if( !aSheetPath.empty() )
+        {
+            item["sheetPath"] = aSheetPath;
+            item["sheetUuidPath"] = aSheetUuidPath;
+        }
+
+        const size_t itemBytes = item.dump().size();
+
+        if( resultBytes + itemBytes > MAX_VERIFICATION_RESULT_BYTES )
+        {
+            resultByteLimited = true;
+            return;
+        }
+
+        resultBytes += itemBytes;
+        violations.push_back( std::move( item ) );
+    };
+
+    if( operation == "erc" )
+    {
+        if( !report.contains( "sheets" ) || !report["sheets"].is_array() )
+            return failure( "invalid_report", "native ERC report has no sheets array" );
+
+        categoryCounts["erc"] = 0;
+
+        for( const JSON& sheet : report["sheets"] )
+        {
+            if( !sheet.is_object() || !sheet.contains( "path" ) || !sheet["path"].is_string()
+                || !sheet.contains( "uuid_path" ) || !sheet["uuid_path"].is_string()
+                || !sheet.contains( "violations" ) || !sheet["violations"].is_array() )
+            {
+                return failure( "invalid_report", "native ERC sheet entry is malformed" );
+            }
+
+            for( const JSON& violation : sheet["violations"] )
+            {
+                visitViolation( "erc", violation, sheet["path"].get<std::string>(),
+                                sheet["uuid_path"].get<std::string>() );
+            }
+        }
+    }
+    else
+    {
+        const std::array<std::pair<const char*, const char*>, 3> categories = {
+            std::pair{ "violations", "drc" },
+            std::pair{ "unconnected_items", "unconnectedItem" },
+            std::pair{ "schematic_parity", "schematicParity" }
+        };
+
+        for( const auto& [field, category] : categories )
+        {
+            if( !report.contains( field ) || !report[field].is_array() )
+                return failure( "invalid_report", "native DRC report category is malformed" );
+
+            categoryCounts[category] = 0;
+
+            for( const JSON& violation : report[field] )
+                visitViolation( category, violation );
+        }
+    }
+
+    if( malformedViolation )
+        return failure( "invalid_report", "native verification violation is malformed" );
+
+    if( resultByteLimited && violations.empty() && total > static_cast<size_t>( offset ) )
+    {
+        return failure( "result_too_large",
+                        "one native verification violation exceeds the tool result limit" );
+    }
+
+    const size_t returned = violations.size();
+    const bool hasMore = static_cast<size_t>( offset ) + returned < total;
+    const bool ignoredChecksTruncated =
+            ignoredChecks.size() < report["ignored_checks"].size();
+    JSON payload = {
+        { "operation", operation },
+        { "path", relativePath },
+        { "schema", expectedSchema },
+        { "kicadVersion", nativeVersion },
+        { "coordinateUnits", "mm" },
+        { "clean", errors == 0 && warnings == 0 },
+        { "waiversPresent", exclusions > 0 || !report["ignored_checks"].empty() },
+        { "counts",
+          { { "total", total },
+            { "errors", errors },
+            { "warnings", warnings },
+            { "exclusions", exclusions },
+            { "other", other },
+            { "categories", std::move( categoryCounts ) } } },
+        { "ignoredChecksCount", report["ignored_checks"].size() },
+        { "ignoredChecks", std::move( ignoredChecks ) },
+        { "ignoredChecksTruncated", ignoredChecksTruncated },
+        { "offset", offset },
+        { "returnedViolations", returned },
+        { "violations", std::move( violations ) },
+        { "resultTruncated", hasMore }
+    };
+
+    if( hasMore )
+        payload["nextOffset"] = static_cast<size_t>( offset ) + returned;
+
     return success( payload );
 }
 
