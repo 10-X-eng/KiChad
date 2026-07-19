@@ -6802,6 +6802,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(output gerbers|drill|ipcd356|netlist|ipc2581|odbpp|pick_place|bom|step|"
                       "stepz|brep|glb|stl|u3d|xao|3d_pdf|pdf|board_ps|"
                       "schematic_pdf|schematic_svg|schematic_dxf|schematic_ps|"
+                      "schematic_bom|legacy_bom_xml|"
                       "assembly_svg|assembly_dxf|gencad|vrml|board_stats)" } }
           } ) },
         { "compilerPasses",
@@ -7301,7 +7302,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
                 "pick_place", "bom", "step", "stepz", "brep", "glb", "stl", "u3d",
                 "xao", "3d_pdf", "pdf", "schematic_pdf", "schematic_svg",
                 "schematic_dxf", "schematic_ps", "board_ps", "assembly_svg",
-                "assembly_dxf", "gencad", "vrml", "board_stats"
+                "assembly_dxf", "gencad", "vrml", "board_stats",
+                "schematic_bom", "legacy_bom_xml"
             };
             JSON output = compileEnumeratedFacet( *document, formNode, "output", allowed, result );
             const std::string kind = output.value( "kind", "" );

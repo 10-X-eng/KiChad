@@ -38,7 +38,9 @@ set( KICAD_SRCS
     codex/design_script_schematic_reconciler.cpp
     codex/design_script_symbol_resolver.cpp
     codex/fabrication_artifact_validator.cpp
+    codex/legacy_bom_artifact_validator.cpp
     codex/mechanical_artifact_validator.cpp
+    codex/schematic_bom_artifact_validator.cpp
     codex/schematic_dxf_artifact_validator.cpp
     codex/schematic_pdf_artifact_validator.cpp
     codex/schematic_ps_artifact_validator.cpp

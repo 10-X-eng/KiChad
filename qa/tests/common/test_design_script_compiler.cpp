@@ -1306,6 +1306,8 @@ BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
   (output schematic_svg)
   (output schematic_dxf)
   (output schematic_ps)
+  (output schematic_bom)
+  (output legacy_bom_xml)
   (output assembly_svg)
   (output assembly_dxf)
   (output gencad)
@@ -1315,12 +1317,13 @@ BOOST_AUTO_TEST_CASE( CompilesNativeAuxiliaryManufacturingOutputs )
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
     BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
-    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 18 );
+    BOOST_REQUIRE_EQUAL( result.ir["outputs"].size(), 20 );
 
-    const std::array<const char*, 18> expected = {
+    const std::array<const char*, 20> expected = {
         "netlist", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf",
         "board_ps", "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
-        "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
+        "schematic_bom", "legacy_bom_xml", "assembly_svg", "assembly_dxf", "gencad",
+        "vrml", "board_stats"
     };
 
     for( size_t index = 0; index < expected.size(); ++index )

@@ -46,6 +46,7 @@
   (output schematic_svg)
   (output schematic_dxf)
   (output schematic_ps)
+  (output legacy_bom_xml)
   (output assembly_svg)
   (output assembly_dxf)
   (output gencad)

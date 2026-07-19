@@ -104,4 +104,6 @@
   (output schematic_pdf)
   (output schematic_svg)
   (output schematic_dxf)
-  (output schematic_ps))
+  (output schematic_ps)
+  (output schematic_bom)
+  (output legacy_bom_xml))

@@ -346,6 +346,87 @@ std::string mockGlb( const std::string& aStem )
 }
 
 
+std::string mockCsvField( const std::string& aValue )
+{
+    std::string output = "\"";
+
+    for( char character : aValue )
+    {
+        if( character == '"' )
+            output.push_back( '"' );
+
+        output.push_back( character );
+    }
+
+    output.push_back( '"' );
+    return output;
+}
+
+
+std::string mockXmlText( const std::string& aValue )
+{
+    std::string output;
+
+    for( char character : aValue )
+    {
+        if( character == '&' )
+            output += "&amp;";
+        else if( character == '<' )
+            output += "&lt;";
+        else if( character == '>' )
+            output += "&gt;";
+        else
+            output.push_back( character );
+    }
+
+    return output;
+}
+
+
+std::string mockSchematicBom( const JSON& aPlan )
+{
+    std::string output =
+            "\"Reference\",\"Value\",\"Footprint\",\"Quantity\",\"DNP\"\n";
+
+    for( const JSON& item : aPlan.at( "expectedSchematicBomRows" ) )
+    {
+        output += mockCsvField( item.at( "reference" ).get<std::string>() ) + ","
+                  + mockCsvField( item.at( "value" ).get<std::string>() ) + ","
+                  + mockCsvField( item.at( "footprint" ).get<std::string>() ) + ",\"1\","
+                  + mockCsvField( item.at( "dnp" ).get<bool>() ? "DNP" : "" ) + "\n";
+    }
+
+    return output;
+}
+
+
+std::string mockLegacyBom( const JSON& aPlan )
+{
+    const std::string stem = aPlan.at( "fileStem" ).get<std::string>();
+    std::string output =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<export version=\"E\"><design><source>/private/" + stem
+            + ".kicad_sch</source><date>2026-07-19T12:00:00</date>"
+              "<tool>Eeschema 10.0.4-KiChad</tool>"
+              "<sheet number=\"1\" name=\"/\" tstamps=\"/\"/></design><components>";
+
+    for( const JSON& item : aPlan.at( "expectedSchematicBomRows" ) )
+    {
+        output += "<comp ref=\"" + mockXmlText( item.at( "reference" ).get<std::string>() )
+                  + "\"><value>" + mockXmlText( item.at( "value" ).get<std::string>() )
+                  + "</value>";
+        const std::string footprint = item.at( "footprint" ).get<std::string>();
+
+        if( !footprint.empty() )
+            output += "<footprint>" + mockXmlText( footprint ) + "</footprint>";
+
+        output += "</comp>";
+    }
+
+    return output + "</components><libparts/><libraries/><nets/></export>\n";
+}
+
+
 class FABRICATION_PROJECT_FIXTURE
 {
 public:
@@ -497,6 +578,8 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output odbpp)
   (output pick_place)
   (output bom)
+  (output schematic_bom)
+  (output legacy_bom_xml)
   (output step)
   (output stepz)
   (output brep)
@@ -995,6 +1078,22 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 return false;
             }
         }
+        else if( kind == "schematic_bom" )
+        {
+            if( !write( output, mockSchematicBom( aPlan ) ) )
+            {
+                aError = "could not write fake schematic BOM output";
+                return false;
+            }
+        }
+        else if( kind == "legacy_bom_xml" )
+        {
+            if( !write( output, mockLegacyBom( aPlan ) ) )
+            {
+                aError = "could not write fake legacy BOM output";
+                return false;
+            }
+        }
         else if( kind == "assembly_svg" )
         {
             const std::string stem = aPlan.at( "fileStem" ).get<std::string>();
@@ -1156,10 +1255,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v10" );
+                       "kichad-production-10.0.4-v11" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 27 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 29 );
     BOOST_CHECK_EQUAL( data["expectedSchematicPdfTitle"].get<std::string>(),
                        "design.pdf" );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
@@ -1169,6 +1268,12 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     BOOST_CHECK_EQUAL( data["expectedNetlistReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedNetlistReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK( data["expectedNetlistNets"].empty() );
+    BOOST_REQUIRE_EQUAL( data["expectedSchematicBomRows"].size(), 1 );
+    BOOST_CHECK_EQUAL( data["expectedSchematicBomRows"][0]["reference"], "U1" );
+    BOOST_CHECK_EQUAL( data["expectedSchematicBomRows"][0]["value"], "LM358" );
+    BOOST_CHECK_EQUAL( data["expectedSchematicBomRows"][0]["footprint"],
+                       "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm" );
+    BOOST_CHECK( !data["expectedSchematicBomRows"][0]["dnp"].get<bool>() );
     BOOST_CHECK( std::find( data["jobs"][0]["layers"].begin(),
                             data["jobs"][0]["layers"].end(), JSON( "F.Paste" ) )
                  != data["jobs"][0]["layers"].end() );
@@ -1505,7 +1610,7 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "waived" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 44 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 45 );
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
@@ -1585,6 +1690,9 @@ BOOST_AUTO_TEST_CASE( ExportsWithSiblingNativeKiCadCliWhenExplicitlyRequested )
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/interchange/"
                                       "fabrication_clean.cad" ) ) );
+    BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
+                               + wxS( "fabrication/interchange/"
+                                      "fabrication_clean-legacy-bom.xml" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
                                + wxS( "fabrication/model/fabrication_clean.wrl" ) ) );
     BOOST_CHECK( wxFileExists( project.GetFullPath() + wxFILE_SEP_PATH
@@ -1699,7 +1807,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 37 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 39 );
 
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
@@ -1756,6 +1864,12 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName boardPsPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/documentation/board_ps/fabrication_component-F_Cu.ps" ) );
+    wxFileName schematicBomPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/interchange/fabrication_component-schematic-bom.csv" ) );
+    wxFileName legacyBomPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/interchange/fabrication_component-legacy-bom.xml" ) );
     BOOST_REQUIRE( manifestPath.FileExists() );
     BOOST_REQUIRE( bomPath.FileExists() );
     BOOST_REQUIRE( positionsPath.FileExists() );
@@ -1775,6 +1889,8 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE( schematicDxfPath.FileExists() );
     BOOST_REQUIRE( schematicPsPath.FileExists() );
     BOOST_REQUIRE( boardPsPath.FileExists() );
+    BOOST_REQUIRE( schematicBomPath.FileExists() );
+    BOOST_REQUIRE( legacyBomPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( manifest["releaseStatus"].get<std::string>(), "clean" );
@@ -1801,6 +1917,20 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
                               "\"Resistor_SMD:R_0603_1608Metric\",1,"
                               "\"KiChad QA Components\",\"KQA-0603-10K\"" ),
                     std::string::npos );
+    const std::string schematicBom = readText( schematicBomPath );
+    BOOST_CHECK_NE( schematicBom.find(
+                            "\"Reference\",\"Value\",\"Footprint\",\"Quantity\",\"DNP\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( schematicBom.find(
+                            "\"R1\",\"10k\",\"Resistor_SMD:R_0603_1608Metric\",\"1\",\"\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( schematicBom.find(
+                            "\"R2\",\"10k\",\"Resistor_SMD:R_0603_1608Metric\",\"1\",\"\"" ),
+                    std::string::npos );
+    const std::string legacyBom = readText( legacyBomPath );
+    BOOST_CHECK_NE( legacyBom.find( "<export version=\"E\">" ), std::string::npos );
+    BOOST_CHECK_NE( legacyBom.find( "<comp ref=\"R1\">" ), std::string::npos );
+    BOOST_CHECK_NE( legacyBom.find( "<comp ref=\"R2\">" ), std::string::npos );
     const std::string positions = readText( positionsPath );
     BOOST_CHECK_NE( positions.find( "R1" ), std::string::npos );
     BOOST_CHECK_NE( positions.find( "R2" ), std::string::npos );

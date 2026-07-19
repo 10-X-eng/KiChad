@@ -299,7 +299,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v10`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v11`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -326,6 +326,8 @@ production-ready plan requires all of the following declarations in the same sid
 ; optional: (output schematic_svg)
 ; optional: (output schematic_dxf)
 ; optional: (output schematic_ps)
+; optional: (output schematic_bom)
+; optional: (output legacy_bom_xml)
 ; optional: (output ipc2581)
 ; optional: (output odbpp)
 ; optional: (output netlist)
@@ -373,6 +375,11 @@ outputs render the guarded root-schematic snapshot as PDF or a bounded set of
 per-sheet SVG, DXF, or PostScript drawings. Their validators require KiCad/Eeschema producer
 identity, exact root-sheet filenames, complete page/container structure, and no added external
 actions, unsafe SVG references, or privileged PostScript operators.
+`schematic_bom` emits an ungrouped five-column native KiCad CSV with Reference, Value, Footprint,
+Quantity, and DNP fields. `legacy_bom_xml` emits KiCad's Eeschema `export version="E"` XML for older
+BOM consumers. KiChad bounds and parses each representation, requires the exact KiCad 10.0.4
+producer/schema, and matches every reference, value, footprint, quantity, and DNP state to the
+compiled KDS component inventory.
 `netlist` runs the native Eeschema exporter against the same private root-schematic snapshot used by
 ERC; KiChad parses the result and requires its exact component-reference and ref/pin connectivity
 sets to match compiled KDS intent.

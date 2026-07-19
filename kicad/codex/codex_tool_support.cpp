@@ -18,7 +18,9 @@
 #include "design_script_schematic_reconciler.h"
 #include "design_script_symbol_resolver.h"
 #include "fabrication_artifact_validator.h"
+#include "legacy_bom_artifact_validator.h"
 #include "mechanical_artifact_validator.h"
+#include "schematic_bom_artifact_validator.h"
 #include "schematic_dxf_artifact_validator.h"
 #include "schematic_pdf_artifact_validator.h"
 #include "schematic_ps_artifact_validator.h"
@@ -1596,6 +1598,19 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
                           "--black-and-white", "--no-background-color",
                           aSchematic.GetFullPath().ToStdString() };
         }
+        else if( kind == "schematic_bom" )
+        {
+            arguments = { "sch", "export", "bom", "--output", output.string(),
+                          "--fields", "Reference,Value,Footprint,QUANTITY,DNP",
+                          "--labels", "Reference,Value,Footprint,Quantity,DNP",
+                          "--sort-field", "Reference",
+                          aSchematic.GetFullPath().ToStdString() };
+        }
+        else if( kind == "legacy_bom_xml" )
+        {
+            arguments = { "sch", "export", "python-bom", "--output", output.string(),
+                          aSchematic.GetFullPath().ToStdString() };
+        }
         else if( kind == "assembly_svg" )
         {
             arguments = { "pcb", "export", "svg", "--output", output.string(),
@@ -1669,6 +1684,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     };
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
+        "schematic_bom", "legacy_bom_xml",
         "step", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf", "pdf",
         "board_ps", "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
         "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
@@ -1760,6 +1776,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     std::set<std::string> bomReferences;
     std::set<std::string> placementReferences;
     std::set<std::string> netlistReferences;
+    JSON expectedSchematicBomRows = JSON::array();
     JSON expectedNetlistNets = JSON::array();
     std::string expectedSchematicPdfTitle = aFileStem + ".pdf";
 
@@ -1785,12 +1802,20 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
 
     for( const JSON& component : aIr.at( "schematic" ).at( "components" ) )
     {
-        netlistReferences.emplace( component.at( "reference" ).get<std::string>() );
+        const std::string reference = component.at( "reference" ).get<std::string>();
+        netlistReferences.emplace( reference );
+        expectedSchematicBomRows.push_back(
+                { { "reference", reference },
+                  { "value", component.at( "value" ) },
+                  { "footprint", component.at( "footprint" ).is_string()
+                                             ? component.at( "footprint" )
+                                                       .get<std::string>()
+                                             : std::string() },
+                  { "dnp", component.value( "dnp", false ) } } );
 
         if( !component.contains( "footprint" ) || !component.at( "footprint" ).is_string() )
             continue;
 
-        const std::string reference = component.at( "reference" ).get<std::string>();
         bomReferences.emplace( reference );
 
         if( !component.value( "dnp", false ) )
@@ -1856,6 +1881,14 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         else if( std::string_view( kind ) == "bom" )
         {
             job["relativePath"] = "assembly/" + aFileStem + "-bom.csv";
+        }
+        else if( std::string_view( kind ) == "schematic_bom" )
+        {
+            job["relativePath"] = "interchange/" + aFileStem + "-schematic-bom.csv";
+        }
+        else if( std::string_view( kind ) == "legacy_bom_xml" )
+        {
+            job["relativePath"] = "interchange/" + aFileStem + "-legacy-bom.xml";
         }
         else if( std::string_view( kind ) == "step" )
         {
@@ -1931,7 +1964,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v10" },
+    return { { "profile", "kichad-production-10.0.4-v11" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -1940,6 +1973,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
              { "expectedPlacementReferences", placementReferences },
              { "expectedNetlistReferences", netlistReferences },
              { "expectedNetlistNets", std::move( expectedNetlistNets ) },
+             { "expectedSchematicBomRows", std::move( expectedSchematicBomRows ) },
              { "expectedSchematicPdfTitle", std::move( expectedSchematicPdfTitle ) },
              { "jobs", std::move( jobs ) } };
 }
@@ -3460,6 +3494,26 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             if( !readCsvReferences( iterator->path(), bomReferences, aError ) )
                 return false;
         }
+        else if( path == "interchange/" + fileStem + "-schematic-bom.csv" )
+        {
+            kind = "schematic_bom";
+
+            if( !KICHAD::SCHEMATIC_BOM_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), aPlan, aError ) )
+            {
+                return false;
+            }
+        }
+        else if( path == "interchange/" + fileStem + "-legacy-bom.xml" )
+        {
+            kind = "legacy_bom_xml";
+
+            if( !KICHAD::LEGACY_BOM_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), aPlan, aError ) )
+            {
+                return false;
+            }
+        }
         else if( path.starts_with( "assembly/drawings-svg/" ) && extension == ".svg" )
         {
             kind = "assembly_svg";
@@ -3773,6 +3827,10 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "position export did not produce exactly one CSV artifact";
         else if( kind == "bom" && counts["bom"] != 1 )
             aError = "BOM export did not produce exactly one CSV artifact";
+        else if( kind == "schematic_bom" && counts["schematic_bom"] != 1 )
+            aError = "schematic BOM export did not produce exactly one native CSV artifact";
+        else if( kind == "legacy_bom_xml" && counts["legacy_bom_xml"] != 1 )
+            aError = "legacy BOM export did not produce exactly one XML interchange artifact";
         else if( kind == "step" && counts["step"] != 1 )
             aError = "STEP export did not produce exactly one model artifact";
         else if( kind == "brep" && counts["brep"] != 1 )

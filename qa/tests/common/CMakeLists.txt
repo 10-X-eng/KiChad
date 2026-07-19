@@ -45,7 +45,9 @@ set( QA_COMMON_SRCS
     test_codex_tool_registry.cpp
     test_codex_thread_store.cpp
     test_fabrication_artifact_validator.cpp
+    test_legacy_bom_artifact_validator.cpp
     test_mechanical_artifact_validator.cpp
+    test_schematic_bom_artifact_validator.cpp
     test_schematic_dxf_artifact_validator.cpp
     test_schematic_pdf_artifact_validator.cpp
     test_schematic_ps_artifact_validator.cpp
@@ -131,7 +133,9 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/board_ps_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/legacy_bom_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/mechanical_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_bom_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_dxf_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_pdf_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_ps_artifact_validator.cpp

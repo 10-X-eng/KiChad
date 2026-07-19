@@ -273,6 +273,10 @@ nlohmann::json DesignScriptCapabilities()
                                   "output schematic_dxf", "output schematic_ps" },
                                 "Validated native PCB layer PostScript plus schematic release "
                                 "drawings in PDF, SVG, DXF, and PostScript." ),
+                    capability( "manufacturing.schematic_bom", "manufacturing", "qualified",
+                                { "output schematic_bom", "output legacy_bom_xml" },
+                                "Exact ungrouped native schematic BOM CSV and legacy Eeschema XML "
+                                "interchange, both matched to compiled KDS components." ),
                     capability( "manufacturing.presets", "manufacturing", "partial", { "output", "check fabrication" },
                                 "One immutable KiChad 10.0.4 production profile and explicit output intent.",
                                 { "User-defined plot/drill/position/BOM presets, panelization, stencil policy, and fab-house profiles are absent." } ),
@@ -294,7 +298,7 @@ nlohmann::json DesignScriptCapabilities()
                     capability( "interchange.exporters", "interchange", "partial", { "output" },
                                 "Production Gerber/drill/IPC/ODB/BOM/placement/STEP/STEPZ/BREP/GLB/"
                                 "STL/U3D/XAO/3D-PDF/PDF plus PCB PostScript and schematic "
-                                "PDF/SVG/DXF/PostScript, "
+                                "PDF/SVG/DXF/PostScript, native schematic BOM CSV, legacy BOM XML, "
                                 "assembly SVG/DXF, GenCAD, VRML, JSON board statistics, and an exact "
                                 "KiCad connectivity netlist.",
                                 { "Remaining graphics/mechanical containers, legacy, and configurable "
