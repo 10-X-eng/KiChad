@@ -18,6 +18,7 @@ smoke_home="$(mktemp -d "${repo_root}/build/codex-smoke-home.XXXXXX")"
 smoke_pid=""
 smoke_write_fd=""
 smoke_write_open=false
+last_response=""
 
 cleanup() {
     if [[ "$smoke_write_open" == true ]]; then
@@ -41,6 +42,8 @@ trap cleanup EXIT
 coproc KICHAD_CODEX_SMOKE {
     CODEX_HOME="$smoke_home" "$codex_executable" app-server \
         -c 'mcp_servers={}' \
+        -c 'web_search="live"' \
+        -c 'tools.web_search.context_size="high"' \
         --disable shell_tool \
         --disable unified_exec \
         --disable apps \
@@ -73,11 +76,39 @@ expect_result() {
         if IFS= read -r -t 1 -u "$smoke_read_fd" line; then
             if jq -e --argjson wanted "$request_id" '.id == $wanted' <<<"$line" >/dev/null 2>&1; then
                 if jq -e 'has("result")' <<<"$line" >/dev/null; then
+                    last_response="$line"
                     printf 'Codex protocol verified: %s\n' "$label"
                     return 0
                 fi
 
                 echo "Codex app-server rejected ${label}:" >&2
+                jq -c '.error // .' <<<"$line" >&2
+                return 1
+            fi
+        fi
+    done
+
+    echo "Timed out waiting for Codex app-server ${label}." >&2
+    return 1
+}
+
+expect_error() {
+    local request_id="$1"
+    local expected_message="$2"
+    local label="$3"
+    local line
+    local deadline=$(( SECONDS + 15 ))
+
+    while (( SECONDS < deadline )); do
+        if IFS= read -r -t 1 -u "$smoke_read_fd" line; then
+            if jq -e --argjson wanted "$request_id" '.id == $wanted' <<<"$line" >/dev/null 2>&1; then
+                if jq -e --arg expected "$expected_message" \
+                    '.error.message | contains($expected)' <<<"$line" >/dev/null 2>&1; then
+                    printf 'Codex protocol verified: %s\n' "$label"
+                    return 0
+                fi
+
+                echo "Codex app-server returned an unexpected ${label} response:" >&2
                 jq -c '.error // .' <<<"$line" >&2
                 return 1
             fi
@@ -113,8 +144,8 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
         runtimeWorkspaceRoots: [$cwd],
         approvalPolicy: "never",
         sandbox: "read-only",
-        ephemeral: true,
-        historyMode: "paginated",
+        ephemeral: false,
+        historyMode: "legacy",
         serviceName: "KiChad",
         baseInstructions: "Use only native KiChad dynamic tools.",
         config: {
@@ -133,7 +164,10 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
                 workspace_dependencies: false
             },
             mcp_servers: {},
-            web_search: "live"
+            web_search: "live",
+            tools: {
+                web_search: { context_size: "high" }
+            }
         },
         dynamicTools: [
             {
@@ -212,6 +246,42 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
     }
 }')"
 expect_result 4 thread/start
+
+thread_id="$(jq -er '.result.thread.id' <<<"$last_response")"
+send_message "$(jq -cn --arg cwd "$repo_root" --arg thread_id "$thread_id" '{
+    id: 5,
+    method: "thread/resume",
+    params: {
+        threadId: $thread_id,
+        cwd: $cwd,
+        runtimeWorkspaceRoots: [$cwd],
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        baseInstructions: "Use native KiChad tools and proactively verify every component with live web search.",
+        config: {
+            features: {
+                shell_tool: false,
+                unified_exec: false,
+                apps: false,
+                browser_use: false,
+                computer_use: false,
+                image_generation: false,
+                multi_agent: false,
+                plugins: false,
+                enable_mcp_apps: false,
+                hooks: false,
+                skill_mcp_dependency_install: false,
+                workspace_dependencies: false
+            },
+            mcp_servers: {},
+            web_search: "live",
+            tools: {
+                web_search: { context_size: "high" }
+            }
+        }
+    }
+}')"
+expect_error 5 "no rollout found" "thread/resume live-web configuration"
 
 exec {smoke_write_fd}>&-
 smoke_write_open=false

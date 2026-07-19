@@ -29,6 +29,46 @@ wxDECLARE_EVENT( KICHAD_CODEX_TOOL_COMPLETED, wxThreadEvent );
 wxDEFINE_EVENT( KICHAD_CODEX_TOOL_COMPLETED, wxThreadEvent );
 
 
+namespace
+{
+
+using JSON = nlohmann::json;
+
+
+JSON agentConfig()
+{
+    return {
+        { "features",
+          { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
+            { "browser_use", false }, { "computer_use", false },
+            { "image_generation", false }, { "multi_agent", false },
+            { "plugins", false }, { "enable_mcp_apps", false }, { "hooks", false },
+            { "skill_mcp_dependency_install", false },
+            { "workspace_dependencies", false } } },
+        { "mcp_servers", JSON::object() },
+        { "web_search", "live" },
+        { "tools", { { "web_search", { { "context_size", "high" } } } } }
+    };
+}
+
+
+const char* agentInstructions()
+{
+    return "You are the KiChad electronics design agent. Use only the native KiChad dynamic "
+           "tools advertised by the host for design work. The sole exception is Codex's built-in "
+           "live web search, which you must proactively use before selecting or retaining every "
+           "component to verify its manufacturer, exact MPN, primary datasheet, lifecycle, and "
+           "current orderable availability from real distributors. Never guess component facts. "
+           "Treat the versioned project.kicad_kds KiChad Design Script sidecar as the only "
+           "representation of design intent: read and edit the exact KDS source, describe the "
+           "language when needed, compile before saving, and use native backends to produce KiCad "
+           "artifacts. Never create or depend on a separate context projection. Never use shell, "
+           "arbitrary code execution, GUI automation, MCP, or direct ad-hoc file rewriting.";
+}
+
+} // namespace
+
+
 CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider,
                           SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler ) :
         wxPanel( aParent ),
@@ -312,24 +352,8 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "ephemeral", false },
         { "historyMode", "paginated" },
         { "serviceName", "KiChad" },
-        { "baseInstructions",
-          "You are the KiChad electronics design agent. Use only the native KiChad dynamic tools "
-          "advertised by the host for design work. Treat the versioned project.kicad_kds KiChad "
-          "Design Script sidecar as the only representation of design intent: read and edit the "
-          "exact KDS source, describe the language when needed, compile before saving, and use "
-          "native backends to produce KiCad artifacts. Never create or depend on a separate "
-          "context projection. Never use shell, arbitrary code execution, GUI automation, MCP, "
-          "or direct ad-hoc file rewriting. Use live web search only to verify components, "
-          "manufacturer data, datasheets, availability, and other design evidence." },
-        { "config",
-          { { "features",
-              { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
-                { "browser_use", false }, { "computer_use", false },
-                { "image_generation", false }, { "multi_agent", false },
-                { "plugins", false }, { "enable_mcp_apps", false }, { "hooks", false },
-                { "skill_mcp_dependency_install", false },
-                { "workspace_dependencies", false } } },
-            { "mcp_servers", JSON::object() }, { "web_search", "live" } } }
+        { "baseInstructions", agentInstructions() },
+        { "config", agentConfig() }
     };
 
     params["dynamicTools"] = m_toolRegistry.Specs();
@@ -382,6 +406,8 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
         { "runtimeWorkspaceRoots", JSON::array( { std::string( cwd.ToUTF8() ) } ) },
         { "approvalPolicy", "never" },
         { "sandbox", "read-only" },
+        { "baseInstructions", agentInstructions() },
+        { "config", agentConfig() },
         { "initialTurnsPage",
           { { "limit", 20 }, { "sortDirection", "asc" }, { "itemsView", "full" } } }
     };

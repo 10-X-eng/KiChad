@@ -16,9 +16,12 @@ middleware daemon, tool-server process, or web UI.  The app-server process is ne
 arbitrary KiChad tool that executes shell commands or drives the GUI.  Unrecognized tool calls are
 rejected with a structured JSON-RPC error.  The owned process starts with MCP, shell, unified exec,
 apps, browser/computer use, image generation, plugins, and multi-agent features disabled, so it
-cannot inherit broader tools or MCP connectors from the user's global Codex configuration.  Live
-Codex web search remains enabled solely for component, datasheet, availability, and design-evidence
-research; it is not GUI browser automation and cannot mutate the project.
+cannot inherit broader tools or MCP connectors from the user's global Codex configuration. Codex
+web search is forced to `live` with high context for both new and resumed conversations. The agent
+instructions require it to verify the manufacturer, exact MPN, primary datasheet, lifecycle, and
+current distributor availability before accepting each component. Built-in web search is separate
+from GUI browser automation, remains enabled while `browser_use` is disabled, and cannot mutate the
+project.
 
 Set `KICHAD_CODEX_EXECUTABLE` when `codex` is not on `PATH`.  The executable is an installation
 prerequisite, not a linked build dependency.  The owned child uses an isolated Codex home at
