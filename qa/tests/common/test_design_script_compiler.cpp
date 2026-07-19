@@ -1217,6 +1217,12 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
     (unit 2 (sheet analog) (at 50mm 40mm) (rotation 270deg) (mirror xy)))
   (net SIGNAL (pin U1 1 1) (pin U1 2 7))
   (no_connect U1 2 8)
+  (label signal-local (sheet root) (scope local) (net SIGNAL) (at 45mm 40mm)
+    (rotation 0deg) (shape none) (size 1.27mm 1.27mm) (thickness auto)
+    (justify left bottom) (bold false) (italic false))
+  (label signal-global (sheet analog) (scope global) (net SIGNAL) (at 55mm 40mm)
+    (rotation 180deg) (shape output) (size 1.5mm 1.2mm) (thickness 0.2mm)
+    (justify right center) (bold true) (italic true))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT result =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
@@ -1229,6 +1235,10 @@ BOOST_AUTO_TEST_CASE( CompilesOneExplicitMultiUnitComponentAndEndpointRepresenta
     BOOST_CHECK_EQUAL( component["units"][1]["mirror"].get<std::string>(), "xy" );
     BOOST_CHECK_EQUAL( result.ir["schematic"]["nets"][0]["pins"][1]["unit"].get<int>(), 2 );
     BOOST_REQUIRE_EQUAL( result.ir["schematic"]["noConnects"].size(), 1 );
+    BOOST_REQUIRE_EQUAL( result.ir["schematic"]["drawings"].size(), 2 );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][0]["scope"], "local" );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][1]["shape"], "output" );
+    BOOST_CHECK_EQUAL( result.ir["schematic"]["drawings"][1]["thicknessNm"], 200000 );
     BOOST_CHECK_EQUAL( result.plan["counts"]["noConnects"].get<int>(), 1 );
 
     const std::string invalid = R"KDS((kichad_design
@@ -1313,7 +1323,17 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousOrUnsafeSchematicDrawingPrimitives )
         R"KDS((kichad_design (version 1) (project bad_stroke)
           (sheet root (parent none) (file "bad_stroke.kicad_sch") (title "Bad"))
           (wire w (sheet root) (from 1mm 1mm) (to 2mm 1mm)
-            (stroke 0.001mm zigzag))))KDS"
+            (stroke 0.001mm zigzag))))KDS",
+        R"KDS((kichad_design (version 1) (project unresolved_label)
+          (sheet root (parent none) (file "unresolved_label.kicad_sch") (title "Bad"))
+          (label l (sheet root) (scope local) (net MISSING) (at 1mm 1mm)
+            (rotation 0deg) (shape none) (size 1.27mm 1.27mm) (thickness auto)
+            (justify left bottom) (bold false) (italic false))))KDS",
+        R"KDS((kichad_design (version 1) (project bad_label_shape)
+          (sheet root (parent none) (file "bad_label_shape.kicad_sch") (title "Bad"))
+          (label l (sheet root) (scope local) (net MISSING) (at 1mm 1mm)
+            (rotation 0deg) (shape input) (size 1.27mm 1.27mm) (thickness auto)
+            (justify left bottom) (bold false) (italic false))))KDS"
     };
 
     for( const std::string& program : programs )

@@ -143,6 +143,9 @@ boundary. KDS authors endpoints rather than KiCad's signed bus-entry size, carri
 sheet ownership and stable human-readable IDs, and lowers styling into bounded native stroke,
 junction-diameter, and RGBA fields. The reconciler proves kind/UUID agreement before touching an
 existing direct item, so an unmanaged collision or stale kind aborts instead of claiming user data.
+Local and global labels travel as the same typed drawing IR but reference an already resolved KDS
+net; the planner derives native label text and scope-specific native kind from that reference.
+Hierarchical labels continue to derive from sheet pins, keeping connectivity in one representation.
 
 Project-local library declarations compile into complete native `sym-lib-table` and
 `fp-lib-table` artifacts. KiCad's library-table parser validates the generated type, version, and

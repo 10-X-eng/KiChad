@@ -517,6 +517,61 @@ std::string junctionExpression( const JSON& aDrawing, const std::string& aUuid )
 }
 
 
+std::string labelExpression( const JSON& aDrawing, const std::string& aNativeKind,
+                             const std::string& aUuid )
+{
+    const JSON& position = aDrawing.at( "position" );
+    const JSON& size = aDrawing.at( "size" );
+    const JSON& justify = aDrawing.at( "justify" );
+    const int64_t thickness = aDrawing.at( "thicknessNm" ).get<int64_t>();
+    const std::string horizontal = justify.at( "horizontal" ).get<std::string>();
+    const std::string vertical = justify.at( "vertical" ).get<std::string>();
+    std::ostringstream output;
+    output << '(' << aNativeKind << ' ' << quoted( aDrawing.at( "net" ).get<std::string>() )
+           << "\n";
+
+    if( aNativeKind == "global_label" )
+        output << "    (shape " << aDrawing.at( "shape" ).get<std::string>() << ")\n";
+
+    output << "    (at " << millimetres( position.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( position.at( "yNm" ).get<int64_t>() ) << ' '
+           << aDrawing.at( "rotationDegrees" ).get<int>() << ")\n"
+           << "    (effects\n"
+           << "      (font\n"
+           << "        (size " << millimetres( size.at( "xNm" ).get<int64_t>() ) << ' '
+           << millimetres( size.at( "yNm" ).get<int64_t>() ) << ")\n";
+
+    if( thickness != 0 )
+        output << "        (thickness " << millimetres( thickness ) << ")\n";
+
+    if( aDrawing.at( "bold" ).get<bool>() )
+        output << "        (bold yes)\n";
+
+    if( aDrawing.at( "italic" ).get<bool>() )
+        output << "        (italic yes)\n";
+
+    output << "      )\n";
+
+    if( horizontal != "center" || vertical != "center" )
+    {
+        output << "      (justify";
+
+        if( horizontal != "center" )
+            output << ' ' << horizontal;
+
+        if( vertical != "center" )
+            output << ' ' << vertical;
+
+        output << ")\n";
+    }
+
+    output << "    )\n"
+           << "    (uuid " << quoted( aUuid ) << ")\n"
+           << "  )";
+    return output.str();
+}
+
+
 bool validSheetShape( const JSON& aSheet )
 {
     if( !aSheet.is_object() || !aSheet.contains( "id" ) || !aSheet["id"].is_string()
@@ -574,6 +629,40 @@ bool validDrawingShape( const JSON& aDrawing )
     }
 
     const std::string kind = aDrawing["kind"].get<std::string>();
+
+    if( kind == "label" )
+    {
+        if( !aDrawing.contains( "scope" ) || !aDrawing["scope"].is_string()
+            || ( aDrawing["scope"] != "local" && aDrawing["scope"] != "global" )
+            || !aDrawing.contains( "net" ) || !aDrawing["net"].is_string()
+            || !aDrawing.contains( "position" ) || !aDrawing["position"].is_object()
+            || !aDrawing["position"].contains( "xNm" )
+            || !aDrawing["position"]["xNm"].is_number_integer()
+            || !aDrawing["position"].contains( "yNm" )
+            || !aDrawing["position"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "rotationDegrees" )
+            || !aDrawing["rotationDegrees"].is_number_integer()
+            || !aDrawing.contains( "shape" ) || !aDrawing["shape"].is_string()
+            || !aDrawing.contains( "size" ) || !aDrawing["size"].is_object()
+            || !aDrawing["size"].contains( "xNm" )
+            || !aDrawing["size"]["xNm"].is_number_integer()
+            || !aDrawing["size"].contains( "yNm" )
+            || !aDrawing["size"]["yNm"].is_number_integer()
+            || !aDrawing.contains( "thicknessNm" )
+            || !aDrawing["thicknessNm"].is_number_integer()
+            || !aDrawing.contains( "justify" ) || !aDrawing["justify"].is_object()
+            || !aDrawing["justify"].contains( "horizontal" )
+            || !aDrawing["justify"]["horizontal"].is_string()
+            || !aDrawing["justify"].contains( "vertical" )
+            || !aDrawing["justify"]["vertical"].is_string()
+            || !aDrawing.contains( "bold" ) || !aDrawing["bold"].is_boolean()
+            || !aDrawing.contains( "italic" ) || !aDrawing["italic"].is_boolean() )
+        {
+            return false;
+        }
+
+        return true;
+    }
 
     if( kind == "junction" )
     {
@@ -1004,13 +1093,20 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
 
         const std::string kind = drawing["kind"].get<std::string>();
         const std::string id = drawing["id"].get<std::string>();
-        const std::string uuid = stableUuid( project, "schematic_" + kind, id );
-        JSON planned = { { "kind", kind },
+        const std::string nativeKind = kind == "label"
+                                               ? ( drawing["scope"] == "local" ? "label"
+                                                                                : "global_label" )
+                                               : kind;
+        const std::string uuid = stableUuid( project, "schematic_" + nativeKind, id );
+        const std::string source = kind == "junction"
+                                           ? junctionExpression( drawing, uuid )
+                                   : kind == "label"
+                                           ? labelExpression( drawing, nativeKind, uuid )
+                                           : schematicLineExpression( drawing, uuid );
+        JSON planned = { { "kind", nativeKind },
                          { "logicalId", id },
                          { "uuid", uuid },
-                         { "source", kind == "junction"
-                                               ? junctionExpression( drawing, uuid )
-                                               : schematicLineExpression( drawing, uuid ) } };
+                         { "source", source } };
         drawingsBySheet[drawing["sheet"].get<std::string>()].push_back(
                 std::move( planned ) );
     }

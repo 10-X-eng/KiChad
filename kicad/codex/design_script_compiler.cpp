@@ -1102,6 +1102,210 @@ JSON compileSchematicJunction( const DOCUMENT& aDocument, size_t aNode,
 }
 
 
+JSON compileSchematicLabel( const DOCUMENT& aDocument, size_t aNode,
+                            KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes()[aNode];
+    std::string id;
+
+    if( node.children.size() < 2 || !scalarText( aDocument, node.children[1], id )
+        || !validIdentifier( id ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_label",
+                    "label requires a bounded stable ID" );
+        return JSON::object();
+    }
+
+    JSON label = { { "kind", "label" }, { "id", id } };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "error", "duplicate_schematic_label_field",
+                        "label field '" + head + "' occurs more than once" );
+            continue;
+        }
+
+        if( head == "sheet" || head == "net" || head == "scope" || head == "shape" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( head == "sheet" && !validIdentifier( value ) )
+                || ( head == "net"
+                     && ( value.empty() || value.size() > MAX_IDENTIFIER_BYTES ) )
+                || ( head == "scope" && value != "local" && value != "global" )
+                || ( head == "shape" && value != "none" && value != "input"
+                     && value != "output" && value != "bidirectional"
+                     && value != "tri_state" && value != "passive" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_" + head,
+                            "label " + head + " has an invalid semantic value" );
+            }
+            else
+            {
+                label[head] = value;
+            }
+
+            continue;
+        }
+
+        if( head == "at" )
+        {
+            JSON point;
+
+            if( !parseSchematicPoint( aDocument, child, point ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_position",
+                            "label at requires two distances from 0 to 2 m" );
+            }
+            else
+            {
+                label["position"] = std::move( point );
+            }
+
+            continue;
+        }
+
+        if( head == "rotation" )
+        {
+            std::string value;
+            double degrees = 0.0;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || !parseFiniteDecimal( value, degrees, "deg" )
+                || ( degrees != 0.0 && degrees != 90.0 && degrees != 180.0
+                     && degrees != 270.0 ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_rotation",
+                            "label rotation must be 0deg, 90deg, 180deg, or 270deg" );
+            }
+            else
+            {
+                label["rotationDegrees"] = static_cast<int>( degrees );
+            }
+
+            continue;
+        }
+
+        if( head == "size" )
+        {
+            JSON size;
+
+            if( !parseSchematicPoint( aDocument, child, size )
+                || size["xNm"].get<int64_t>() < 100'000
+                || size["yNm"].get<int64_t>() < 100'000
+                || size["xNm"].get<int64_t>() > 50'000'000
+                || size["yNm"].get<int64_t>() > 50'000'000 )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_size",
+                            "label size requires two dimensions from 0.1 mm through 50 mm" );
+            }
+            else
+            {
+                label["size"] = std::move( size );
+            }
+
+            continue;
+        }
+
+        if( head == "thickness" )
+        {
+            std::string value;
+            int64_t thickness = 0;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "auto"
+                     && ( !parseDistance( value, thickness ) || thickness < 10'000
+                          || thickness > 10'000'000 ) ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_thickness",
+                            "label thickness requires auto or 0.01 mm through 10 mm" );
+            }
+            else
+            {
+                label["thicknessNm"] = value == "auto" ? 0 : thickness;
+            }
+
+            continue;
+        }
+
+        if( head == "justify" )
+        {
+            const DOCUMENT::NODE& justify = aDocument.Nodes()[child];
+            std::string horizontal;
+            std::string vertical;
+
+            if( justify.children.size() != 3
+                || !scalarText( aDocument, justify.children[1], horizontal )
+                || !scalarText( aDocument, justify.children[2], vertical )
+                || ( horizontal != "left" && horizontal != "center"
+                     && horizontal != "right" )
+                || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_justify",
+                            "label justify requires left|center|right and top|center|bottom" );
+            }
+            else
+            {
+                label["justify"] = { { "horizontal", horizontal },
+                                     { "vertical", vertical } };
+            }
+
+            continue;
+        }
+
+        if( head == "bold" || head == "italic" )
+        {
+            std::string value;
+
+            if( !parseSingleValueForm( aDocument, child, value )
+                || ( value != "true" && value != "false" ) )
+            {
+                diagnostic( aResult, "error", "invalid_schematic_label_" + head,
+                            "label " + head + " must be true or false" );
+            }
+            else
+            {
+                label[head] = value == "true";
+            }
+
+            continue;
+        }
+
+        diagnostic( aResult, "error", "unknown_schematic_label_field",
+                    "label supports sheet, scope, net, at, rotation, shape, size, thickness, "
+                    "justify, bold, and italic" );
+    }
+
+    for( const char* required : { "sheet", "scope", "net", "position", "rotationDegrees",
+                                  "shape", "size", "thicknessNm", "justify", "bold",
+                                  "italic" } )
+    {
+        if( !label.contains( required ) )
+        {
+            diagnostic( aResult, "error", "missing_schematic_label_field",
+                        "label " + id + " is missing " + required );
+        }
+    }
+
+    if( label.contains( "scope" ) && label.contains( "shape" )
+        && ( ( label["scope"] == "local" && label["shape"] != "none" )
+             || ( label["scope"] == "global" && label["shape"] == "none" ) ) )
+    {
+        diagnostic( aResult, "error", "invalid_schematic_label_scope_shape",
+                    "local labels require shape none; global labels require an electrical shape" );
+    }
+
+    return label;
+}
+
+
 JSON compileSource( const DOCUMENT& aDocument, size_t aNode,
                     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult,
                     std::vector<std::string>& aReferencedComponents )
@@ -2590,6 +2794,12 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(junction ID (sheet ID) (at X Y) (diameter auto|SIZE) "
                       "(color default|#RRGGBB[AA]))" } },
                   { { "form",
+                      "(label ID (sheet ID) (scope local|global) (net NAME) (at X Y) "
+                      "(rotation ORTHOGONAL) (shape none|input|output|bidirectional|tri_state|passive) "
+                      "(size W H) (thickness auto|SIZE) "
+                      "(justify left|center|right top|center|bottom) "
+                      "(bold true|false) (italic true|false))" } },
+                  { { "form",
                       "(sheet ID (parent none|ID) (file PROJECT_PATH.kicad_sch) "
                       "(title TEXT) [(at X Y) (size W H) "
                       "(pin NAME input|output|bidirectional|tri_state|passive "
@@ -2894,6 +3104,19 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "junction" )
         {
             JSON drawing = compileSchematicJunction( *document, formNode, result );
+            const std::string id = drawing.value( "id", "" );
+
+            if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_schematic_drawing_id",
+                            "schematic drawing ID " + id + " occurs more than once" );
+            }
+
+            result.ir["schematic"]["drawings"].emplace_back( std::move( drawing ) );
+        }
+        else if( form == "label" )
+        {
+            JSON drawing = compileSchematicLabel( *document, formNode, result );
             const std::string id = drawing.value( "id", "" );
 
             if( !id.empty() && !schematicDrawingIds.emplace( id ).second )
@@ -3350,6 +3573,16 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             diagnostic( result, "error", "unresolved_schematic_drawing_sheet",
                         "schematic drawing " + drawing.value( "id", "" )
                                 + " references undeclared sheet " + sheet );
+        }
+
+        if( drawing.value( "kind", "" ) == "label"
+            && drawing.contains( "net" ) && drawing["net"].is_string()
+            && !netNames.contains( drawing["net"].get<std::string>() ) )
+        {
+            diagnostic( result, "error", "unresolved_schematic_label_net",
+                        "schematic label " + drawing.value( "id", "" )
+                                + " references undeclared net "
+                                + drawing["net"].get<std::string>() );
         }
     }
 

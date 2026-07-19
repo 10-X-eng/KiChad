@@ -125,7 +125,8 @@ bool validManagedItem( const JSON& aItem )
            && aItem.contains( "kind" ) && aItem["kind"].is_string()
            && ( aItem["kind"] == "sheet" || aItem["kind"] == "hierarchical_label"
                 || aItem["kind"] == "symbol" || aItem["kind"] == "global_label"
-                || aItem["kind"] == "no_connect" || aItem["kind"] == "wire"
+                || aItem["kind"] == "label" || aItem["kind"] == "no_connect"
+                || aItem["kind"] == "wire"
                 || aItem["kind"] == "bus" || aItem["kind"] == "bus_entry"
                 || aItem["kind"] == "junction" || aItem["kind"] == "lib_symbol" )
            && aItem.contains( "logicalId" ) && aItem["logicalId"].is_string()

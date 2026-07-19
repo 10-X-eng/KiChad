@@ -176,6 +176,12 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     (unit 1 (sheet root) (at 80mm 40mm) (rotation 90deg) (mirror xy)))
   (net SIGNAL (pin R1 1 1) (pin R2 1 1))
   (no_connect R1 1 2)
+  (label signal-local (sheet root) (scope local) (net SIGNAL) (at 45mm 40mm)
+    (rotation 0deg) (shape none) (size 1.27mm 1.27mm) (thickness auto)
+    (justify left bottom) (bold false) (italic false))
+  (label signal-global (sheet root) (scope global) (net SIGNAL) (at 55mm 40mm)
+    (rotation 180deg) (shape output) (size 1.5mm 1.2mm) (thickness 0.2mm)
+    (justify right center) (bold true) (italic true))
 ))KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
@@ -208,6 +214,7 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_EQUAL( plan.counts["components"].get<int>(), 3 );
     BOOST_CHECK_EQUAL( plan.counts["netEndpoints"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["noConnects"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( plan.counts["drawings"].get<int>(), 2 );
     BOOST_CHECK_EQUAL( plan.counts["librarySymbols"].get<int>(), 1 );
     const std::string native = plan.operations[0]["files"][0]["newDocumentSource"];
     BOOST_CHECK_NE( native.find( "(symbol \"Local:R\"" ), std::string::npos );
@@ -220,6 +227,13 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(at 40 43.81)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(at 80 40 270)" ), std::string::npos );
     BOOST_CHECK_EQUAL( native.find( "(mirror x y)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(label \"SIGNAL\"" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(global_label \"SIGNAL\"\n    (shape output)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(size 1.5 1.2)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(thickness 0.2)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(bold yes)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(italic yes)" ), std::string::npos );
 }
 
 
