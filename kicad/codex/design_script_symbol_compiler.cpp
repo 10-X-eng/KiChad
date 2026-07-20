@@ -12,6 +12,7 @@
 #include "design_script_symbol_compiler.h"
 
 #include "design_script_symbol_graphics_compiler.h"
+#include "design_script_symbol_text_compiler.h"
 
 #include <cctype>
 #include <charconv>
@@ -29,6 +30,7 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT;
 using GRAPHICS_COMPILER = KICHAD::DESIGN_SCRIPT_SYMBOL_GRAPHICS_COMPILER;
+using TEXT_COMPILER = KICHAD::DESIGN_SCRIPT_SYMBOL_TEXT_COMPILER;
 
 constexpr size_t MAX_TEXT_BYTES = 4096;
 constexpr size_t MAX_SYMBOL_PROPERTIES = 256;
@@ -410,6 +412,23 @@ JSON compileUnit( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
 
             unit["items"].push_back( std::move( graphic.item ) );
         }
+        else if( TEXT_COMPILER::IsText( head ) )
+        {
+            TEXT_COMPILER::RESULT text = TEXT_COMPILER::Compile( aDocument, child );
+
+            for( const JSON& entry : text.diagnostics )
+                aResult.diagnostics.push_back( entry );
+
+            const std::string itemId = text.item.value( "id", "" );
+
+            if( !itemId.empty() && !itemIds.emplace( itemId ).second )
+            {
+                diagnostic( aResult, "duplicate_authored_symbol_item",
+                            "symbol unit item ID " + itemId + " occurs more than once" );
+            }
+
+            unit["items"].push_back( std::move( text.item ) );
+        }
         else if( head == "pin" )
         {
             if( number == 0 )
@@ -424,7 +443,7 @@ JSON compileUnit( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
         else
         {
             diagnostic( aResult, "unknown_authored_symbol_unit_item",
-                        "symbol unit supports body_style, vector graphics, and pin" );
+                        "symbol unit supports body_style, graphics, text, text_box, and pin" );
         }
     }
 

@@ -41,6 +41,8 @@ set( KICAD_SRCS
     codex/design_script_symbol_graphics_compiler.cpp
     codex/design_script_symbol_graphics_generator.cpp
     codex/design_script_symbol_library_generator.cpp
+    codex/design_script_symbol_text_compiler.cpp
+    codex/design_script_symbol_text_generator.cpp
     codex/design_script_symbol_resolver.cpp
     codex/fabrication_artifact_validator.cpp
     codex/legacy_bom_artifact_validator.cpp

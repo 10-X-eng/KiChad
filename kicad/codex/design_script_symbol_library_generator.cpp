@@ -12,6 +12,7 @@
 #include "design_script_symbol_library_generator.h"
 
 #include "design_script_symbol_graphics_generator.h"
+#include "design_script_symbol_text_generator.h"
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
@@ -30,6 +31,7 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT;
 using GRAPHICS_GENERATOR = KICHAD::DESIGN_SCRIPT_SYMBOL_GRAPHICS_GENERATOR;
+using TEXT_GENERATOR = KICHAD::DESIGN_SCRIPT_SYMBOL_TEXT_GENERATOR;
 
 constexpr size_t MAX_NATIVE_LIBRARY_BYTES = 16 * 1024 * 1024;
 
@@ -281,7 +283,8 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         {
             const std::string kind = item.value( "kind", "" );
             const bool rendered = kind == "pin" ? renderPin( item, aSource )
-                                  : GRAPHICS_GENERATOR::Render( item, aSource );
+                                  : GRAPHICS_GENERATOR::Render( item, aSource )
+                                    || TEXT_GENERATOR::Render( item, aSource );
 
             if( !rendered )
                 return false;

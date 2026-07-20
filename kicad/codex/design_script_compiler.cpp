@@ -6683,6 +6683,12 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(polyline ID (point X Y)...) "
                       "[(private BOOL)] [(stroke WIDTH STYLE [(color R G B A)])] "
                       "[(fill TYPE [(color R G B A)])] | "
+                      "(text ID TEXT (at X Y) [(rotation ANGLE)] [(size WIDTH HEIGHT)] "
+                      "[(font stroke|NAME)] [(thickness auto|DISTANCE)] [(bold BOOL)] "
+                      "[(italic BOOL)] [(line_spacing NUMBER)] [(color default|R G B A)] "
+                      "[(justify left|center|right top|center|bottom)] [(hyperlink URI)]) | "
+                      "(text_box ID TEXT (at X Y) (box_size WIDTH HEIGHT) "
+                      "[(margins LEFT TOP RIGHT BOTTOM)] [TEXT_FIELDS] [STROKE] [FILL]) | "
                       "(pin NUMBER (name TEXT) (electrical TYPE) (shape SHAPE) "
                       "(at X Y) (orientation right|down|left|up) (length DISTANCE) "
                       "(hidden BOOL) (name_size DISTANCE) (number_size DISTANCE)) ...))" } },
