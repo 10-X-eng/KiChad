@@ -6725,6 +6725,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(layer inner|InN.Cu|B.Cu (shape SHAPE) (size W H) "
                       "[(custom (anchor circle|rect) "
                       "(line|rectangle|arc|circle|polygon|bezier ID ...)...)] ...)...)] "
+                      "[(backdrills (top (diameter D) (stop_layer InN.Cu)) "
+                      "(bottom (diameter D) (stop_layer InN.Cu)))] "
                       "[(hole_treatment "
                       "(tenting (front inherit|open|tented) (back inherit|open|tented)) "
                       "(post_machining front|back counterbore|countersink "

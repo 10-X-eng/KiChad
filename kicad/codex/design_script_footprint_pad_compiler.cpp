@@ -14,6 +14,7 @@
 #include "design_script_footprint_custom_pad_compiler.h"
 #include "design_script_footprint_hole_treatment_compiler.h"
 #include "design_script_footprint_padstack_compiler.h"
+#include "design_script_via_backdrill_compiler.h"
 
 #include <algorithm>
 #include <cctype>
@@ -34,6 +35,7 @@ using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::RESULT;
 using CUSTOM_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER;
 using HOLE_TREATMENT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_HOLE_TREATMENT_COMPILER;
 using PADSTACK_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PADSTACK_COMPILER;
+using BACKDRILL_COMPILER = KICHAD::DESIGN_SCRIPT_VIA_BACKDRILL_COMPILER;
 
 constexpr int64_t MAX_COORDINATE_NM = 2'000'000'000LL;
 constexpr int64_t MAX_PAD_DIMENSION_NM = 1'000'000'000LL;
@@ -399,7 +401,7 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
         { "trapezoidDelta", { { "xNm", 0 }, { "yNm", 0 } } },
         { "roundrectRadiusNm", nullptr }, { "chamferRatioPpm", nullptr },
         { "chamferCorners", JSON::array() }, { "custom", nullptr }, { "padstack", nullptr },
-        { "holeTreatment", nullptr },
+        { "backdrills", nullptr }, { "holeTreatment", nullptr },
         { "property", "none" },
         { "pinFunction", "" }, { "pinType", "" }, { "dieLengthNm", 0 },
         { "solderMaskMarginNm", nullptr }, { "solderPasteMarginNm", nullptr },
@@ -494,6 +496,18 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
                 result.diagnostics.push_back( std::move( entry ) );
 
             result.pad["holeTreatment"] = std::move( treatment.treatment );
+            continue;
+        }
+
+        if( head == "backdrills" )
+        {
+            BACKDRILL_COMPILER::RESULT backdrills =
+                    BACKDRILL_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : backdrills.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.pad["backdrills"] = std::move( backdrills.backdrills );
             continue;
         }
 
@@ -801,6 +815,66 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
     {
         diagnostic( result, "invalid_authored_footprint_pad_drill_size",
                     "drill dimensions cannot exceed the pad dimensions" );
+    }
+
+    if( result.pad["backdrills"].is_object() )
+    {
+        if( type != "thru_hole" || !result.pad["drill"].is_object() )
+        {
+            diagnostic( result, "invalid_authored_footprint_pad_backdrill_type",
+                        "top/bottom backdrilling requires a plated through-hole pad" );
+        }
+        else
+        {
+            const int64_t primaryDrill = std::max(
+                    result.pad["drill"]["xNm"].get<int64_t>(),
+                    result.pad["drill"]["yNm"].get<int64_t>() );
+            int topStop = -1;
+            int bottomStop = -1;
+
+            for( const char* side : { "top", "bottom" } )
+            {
+                const JSON& operation = result.pad["backdrills"][side];
+
+                if( !operation.is_object() )
+                    continue;
+
+                if( operation.value( "diameterNm", int64_t{ 0 } ) <= primaryDrill )
+                    diagnostic( result, "invalid_authored_footprint_pad_backdrill_diameter",
+                                "backdrill diameter must exceed the primary pad drill" );
+
+                const std::string stopLayer = operation.value( "stopLayer", "" );
+                int stopIndex = -1;
+
+                if( stopLayer.starts_with( "In" ) && stopLayer.ends_with( ".Cu" ) )
+                {
+                    const std::string_view number(
+                            stopLayer.data() + 2, stopLayer.size() - 5 );
+                    const std::from_chars_result parsed = std::from_chars(
+                            number.data(), number.data() + number.size(), stopIndex );
+
+                    if( parsed.ec != std::errc()
+                        || parsed.ptr != number.data() + number.size()
+                        || stopIndex < 1 || stopIndex > 30 )
+                    {
+                        stopIndex = -1;
+                    }
+                }
+
+                if( stopIndex < 1 )
+                    diagnostic( result, "invalid_authored_footprint_pad_backdrill_stop_layer",
+                                "backdrill stop_layer must be In1.Cu through In30.Cu" );
+
+                if( side[0] == 't' )
+                    topStop = stopIndex;
+                else
+                    bottomStop = stopIndex;
+            }
+
+            if( topStop > 0 && bottomStop > 0 && topStop >= bottomStop )
+                diagnostic( result, "overlapping_authored_footprint_pad_backdrills",
+                            "top and bottom backdrills must leave a plated layer span" );
+        }
     }
 
     if( result.pad["holeTreatment"].is_object() )

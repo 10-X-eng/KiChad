@@ -133,6 +133,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_backdrill_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_component_classes_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_component_classes_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_compiler.cpp

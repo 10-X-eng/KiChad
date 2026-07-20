@@ -967,11 +967,16 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
     if( result.footprint["stackup"].is_array() )
     {
         std::set<std::string> stackupLayers;
+        std::map<std::string, size_t> stackupPositions;
 
         for( const JSON& layer : result.footprint["stackup"] )
         {
             if( layer.is_string() )
-                stackupLayers.emplace( layer.get<std::string>() );
+            {
+                const std::string layerName = layer.get<std::string>();
+                stackupLayers.emplace( layerName );
+                stackupPositions.emplace( layerName, stackupPositions.size() );
+            }
         }
 
         for( const JSON& zone : result.footprint["zones"] )
@@ -1049,6 +1054,48 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
                                         + " outside the footprint custom stackup" );
                 }
             }
+        }
+
+        for( const JSON& pad : result.footprint["pads"] )
+        {
+            if( !pad.is_object() || !pad.contains( "backdrills" )
+                || !pad["backdrills"].is_object() )
+            {
+                continue;
+            }
+
+            const JSON& backdrills = pad["backdrills"];
+            const std::string padId = pad.value( "id", "" );
+            int topStop = -1;
+            int bottomStop = -1;
+
+            for( const char* side : { "top", "bottom" } )
+            {
+                if( !backdrills[side].is_object() )
+                    continue;
+
+                const std::string stopLayer = backdrills[side].value( "stopLayer", "" );
+                const auto position = stackupPositions.find( stopLayer );
+
+                if( position == stackupPositions.end() )
+                {
+                    diagnostic( result,
+                                "authored_footprint_backdrill_outside_custom_stackup",
+                                "pad " + padId + " backdrill stops on " + stopLayer
+                                        + " outside the footprint custom stackup" );
+                    continue;
+                }
+
+                if( side[0] == 't' )
+                    topStop = static_cast<int>( position->second );
+                else
+                    bottomStop = static_cast<int>( position->second );
+            }
+
+            if( topStop >= 0 && bottomStop >= 0 && topStop >= bottomStop )
+                diagnostic( result, "overlapping_authored_footprint_pad_backdrills",
+                            "pad " + padId
+                                    + " top and bottom backdrills must leave a plated layer span" );
         }
     }
 

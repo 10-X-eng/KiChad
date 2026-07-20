@@ -33,6 +33,7 @@ set( KICAD_SRCS
     codex/design_script_board_compiler.cpp
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
+    codex/design_script_footprint_backdrill_generator.cpp
     codex/design_script_footprint_component_classes_compiler.cpp
     codex/design_script_footprint_component_classes_generator.cpp
     codex/design_script_footprint_compiler.cpp

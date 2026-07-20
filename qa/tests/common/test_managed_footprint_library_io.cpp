@@ -158,6 +158,9 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
     (reference J) (value HEADER_1X01) (attributes (through_hole true))
     (pad p1 (number 1) (type thru_hole) (shape circle) (at 0mm 0mm)
       (size 2mm 2mm) (layers all_copper all_mask) (drill round 1mm)
+      (backdrills
+        (top (diameter 1.3mm) (stop_layer In1.Cu))
+        (bottom (diameter 1.3mm) (stop_layer In2.Cu)))
       (remove_unused_layers true) (keep_end_layers true)
       (padstack front_inner_back
         (layer inner (shape custom) (size 0.6mm 0.6mm)

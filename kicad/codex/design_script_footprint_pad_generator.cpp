@@ -11,6 +11,7 @@
 
 #include "design_script_footprint_pad_generator.h"
 
+#include "design_script_footprint_backdrill_generator.h"
 #include "design_script_footprint_custom_pad_generator.h"
 #include "design_script_footprint_hole_treatment_generator.h"
 #include "design_script_footprint_padstack_generator.h"
@@ -26,6 +27,7 @@ namespace
 {
 
 using JSON = nlohmann::json;
+using BACKDRILL_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_BACKDRILL_GENERATOR;
 using CUSTOM_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_GENERATOR;
 using HOLE_TREATMENT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_HOLE_TREATMENT_GENERATOR;
 using PADSTACK_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PADSTACK_GENERATOR;
@@ -241,6 +243,19 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
                        + millimetres( offsetY ) + ")\n\t\t";
 
         aSource += ")\n";
+    }
+
+    if( aPad.contains( "backdrills" ) && aPad["backdrills"].is_object() )
+    {
+        if( type != "thru_hole"
+            || !BACKDRILL_GENERATOR::Render( aPad["backdrills"], aSource ) )
+        {
+            return false;
+        }
+    }
+    else if( !aPad.contains( "backdrills" ) || !aPad["backdrills"].is_null() )
+    {
+        return false;
     }
 
     const std::string property = aPad.value( "property", "none" );

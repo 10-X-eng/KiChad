@@ -155,7 +155,7 @@ mandatory/custom fields, all native vector/text graphics, and typed pins; the ge
 installed, native-loader validated, journaled, and restored exactly after an injected rejection. It also compiles a
 deterministic KDS-owned footprint library from semantic metadata, standard/custom/chamfered
 SMD/connect/PTH/NPTH pads, front/inner/back and named-inner padstacks with per-layer custom copper,
-tenting and post-machining,
+top/bottom backdrilling, tenting, and post-machining,
 fixed and curved artwork, polygons and fills, rich text and text boxes, local
 pad and footprint-wide mask/paste/clearance/thermal policy, custom copper stacks, private layers,
 stable-ID displayable metadata properties, native component-class membership, jumper/net-tie groups, footprint-local copper zones and

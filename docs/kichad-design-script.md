@@ -1178,6 +1178,9 @@ overrides, with unspecified copper layers inheriting the front geometry exactly 
 (pad plated_pin
   (number 1) (type thru_hole) (shape circle) (at 0mm 0mm)
   (size 2mm 2mm) (layers all_copper all_mask) (drill round 1mm)
+  (backdrills
+    (top (diameter 1.3mm) (stop_layer In1.Cu))
+    (bottom (diameter 1.3mm) (stop_layer In2.Cu)))
   (padstack front_inner_back
     (layer inner
       (shape custom) (size 0.6mm 0.6mm)
@@ -1201,6 +1204,10 @@ delta, rounding/chamfer, custom copper primitives, clearance, zone connection, t
 width/angle, and thermal gap. Per-layer custom geometry uses the same named `custom` primitives as
 a top-level custom pad. It omits `clearance` because KiCad stores that zone-clearance mode once for
 the whole pad rather than per copper layer.
+`backdrills` names manufacturing sides rather than KiCad's secondary/tertiary storage fields. Each
+operation requires a diameter larger than the primary drill and an inner-copper stop layer. When
+both sides are present, they must leave at least one non-overlapping plated span; a custom footprint
+stack also requires both stop layers to exist in that exact stack.
 `hole_treatment` uses manufacturing words rather than inverted booleans: `open` means a solder-mask
 opening, `tented` means solder mask covers that side, and `inherit` leaves board policy in control.
 Counterbores require diameter and depth; countersinks require diameter and included angle. The
