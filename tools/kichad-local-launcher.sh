@@ -8,10 +8,10 @@ launcher_name="$(basename -- "$0")"
 
 case "$launcher_name" in
     kichad)
-        target="kicad"
+        target_name="kicad.real"
         ;;
     kichad-cli)
-        target="kicad-cli"
+        target_name="kicad-cli.real"
         ;;
     *)
         echo "Unsupported KiChad launcher name: ${launcher_name}" >&2
@@ -19,11 +19,13 @@ case "$launcher_name" in
         ;;
 esac
 
-if [[ ! -x "${launcher_dir}/${target}" ]]; then
-    echo "KiChad target is missing: ${launcher_dir}/${target}" >&2
+target="${launcher_dir}/${target_name}"
+
+if [[ ! -x "$target" ]]; then
+    echo "KiChad target is missing: ${target}" >&2
     exit 1
 fi
 
 export LD_LIBRARY_PATH="${install_root}/lib:${install_root}/lib/kicad${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-exec "${launcher_dir}/${target}" "$@"
+exec "$target" "$@"

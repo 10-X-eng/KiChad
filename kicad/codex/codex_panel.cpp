@@ -11,6 +11,7 @@
 
 #include "codex_panel.h"
 
+#include <bitmaps.h>
 #include <build_version.h>
 
 #include <algorithm>
@@ -186,8 +187,26 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     statusRow->Add( m_cancelLoginButton, 0, wxALIGN_CENTER_VERTICAL );
     root->Add( statusRow, 0, wxEXPAND | wxALL, FromDIP( 8 ) );
 
+    wxBoxSizer* conversationRow = new wxBoxSizer( wxHORIZONTAL );
     m_processStatus = new wxStaticText( this, wxID_ANY, _( "Codex service: connecting..." ) );
-    root->Add( m_processStatus, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
+    m_revertButton = new wxButton( this, wxID_ANY, wxEmptyString, wxDefaultPosition,
+                                   wxDefaultSize, wxBU_EXACTFIT );
+    m_revertButton->SetBitmap( KiBitmapBundle( BITMAPS::undo ) );
+    m_revertButton->SetToolTip( _( "Restore the project to before the last Codex turn" ) );
+    m_revertButton->SetName( _( "Undo Codex changes" ) );
+    m_revertButton->Disable();
+    m_newConversationButton = new wxButton( this, wxID_ANY, wxEmptyString, wxDefaultPosition,
+                                            wxDefaultSize, wxBU_EXACTFIT );
+    m_newConversationButton->SetBitmap( KiBitmapBundle( BITMAPS::new_document ) );
+    m_newConversationButton->SetToolTip( _( "Start a new Codex conversation" ) );
+    m_newConversationButton->SetName( _( "New conversation" ) );
+    m_newConversationButton->Disable();
+    conversationRow->Add( m_processStatus, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP( 8 ) );
+    conversationRow->Add( m_revertButton, 0,
+                          wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP( 4 ) );
+    conversationRow->Add( m_newConversationButton, 0, wxALIGN_CENTER_VERTICAL );
+    root->Add( conversationRow, 0,
+               wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
 
     wxBoxSizer* modelRow = new wxBoxSizer( wxHORIZONTAL );
     m_modelChoice = new wxChoice( this, wxID_ANY );
@@ -214,16 +233,10 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     root->Add( m_input, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
 
     wxBoxSizer* actionRow = new wxBoxSizer( wxHORIZONTAL );
-    m_newConversationButton = new wxButton( this, wxID_ANY, _( "New conversation" ) );
-    m_revertButton = new wxButton( this, wxID_ANY, _( "Revert turn" ) );
     m_stopButton = new wxButton( this, wxID_ANY, _( "Stop" ) );
     m_sendButton = new wxButton( this, wxID_ANY, _( "Send" ) );
-    m_newConversationButton->Disable();
-    m_revertButton->Disable();
     m_stopButton->Disable();
     m_sendButton->Disable();
-    actionRow->Add( m_newConversationButton, 0, wxRIGHT, FromDIP( 6 ) );
-    actionRow->Add( m_revertButton );
     actionRow->AddStretchSpacer();
     actionRow->Add( m_stopButton, 0, wxRIGHT, FromDIP( 6 ) );
     actionRow->Add( m_sendButton );
