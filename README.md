@@ -153,7 +153,8 @@ deterministic KDS-owned symbol library from AI-native metadata, properties, comm
 named and De Morgan body styles, unit display names and locking, footprint filters, fully laid-out
 mandatory/custom fields, all native vector/text graphics, and typed pins; the generated current KiCad 10 format is atomically
 installed, native-loader validated, journaled, and restored exactly after an injected rejection. It also compiles a
-deterministic KDS-owned footprint library from semantic metadata, standard SMD/connect/PTH/NPTH
+deterministic KDS-owned footprint library from semantic metadata, standard/custom/chamfered
+SMD/connect/PTH/NPTH pads, front/inner/back and named-inner padstacks, tenting and post-machining,
 fixed and curved artwork, polygons and fills, rich text and text boxes, local
 mask/paste/clearance/thermal policy, jumper/net-tie groups, and project-local 3D model transforms;
 the current KiCad 10 `.kicad_mod` artifacts are whole-library swapped, native-loader

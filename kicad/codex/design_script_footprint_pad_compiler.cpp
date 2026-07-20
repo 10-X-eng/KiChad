@@ -11,6 +11,10 @@
 
 #include "design_script_footprint_pad_compiler.h"
 
+#include "design_script_footprint_custom_pad_compiler.h"
+#include "design_script_footprint_hole_treatment_compiler.h"
+#include "design_script_footprint_padstack_compiler.h"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -27,6 +31,9 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::RESULT;
+using CUSTOM_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER;
+using HOLE_TREATMENT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_HOLE_TREATMENT_COMPILER;
+using PADSTACK_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PADSTACK_COMPILER;
 
 constexpr int64_t MAX_COORDINATE_NM = 2'000'000'000LL;
 constexpr int64_t MAX_PAD_DIMENSION_NM = 1'000'000'000LL;
@@ -335,6 +342,34 @@ bool compileDrill( const DOCUMENT& aDocument, size_t aNode, JSON& aDrill )
     return true;
 }
 
+
+bool compileChamfers( const DOCUMENT& aDocument, size_t aNode, JSON& aCorners )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+    static const std::set<std::string> allowed = {
+        "top_left", "top_right", "bottom_left", "bottom_right"
+    };
+    std::set<std::string> unique;
+
+    if( node.children.size() < 2 || node.children.size() > 5 )
+        return false;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        std::string corner;
+
+        if( !scalar( aDocument, node.children[index], corner ) || !allowed.contains( corner )
+            || !unique.emplace( corner ).second )
+        {
+            return false;
+        }
+
+        aCorners.push_back( corner );
+    }
+
+    return true;
+}
+
 } // namespace
 
 
@@ -362,7 +397,10 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
         { "rotationTenths", 0 }, { "layers", JSON::array() }, { "drill", nullptr },
         { "shapeOffset", { { "xNm", 0 }, { "yNm", 0 } } },
         { "trapezoidDelta", { { "xNm", 0 }, { "yNm", 0 } } },
-        { "roundrectRadiusNm", nullptr }, { "property", "none" },
+        { "roundrectRadiusNm", nullptr }, { "chamferRatioPpm", nullptr },
+        { "chamferCorners", JSON::array() }, { "custom", nullptr }, { "padstack", nullptr },
+        { "holeTreatment", nullptr },
+        { "property", "none" },
         { "pinFunction", "" }, { "pinType", "" }, { "dieLengthNm", 0 },
         { "solderMaskMarginNm", nullptr }, { "solderPasteMarginNm", nullptr },
         { "solderPasteMarginPpm", nullptr }, { "clearanceNm", nullptr },
@@ -421,6 +459,49 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
             if( !compileDrill( aDocument, child, result.pad["drill"] ) )
                 diagnostic( result, "invalid_authored_footprint_pad_drill",
                             "drill requires round DIAMETER or oval WIDTH HEIGHT" );
+
+            continue;
+        }
+
+        if( head == "custom" )
+        {
+            CUSTOM_COMPILER::RESULT custom = CUSTOM_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : custom.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.pad["custom"] = std::move( custom.custom );
+            continue;
+        }
+
+        if( head == "padstack" )
+        {
+            PADSTACK_COMPILER::RESULT padstack = PADSTACK_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : padstack.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.pad["padstack"] = std::move( padstack.padstack );
+            continue;
+        }
+
+        if( head == "hole_treatment" )
+        {
+            HOLE_TREATMENT_COMPILER::RESULT treatment =
+                    HOLE_TREATMENT_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : treatment.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.pad["holeTreatment"] = std::move( treatment.treatment );
+            continue;
+        }
+
+        if( head == "chamfer" )
+        {
+            if( !compileChamfers( aDocument, child, result.pad["chamferCorners"] ) )
+                diagnostic( result, "invalid_authored_footprint_pad_chamfers",
+                            "chamfer requires one through four unique corner names" );
 
             continue;
         }
@@ -490,13 +571,14 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
         else if( head == "shape" )
         {
             static const std::set<std::string> shapes = {
-                "circle", "rect", "oval", "trapezoid", "roundrect"
+                "circle", "rect", "oval", "trapezoid", "roundrect",
+                "chamfered_rect", "custom"
             };
 
             if( !shapes.contains( value ) )
                 diagnostic( result, "invalid_authored_footprint_pad_shape",
-                            "standard pad shape must be circle, rect, oval, trapezoid, or "
-                            "roundrect" );
+                            "pad shape must be circle, rect, oval, trapezoid, roundrect, "
+                            "chamfered_rect, or custom" );
             else
                 result.pad["shape"] = value;
         }
@@ -514,16 +596,26 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
         {
             int64_t parsed = 0;
 
-            if( !distance( value, parsed ) || parsed <= 0
+            if( !distance( value, parsed ) || parsed < 0
                 || parsed > MAX_PAD_DIMENSION_NM )
             {
                 diagnostic( result, "invalid_authored_footprint_pad_roundrect_radius",
-                            "roundrect_radius requires a positive bounded distance" );
+                            "roundrect_radius requires a non-negative bounded distance" );
             }
             else
             {
                 result.pad["roundrectRadiusNm"] = parsed;
             }
+        }
+        else if( head == "chamfer_ratio" )
+        {
+            int64_t parsed = 0;
+
+            if( !decimalPpm( value, 1, 500'000, parsed ) )
+                diagnostic( result, "invalid_authored_footprint_pad_chamfer_ratio",
+                            "chamfer_ratio must be greater than zero and no greater than 0.5" );
+            else
+                result.pad["chamferRatioPpm"] = parsed;
         }
         else if( head == "property" )
         {
@@ -632,21 +724,50 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
                         "circle pads require equal width and height" );
         }
 
-        if( shape == "roundrect" )
+        if( shape == "roundrect" || shape == "chamfered_rect" )
         {
             if( result.pad["roundrectRadiusNm"].is_null()
+                || ( shape == "roundrect"
+                     && result.pad["roundrectRadiusNm"].get<int64_t>() <= 0 )
                 || result.pad["roundrectRadiusNm"].get<int64_t>() * 2
                            > std::min( width, height ) )
             {
                 diagnostic( result, "invalid_authored_footprint_pad_roundrect_radius",
-                            "roundrect radius must be positive and no more than half the "
-                            "shorter pad side" );
+                            "rounded/chamfered radius must be valid for the shorter pad side" );
             }
         }
         else if( !result.pad["roundrectRadiusNm"].is_null() )
         {
             diagnostic( result, "unexpected_authored_footprint_pad_roundrect_radius",
-                        "roundrect_radius is only valid for roundrect pads" );
+                        "roundrect_radius is only valid for roundrect and chamfered_rect pads" );
+        }
+
+        if( shape == "chamfered_rect" )
+        {
+            if( result.pad["chamferRatioPpm"].is_null()
+                || result.pad["chamferCorners"].empty() )
+            {
+                diagnostic( result, "incomplete_authored_footprint_pad_chamfer",
+                            "chamfered_rect requires chamfer_ratio and at least one corner" );
+            }
+        }
+        else if( !result.pad["chamferRatioPpm"].is_null()
+                 || !result.pad["chamferCorners"].empty() )
+        {
+            diagnostic( result, "unexpected_authored_footprint_pad_chamfer",
+                        "chamfer fields are only valid for chamfered_rect pads" );
+        }
+
+        if( shape == "custom" )
+        {
+            if( !result.pad["custom"].is_object() )
+                diagnostic( result, "incomplete_authored_custom_pad",
+                            "custom shape requires one complete custom geometry form" );
+        }
+        else if( !result.pad["custom"].is_null() )
+        {
+            diagnostic( result, "unexpected_authored_custom_pad",
+                        "custom geometry is only valid for custom pads" );
         }
 
         const int64_t deltaX = result.pad["trapezoidDelta"]["xNm"].get<int64_t>();
@@ -663,6 +784,10 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
 
     const bool drilled = type == "thru_hole" || type == "np_thru_hole";
 
+    if( !result.pad["padstack"].is_null() && type != "thru_hole" )
+        diagnostic( result, "invalid_authored_footprint_padstack_type",
+                    "per-layer copper padstacks require a plated through-hole pad" );
+
     if( drilled != result.pad["drill"].is_object() )
         diagnostic( result, "invalid_authored_footprint_pad_drill_semantics",
                     drilled ? "through-hole pads require a drill"
@@ -676,6 +801,35 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
     {
         diagnostic( result, "invalid_authored_footprint_pad_drill_size",
                     "drill dimensions cannot exceed the pad dimensions" );
+    }
+
+    if( result.pad["holeTreatment"].is_object() )
+    {
+        const JSON& treatment = result.pad["holeTreatment"];
+
+        for( const char* field : { "frontPostMachining", "backPostMachining" } )
+        {
+            if( !treatment[field].is_object() )
+                continue;
+
+            if( !drilled || !result.pad["drill"].is_object() )
+            {
+                diagnostic( result, "invalid_authored_footprint_pad_post_machining_type",
+                            "post-machining requires a drilled footprint pad" );
+                continue;
+            }
+
+            const int64_t diameter = treatment[field]["diameterNm"].is_number_integer()
+                                             ? treatment[field]["diameterNm"].get<int64_t>()
+                                             : 0;
+            const int64_t drillDiameter = std::max(
+                    result.pad["drill"]["xNm"].get<int64_t>(),
+                    result.pad["drill"]["yNm"].get<int64_t>() );
+
+            if( diameter <= drillDiameter )
+                diagnostic( result, "invalid_authored_footprint_pad_post_machining_diameter",
+                            "post-machining diameter must exceed the primary drill diameter" );
+        }
     }
 
     if( type == "np_thru_hole" && !result.pad["number"].get_ref<const std::string&>().empty() )

@@ -1124,7 +1124,36 @@ artifacts:
 
 Each `pad` begins with a stable logical ID, distinct from its electrical `number`. Supported types
 are `smd`, `connect`, `thru_hole`, and `np_thru_hole`; standard shapes are `circle`, `rect`, `oval`,
-`trapezoid`, and `roundrect`. Layer tokens are explicit: `F.Cu`, `B.Cu`, their mask/paste/adhesive
+`trapezoid`, and `roundrect`. `chamfered_rect` adds one explicit physical radius, a chamfer ratio,
+and one through four named corners. `custom` has one semantic representation made from named copper
+primitives rather than embedded native syntax:
+
+```scheme
+(pad thermal_tab
+  (number 3) (type smd) (shape custom) (at 0mm 0mm)
+  (rotation 0deg) (size 0.4mm 0.4mm) (layers F.Cu F.Mask F.Paste)
+  (custom
+    (anchor rect)
+    (clearance convex_hull)
+    (line stem (start -0.6mm 0mm) (end 0.6mm 0mm) (width 0.2mm))
+    (circle center (center 0mm 0mm) (radius 0.35mm) (fill true))
+    (polygon tip (point 0.3mm -0.2mm) (point 0.8mm 0mm)
+      (point 0.3mm 0.2mm) (fill true))))
+
+(pad pin_one
+  (number 1) (type smd) (shape chamfered_rect) (at 0mm 0mm)
+  (size 1mm 0.8mm) (layers F.Cu F.Mask F.Paste)
+  (roundrect_radius 0.1mm) (chamfer_ratio 0.25)
+  (chamfer top_left bottom_right))
+```
+
+Custom primitives are `line`, `rectangle`, `arc`, `circle`, `polygon`, and `bezier`. They use the
+same non-ambiguous geometry as footprint artwork: circles are center plus radius, arcs use three
+points, polygons have implicit closure, and curves have two named control points. Primitive width
+defaults to zero; rectangles, circles, and polygons alone accept `fill true|false`. IDs are stable
+KDS handles even though KiCad does not assign UUIDs to a custom pad's internal primitives.
+
+Layer tokens are explicit: `F.Cu`, `B.Cu`, their mask/paste/adhesive
 layers, plus `all_copper` and `all_mask` for the native wildcard sets. Through-hole pads require
 `(drill round DIAMETER)` or `(drill oval WIDTH HEIGHT)` and `all_copper`; surface pads cannot carry
 a drill. NPTH pads cannot have an electrical number. Physical radius, trapezoid, layer-removal, and
@@ -1135,6 +1164,36 @@ pin function/type metadata, and local solder-mask, solder-paste, clearance, zone
 spoke, and thermal-gap overrides. Every override uses `inherit` when the footprint should retain the
 board or zone policy; implicit sentinel values are not exposed to the model. Jumper and net-tie
 groups name existing electrical pad numbers and are checked for duplicate membership.
+
+Plated through-hole pads can replace the single-shape stack with one explicit semantic `padstack`.
+The `front_inner_back` mode requires both `inner` and `B.Cu`; the front shape is the pad's ordinary
+top-level geometry. The `custom` mode accepts sparse `In1.Cu` through `In30.Cu` and `B.Cu`
+overrides, with unspecified copper layers inheriting the front geometry exactly as KiCad does:
+
+```scheme
+(pad plated_pin
+  (number 1) (type thru_hole) (shape circle) (at 0mm 0mm)
+  (size 2mm 2mm) (layers all_copper all_mask) (drill round 1mm)
+  (padstack front_inner_back
+    (layer inner
+      (shape circle) (size 1.5mm 1.5mm)
+      (thermal_spoke_width 0.2mm) (thermal_gap 0.15mm))
+    (layer B.Cu
+      (shape chamfered_rect) (size 1.8mm 1.8mm)
+      (roundrect_radius 0.2mm) (chamfer_ratio 0.2)
+      (chamfer top_left top_right) (zone_connection solid)))
+  (hole_treatment
+    (tenting (front open) (back tented))
+    (post_machining front counterbore
+      (diameter 1.6mm) (depth 0.3mm))))
+```
+
+Every layer entry requires its own shape and size, then may independently set offset, trapezoid
+delta, rounding/chamfer, clearance, zone connection, thermal spoke width/angle, and thermal gap.
+`hole_treatment` uses manufacturing words rather than inverted booleans: `open` means a solder-mask
+opening, `tented` means solder mask covers that side, and `inherit` leaves board policy in control.
+Counterbores require diameter and depth; countersinks require diameter and included angle. The
+finished diameter must exceed the primary drill.
 
 Footprint artwork is semantic rather than a raw s-expression escape hatch. Each primitive has one
 shape-specific representation and a stable logical ID:
@@ -1202,9 +1261,11 @@ instances, snapshots the exact prior whole library, atomically swaps a staging d
 and asks `kicad-cli fp upgrade --force` to parse and resave every file in an isolated directory.
 Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
 the operation and restore the prior library, project tables, schematics, and settings in reverse
-order. Footprint authoring remains intentionally partial: custom and per-layer pad shapes,
-zones/groups, variants, embedded assets, local rules/properties, and complete package-data-to-KLC
-geometry generation remain explicit capability gaps.
+order. Footprint authoring remains intentionally partial: per-layer custom primitive geometry,
+secondary/tertiary drilling, zones/groups, variants, embedded assets, local rules/properties, and
+complete package-data-to-KLC geometry generation remain explicit capability gaps. Plugging,
+filling, capping, and covering are KiCad via—not footprint-pad—file semantics and are tracked under
+the board-via capability.
 
 ### Stackup form
 

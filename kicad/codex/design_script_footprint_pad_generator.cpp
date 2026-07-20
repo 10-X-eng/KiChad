@@ -11,6 +11,10 @@
 
 #include "design_script_footprint_pad_generator.h"
 
+#include "design_script_footprint_custom_pad_generator.h"
+#include "design_script_footprint_hole_treatment_generator.h"
+#include "design_script_footprint_padstack_generator.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <map>
@@ -22,6 +26,9 @@ namespace
 {
 
 using JSON = nlohmann::json;
+using CUSTOM_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_GENERATOR;
+using HOLE_TREATMENT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_HOLE_TREATMENT_GENERATOR;
+using PADSTACK_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PADSTACK_GENERATOR;
 
 
 std::string quoteText( const std::string& aText )
@@ -141,7 +148,7 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
         "smd", "thru_hole", "connect", "np_thru_hole"
     };
     static const std::set<std::string> shapes = {
-        "circle", "rect", "oval", "trapezoid", "roundrect"
+        "circle", "rect", "oval", "trapezoid", "roundrect", "chamfered_rect", "custom"
     };
     static const std::map<std::string, std::string> propertyTokens = {
         { "bga", "pad_prop_bga" }, { "global_fiducial", "pad_prop_fiducial_glob" },
@@ -179,6 +186,7 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
 
     const std::string type = aPad["type"].get<std::string>();
     const std::string shape = aPad["shape"].get<std::string>();
+    const std::string nativeShape = shape == "chamfered_rect" ? "roundrect" : shape;
     const int64_t width = aPad["size"]["xNm"].get<int64_t>();
     const int64_t height = aPad["size"]["yNm"].get<int64_t>();
 
@@ -186,7 +194,7 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
         return false;
 
     aSource += "\t(pad " + quoteText( aPad["number"].get<std::string>() ) + " " + type + " "
-               + shape + "\n"
+               + nativeShape + "\n"
                "\t\t(at " + millimetres( aPad["at"]["xNm"].get<int64_t>() ) + " "
                + millimetres( aPad["at"]["yNm"].get<int64_t>() ) + " "
                + degrees( aPad["rotationTenths"].get<int64_t>() ) + ")\n"
@@ -273,7 +281,7 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
                        + ")\n";
     }
 
-    if( shape == "roundrect" )
+    if( shape == "roundrect" || shape == "chamfered_rect" )
     {
         if( !aPad.contains( "roundrectRadiusNm" )
             || !aPad["roundrectRadiusNm"].is_number_integer() )
@@ -283,13 +291,66 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
 
         const int64_t radius = aPad["roundrectRadiusNm"].get<int64_t>();
 
-        if( radius <= 0 || radius * 2 > std::min( width, height ) )
+        if( radius < 0 || ( shape == "roundrect" && radius == 0 )
+            || radius * 2 > std::min( width, height ) )
             return false;
 
         const int64_t ratioPpm = static_cast<int64_t>(
                 std::llround( static_cast<long double>( radius ) * 1'000'000.0L
                               / static_cast<long double>( std::min( width, height ) ) ) );
         aSource += "\t\t(roundrect_rratio " + decimalPpm( ratioPpm ) + ")\n";
+    }
+
+    if( shape == "chamfered_rect" )
+    {
+        if( !aPad.contains( "chamferRatioPpm" )
+            || !aPad["chamferRatioPpm"].is_number_integer()
+            || aPad["chamferRatioPpm"].get<int64_t>() <= 0
+            || aPad["chamferRatioPpm"].get<int64_t>() > 500'000
+            || !aPad.contains( "chamferCorners" ) || !aPad["chamferCorners"].is_array()
+            || aPad["chamferCorners"].empty() )
+        {
+            return false;
+        }
+
+        static const std::set<std::string> corners = {
+            "top_left", "top_right", "bottom_left", "bottom_right"
+        };
+        std::set<std::string> unique;
+        aSource += "\t\t(chamfer_ratio "
+                   + decimalPpm( aPad["chamferRatioPpm"].get<int64_t>() ) + ")\n"
+                   "\t\t(chamfer";
+
+        for( const JSON& corner : aPad["chamferCorners"] )
+        {
+            if( !corner.is_string() || !corners.contains( corner.get<std::string>() )
+                || !unique.emplace( corner.get<std::string>() ).second )
+            {
+                return false;
+            }
+
+            aSource += " " + corner.get<std::string>();
+        }
+
+        aSource += ")\n";
+    }
+    else if( ( aPad.contains( "chamferRatioPpm" ) && !aPad["chamferRatioPpm"].is_null() )
+             || ( aPad.contains( "chamferCorners" ) && !aPad["chamferCorners"].empty() ) )
+    {
+        return false;
+    }
+
+    if( shape == "custom" )
+    {
+        if( !aPad.contains( "custom" ) || !aPad["custom"].is_object()
+            || !CUSTOM_GENERATOR::Render( aPad["custom"], aSource ) )
+        {
+            return false;
+        }
+    }
+    else if( !aPad.contains( "custom" ) || !aPad["custom"].is_null() )
+    {
+        return false;
     }
 
     const std::string pinFunction = aPad.value( "pinFunction", "" );
@@ -353,6 +414,26 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
     }
     else if( !aPad.contains( "thermalSpokeAngleTenths" )
              || !aPad["thermalSpokeAngleTenths"].is_null() )
+    {
+        return false;
+    }
+
+    if( aPad.contains( "padstack" ) && aPad["padstack"].is_object() )
+    {
+        if( type != "thru_hole" || !PADSTACK_GENERATOR::Render( aPad["padstack"], aSource ) )
+            return false;
+    }
+    else if( !aPad.contains( "padstack" ) || !aPad["padstack"].is_null() )
+    {
+        return false;
+    }
+
+    if( aPad.contains( "holeTreatment" ) && aPad["holeTreatment"].is_object() )
+    {
+        if( !HOLE_TREATMENT_GENERATOR::Render( aPad["holeTreatment"], aSource ) )
+            return false;
+    }
+    else if( !aPad.contains( "holeTreatment" ) || !aPad["holeTreatment"].is_null() )
     {
         return false;
     }
