@@ -32,6 +32,30 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
     (attributes (smd true) (exclude_from_position false)
       (exclude_from_bom false) (allow_missing_courtyard true))
     (net_tie_group 1 2)
+    (line silk_top (start -1.2mm -0.7mm) (end 1.2mm -0.7mm)
+      (stroke 0.12mm solid) (layers F.SilkS))
+    (rectangle fab_body (start -1mm -0.5mm) (end 1mm 0.5mm)
+      (radius 0.1mm) (stroke 0.1mm solid) (layers F.Fab) (fill none))
+    (arc pin_arc (start -1.2mm 0mm) (mid -1mm -0.2mm) (end -0.8mm 0mm)
+      (stroke 0.1mm dash) (layers F.SilkS))
+    (circle pin_mark (center -1mm 0mm) (radius 0.2mm)
+      (stroke 0.05mm solid) (layers F.SilkS) (fill solid))
+    (polygon fab_pin_one (point -1mm -0.5mm) (point -0.6mm -0.5mm)
+      (point -1mm -0.1mm) (stroke 0.05mm solid) (layers F.Fab) (fill solid))
+    (bezier logo_curve (start -0.5mm 0.6mm) (control1 -0.2mm 0.3mm)
+      (control2 0.2mm 0.9mm) (end 0.5mm 0.6mm)
+      (stroke 0.08mm dash_dot) (layers F.SilkS))
+    (text body_reference "${REFERENCE}" (at 0mm 0mm) (rotation 0deg)
+      (layer F.Fab)
+      (font (face default) (size 0.5mm 0.5mm) (line_spacing 1)
+        (thickness 0.08mm) (bold false) (italic false))
+      (justify center center false) (locked false) (keep_upright true)
+      (knockout false))
+    (text_box pin_note "PIN 1" (box -1.9mm -1.4mm -0.6mm -0.8mm)
+      (rotation 0deg) (layer F.Fab) (margins 0.05mm 0.05mm 0.05mm 0.05mm)
+      (font (face default) (size 0.3mm 0.3mm) (thickness 0.05mm))
+      (justify center center false) (stroke 0.05mm solid)
+      (border true) (knockout false) (locked false))
     (pad input
       (number 1) (type smd) (shape roundrect) (at -0.8mm 0mm)
       (rotation 0deg) (size 0.8mm 0.8mm)
@@ -78,6 +102,9 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
     BOOST_CHECK_EQUAL( sensor["pads"][0]["solderPasteMarginPpm"], -100000 );
     BOOST_CHECK_EQUAL( sensor["models"][0]["opacityPpm"], 750000 );
     BOOST_CHECK_EQUAL( sensor["models"][0]["rotationTenths"]["z"], 900 );
+    BOOST_CHECK_EQUAL( sensor["graphics"].size(), 6 );
+    BOOST_CHECK_EQUAL( sensor["texts"].size(), 1 );
+    BOOST_CHECK_EQUAL( sensor["textBoxes"].size(), 1 );
 
     KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT first =
             KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
@@ -99,6 +126,11 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
     BOOST_CHECK_NE( smd.find( "(rect_delta 0.8 0)" ), std::string::npos );
     BOOST_CHECK_NE( smd.find( "(solder_paste_margin_ratio -0.1)" ), std::string::npos );
     BOOST_CHECK_NE( smd.find( "(thermal_bridge_angle 45)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(fp_rect" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(radius 0.1)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(fp_curve" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(fp_text user \"${REFERENCE}\"" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(fp_text_box \"PIN 1\"" ), std::string::npos );
     BOOST_CHECK_NE( smd.find( "(model \"${KIPRJMOD}/models/SENSOR_2P.step\"" ),
                     std::string::npos );
     BOOST_CHECK_NE( smd.find( "(opacity 0.75)" ), std::string::npos );
@@ -112,6 +144,9 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
     BOOST_CHECK_EQUAL( first.counts["libraries"], 1 );
     BOOST_CHECK_EQUAL( first.counts["footprints"], 2 );
     BOOST_CHECK_EQUAL( first.counts["pads"], 5 );
+    BOOST_CHECK_EQUAL( first.counts["graphics"], 6 );
+    BOOST_CHECK_EQUAL( first.counts["texts"], 1 );
+    BOOST_CHECK_EQUAL( first.counts["textBoxes"], 1 );
     BOOST_CHECK_EQUAL( first.counts["models"], 1 );
 }
 
@@ -149,6 +184,15 @@ BOOST_AUTO_TEST_CASE( RejectsUnsafeOrPhysicallyInvalidFootprintSemantics )
     (pad p1 (number 1) (type smd) (shape rect) (at 0mm 0mm)
       (size 1mm 1mm) (layers F.Cu F.Mask))
     (model "${KIPRJMOD}/../outside.step"))
+  (footprint Product:BAD_GRAPHICS
+    (line zero (start 0mm 0mm) (end 0mm 0mm)
+      (stroke 0.1mm solid) (layers F.SilkS) (fill solid))
+    (arc flat (start 0mm 0mm) (mid 1mm 0mm) (end 2mm 0mm)
+      (stroke 0.1mm solid) (layers F.SilkS))
+    (polygon empty_area (point 0mm 0mm) (point 1mm 0mm) (point 2mm 0mm)
+      (stroke 0.1mm solid) (layers F.Fab) (fill none))
+    (text missing_position "BAD" (layer F.SilkS)
+      (font (size 1mm 1mm)) (justify center center false)))
 ))KDS";
 
     const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
@@ -172,6 +216,12 @@ BOOST_AUTO_TEST_CASE( RejectsUnsafeOrPhysicallyInvalidFootprintSemantics )
     BOOST_CHECK_NE( diagnostics.find( "unknown_authored_footprint_net_tie_pad" ),
                     std::string::npos );
     BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_model_path" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "degenerate_authored_footprint_graphic" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_graphic_fill" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "missing_authored_footprint_text_position" ),
                     std::string::npos );
 }
 

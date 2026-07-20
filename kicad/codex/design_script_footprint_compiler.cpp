@@ -11,7 +11,9 @@
 
 #include "design_script_footprint_compiler.h"
 
+#include "design_script_footprint_graphic_compiler.h"
 #include "design_script_footprint_pad_compiler.h"
+#include "design_script_footprint_text_compiler.h"
 
 #include <cctype>
 #include <charconv>
@@ -29,9 +31,13 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT;
+using GRAPHIC_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER;
 using PAD_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER;
+using TEXT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_TEXT_COMPILER;
 
 constexpr size_t MAX_FOOTPRINT_PADS = 4096;
+constexpr size_t MAX_FOOTPRINT_GRAPHICS = 8192;
+constexpr size_t MAX_FOOTPRINT_TEXT_ITEMS = 4096;
 constexpr size_t MAX_FOOTPRINT_MODELS = 64;
 constexpr int64_t MAX_MODEL_OFFSET_NM = 2'000'000'000LL;
 
@@ -440,10 +446,12 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
             { "allowSoldermaskBridges", false } } },
         { "duplicatePadNumbersAreJumpers", false }, { "jumperGroups", JSON::array() },
         { "netTieGroups", JSON::array() }, { "pads", JSON::array() },
-        { "models", JSON::array() }
+        { "graphics", JSON::array() }, { "texts", JSON::array() },
+        { "textBoxes", JSON::array() }, { "models", JSON::array() }
     };
     std::set<std::string> fields;
     std::set<std::string> padIds;
+    std::set<std::string> objectIds;
 
     for( size_t index = 2; index < node.children.size(); ++index )
     {
@@ -471,6 +479,60 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
                             "footprint pad logical ID " + padId + " occurs more than once" );
 
             result.footprint["pads"].push_back( std::move( pad.pad ) );
+            continue;
+        }
+
+        if( GRAPHIC_COMPILER::IsGraphicHead( head ) )
+        {
+            if( result.footprint["graphics"].size() >= MAX_FOOTPRINT_GRAPHICS )
+            {
+                diagnostic( result, "too_many_authored_footprint_graphics",
+                            "a footprint may contain at most 8192 graphic primitives" );
+                continue;
+            }
+
+            GRAPHIC_COMPILER::RESULT graphic = GRAPHIC_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : graphic.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string objectId = graphic.graphic.value( "id", "" );
+
+            if( !objectId.empty() && !objectIds.emplace( objectId ).second )
+                diagnostic( result, "duplicate_authored_footprint_object_id",
+                            "footprint graphic/text logical ID " + objectId
+                                    + " occurs more than once" );
+
+            result.footprint["graphics"].push_back( std::move( graphic.graphic ) );
+            continue;
+        }
+
+        if( head == "text" || head == "text_box" )
+        {
+            const size_t textCount = result.footprint["texts"].size()
+                                     + result.footprint["textBoxes"].size();
+
+            if( textCount >= MAX_FOOTPRINT_TEXT_ITEMS )
+            {
+                diagnostic( result, "too_many_authored_footprint_text_items",
+                            "a footprint may contain at most 4096 text and text-box items" );
+                continue;
+            }
+
+            TEXT_COMPILER::RESULT text = TEXT_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : text.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string objectId = text.text.value( "id", "" );
+
+            if( !objectId.empty() && !objectIds.emplace( objectId ).second )
+                diagnostic( result, "duplicate_authored_footprint_object_id",
+                            "footprint graphic/text logical ID " + objectId
+                                    + " occurs more than once" );
+
+            result.footprint[head == "text" ? "texts" : "textBoxes"]
+                    .push_back( std::move( text.text ) );
             continue;
         }
 

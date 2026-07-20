@@ -134,9 +134,13 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_graphic_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_graphic_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_library_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_pad_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_pad_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_text_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_text_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_planner.cpp

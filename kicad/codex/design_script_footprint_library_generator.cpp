@@ -11,8 +11,10 @@
 
 #include "design_script_footprint_library_generator.h"
 
+#include "design_script_footprint_graphic_generator.h"
 #include "design_script_footprint_pad_generator.h"
 #include "design_script_pcb_planner.h"
+#include "design_script_footprint_text_generator.h"
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
@@ -31,7 +33,9 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT;
+using GRAPHIC_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_GENERATOR;
 using PAD_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR;
+using TEXT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_TEXT_GENERATOR;
 
 constexpr size_t MAX_NATIVE_FOOTPRINT_BYTES = 16 * 1024 * 1024;
 
@@ -212,7 +216,9 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
         { "keywords", JSON::value_t::string }, { "attributes", JSON::value_t::object },
         { "duplicatePadNumbersAreJumpers", JSON::value_t::boolean },
         { "jumperGroups", JSON::value_t::array }, { "netTieGroups", JSON::value_t::array },
-        { "pads", JSON::value_t::array }, { "models", JSON::value_t::array }
+        { "pads", JSON::value_t::array }, { "graphics", JSON::value_t::array },
+        { "texts", JSON::value_t::array }, { "textBoxes", JSON::value_t::array },
+        { "models", JSON::value_t::array }
     };
 
     if( !aFootprint.is_object() )
@@ -330,6 +336,42 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
         }
 
         aSource += "\t)\n";
+    }
+
+    for( const JSON& graphic : aFootprint["graphics"] )
+    {
+        const std::string logicalId = graphic.value( "id", "" );
+        const std::string uuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aProject, "footprint-graphic", id + ":" + logicalId );
+
+        if( logicalId.empty() || !GRAPHIC_GENERATOR::Render( graphic, uuid, aSource ) )
+            return false;
+
+        ++aResult.counts["graphics"].get_ref<int64_t&>();
+    }
+
+    for( const JSON& text : aFootprint["texts"] )
+    {
+        const std::string logicalId = text.value( "id", "" );
+        const std::string uuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aProject, "footprint-text", id + ":" + logicalId );
+
+        if( logicalId.empty() || !TEXT_GENERATOR::Render( text, uuid, aSource ) )
+            return false;
+
+        ++aResult.counts["texts"].get_ref<int64_t&>();
+    }
+
+    for( const JSON& textBox : aFootprint["textBoxes"] )
+    {
+        const std::string logicalId = textBox.value( "id", "" );
+        const std::string uuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aProject, "footprint-text-box", id + ":" + logicalId );
+
+        if( logicalId.empty() || !TEXT_GENERATOR::Render( textBox, uuid, aSource ) )
+            return false;
+
+        ++aResult.counts["textBoxes"].get_ref<int64_t&>();
     }
 
     for( const JSON& pad : aFootprint["pads"] )

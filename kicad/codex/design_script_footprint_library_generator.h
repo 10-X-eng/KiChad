@@ -30,6 +30,7 @@ public:
         JSON sources = JSON::object();
         JSON libraries = JSON::object();
         JSON counts = { { "libraries", 0 }, { "footprints", 0 }, { "pads", 0 },
+                        { "graphics", 0 }, { "texts", 0 }, { "textBoxes", 0 },
                         { "models", 0 } };
         JSON diagnostics = JSON::array();
     };

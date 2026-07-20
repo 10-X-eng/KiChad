@@ -1136,19 +1136,75 @@ spoke, and thermal-gap overrides. Every override uses `inherit` when the footpri
 board or zone policy; implicit sentinel values are not exposed to the model. Jumper and net-tie
 groups name existing electrical pad numbers and are checked for duplicate membership.
 
+Footprint artwork is semantic rather than a raw s-expression escape hatch. Each primitive has one
+shape-specific representation and a stable logical ID:
+
+```scheme
+(line ID (start X Y) (end X Y) GRAPHIC_STYLE)
+(rectangle ID (start X Y) (end X Y) (radius DISTANCE) GRAPHIC_STYLE)
+(arc ID (start X Y) (mid X Y) (end X Y) GRAPHIC_STYLE)
+(circle ID (center X Y) (radius DISTANCE) GRAPHIC_STYLE)
+(polygon ID (point X Y) (point X Y) (point X Y) ... GRAPHIC_STYLE)
+(bezier ID (start X Y) (control1 X Y) (control2 X Y) (end X Y) GRAPHIC_STYLE)
+
+; GRAPHIC_STYLE is written directly in each primitive:
+(stroke WIDTH solid|dash|dash_dot|dash_dot_dot|dot)
+(layers LAYER...)
+(fill none|solid|hatch|reverse_hatch|cross_hatch) ; rectangle/circle/polygon only
+(locked true|false)
+(solder_mask_margin inherit|DISTANCE)
+```
+
+The six forms lower to `fp_line`, `fp_rect`, `fp_arc`, `fp_circle`, `fp_poly`, and
+`fp_curve`. A circle is authored as center plus radius, never as an arbitrary edge point. Polygon
+closure is implicit, so the first point must not be repeated. The compiler rejects coincident line
+ends, zero-area rectangles and polygons, collinear arcs, invalid corner radii, duplicate polygon
+closure, incompatible fills, and mask-margin layer sets. A local mask margin is only valid on the
+exact `F.Cu F.Mask` or `B.Cu B.Mask` layer pair. Stable UUIDv8 identities derive from the footprint
+and primitive IDs, so coordinate edits do not replace object identity.
+
+User text and text boxes use the same explicit font and justification vocabulary:
+
+```scheme
+(text body_reference "${REFERENCE}"
+  (at 0mm 0mm) (rotation 0deg) (layer F.Fab)
+  (font (face default) (size 0.5mm 0.5mm) (line_spacing 1)
+    (thickness 0.08mm) (bold false) (italic false))
+  (justify center center false) ; horizontal, vertical, mirrored
+  (locked false) (keep_upright true) (knockout false))
+
+(text_box pin_one "PIN 1"
+  (box -1.9mm -1.4mm -0.6mm -0.8mm)
+  ; A polygon outline is the one alternative:
+  ; (polygon (point X Y) (point X Y) (point X Y) ...)
+  (rotation 0deg) (layer F.Fab)
+  (margins 0.05mm 0.05mm 0.05mm 0.05mm)
+  (font (face default) (size 0.3mm 0.3mm) (thickness 0.05mm))
+  (justify center center false)
+  (stroke 0.05mm solid)
+  (border true) (knockout false) (locked false))
+```
+
+Font size is always explicit and ordered `HEIGHT WIDTH`; `thickness auto` retains KiCad's derived
+stroke thickness. Justification is always `HORIZONTAL VERTICAL MIRRORED_BOOL`, avoiding positional
+defaults that are hard for a model to infer. Text boxes accept exactly one non-zero rectangular or
+non-degenerate polygon outline and explicit four-sided margins. Generated text, text-box, and
+graphic objects all receive stable identities and are accepted and resaved by the KiCad 10 native
+footprint loader during apply.
+
 Model assignments are confined to `${KIPRJMOD}` and accept STEP, STP, or WRL paths with bounded
 offset, scale, rotation, visibility, and opacity. Referencing a model does not yet acquire or embed
 its bytes, so sourcing and package-data workflows must still provide that project asset separately.
 
 All footprints are sorted and emitted as KiCad 10 format `20260206` files with deterministic UUIDv8
-field and pad identities. Apply uses the generated sources directly for compiler-created board
+field, pad, graphic, text, and text-box identities. Apply uses the generated sources directly for compiler-created board
 instances, snapshots the exact prior whole library, atomically swaps a staging directory into place,
 and asks `kicad-cli fp upgrade --force` to parse and resave every file in an isolated directory.
 Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
 the operation and restore the prior library, project tables, schematics, and settings in reverse
-order. The initial authoring slice is intentionally partial: footprint graphics/text, custom and
-per-layer pad shapes, zones/groups, variants, embedded assets, and complete KLC geometry generation
-remain explicit capability gaps.
+order. Footprint authoring remains intentionally partial: custom and per-layer pad shapes,
+zones/groups, variants, embedded assets, local rules/properties, and complete package-data-to-KLC
+geometry generation remain explicit capability gaps.
 
 ### Stackup form
 

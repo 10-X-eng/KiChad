@@ -34,9 +34,13 @@ set( KICAD_SRCS
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
     codex/design_script_footprint_compiler.cpp
+    codex/design_script_footprint_graphic_compiler.cpp
+    codex/design_script_footprint_graphic_generator.cpp
     codex/design_script_footprint_library_generator.cpp
     codex/design_script_footprint_pad_compiler.cpp
     codex/design_script_footprint_pad_generator.cpp
+    codex/design_script_footprint_text_compiler.cpp
+    codex/design_script_footprint_text_generator.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
     codex/design_script_schematic_planner.cpp
