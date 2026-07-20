@@ -36,6 +36,8 @@ set( KICAD_SRCS
     codex/design_script_footprint_compiler.cpp
     codex/design_script_footprint_graphic_compiler.cpp
     codex/design_script_footprint_graphic_generator.cpp
+    codex/design_script_footprint_group_compiler.cpp
+    codex/design_script_footprint_group_generator.cpp
     codex/design_script_footprint_hole_treatment_compiler.cpp
     codex/design_script_footprint_hole_treatment_generator.cpp
     codex/design_script_footprint_custom_pad_compiler.cpp
@@ -47,6 +49,10 @@ set( KICAD_SRCS
     codex/design_script_footprint_padstack_generator.cpp
     codex/design_script_footprint_text_compiler.cpp
     codex/design_script_footprint_text_generator.cpp
+    codex/design_script_footprint_variant_compiler.cpp
+    codex/design_script_footprint_variant_generator.cpp
+    codex/design_script_footprint_zone_compiler.cpp
+    codex/design_script_footprint_zone_generator.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
     codex/design_script_schematic_planner.cpp

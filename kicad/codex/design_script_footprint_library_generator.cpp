@@ -12,9 +12,12 @@
 #include "design_script_footprint_library_generator.h"
 
 #include "design_script_footprint_graphic_generator.h"
+#include "design_script_footprint_group_generator.h"
 #include "design_script_footprint_pad_generator.h"
 #include "design_script_pcb_planner.h"
 #include "design_script_footprint_text_generator.h"
+#include "design_script_footprint_variant_generator.h"
+#include "design_script_footprint_zone_generator.h"
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
@@ -34,8 +37,11 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT;
 using GRAPHIC_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_GENERATOR;
+using GROUP_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GROUP_GENERATOR;
 using PAD_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR;
 using TEXT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_TEXT_GENERATOR;
+using VARIANT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_VARIANT_GENERATOR;
+using ZONE_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_ZONE_GENERATOR;
 
 constexpr size_t MAX_NATIVE_FOOTPRINT_BYTES = 16 * 1024 * 1024;
 
@@ -218,6 +224,8 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
         { "jumperGroups", JSON::value_t::array }, { "netTieGroups", JSON::value_t::array },
         { "pads", JSON::value_t::array }, { "graphics", JSON::value_t::array },
         { "texts", JSON::value_t::array }, { "textBoxes", JSON::value_t::array },
+        { "zones", JSON::value_t::array },
+        { "groups", JSON::value_t::array }, { "variants", JSON::value_t::array },
         { "models", JSON::value_t::array }
     };
 
@@ -384,6 +392,34 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
             return false;
 
         ++aResult.counts["pads"].get_ref<int64_t&>();
+    }
+
+    for( const JSON& zone : aFootprint["zones"] )
+    {
+        const std::string logicalId = zone.value( "id", "" );
+        const std::string uuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aProject, "footprint-zone", id + ":" + logicalId );
+
+        if( logicalId.empty() || !ZONE_GENERATOR::Render( zone, uuid, aSource ) )
+            return false;
+
+        ++aResult.counts["zones"].get_ref<int64_t&>();
+    }
+
+    for( const JSON& group : aFootprint["groups"] )
+    {
+        if( !GROUP_GENERATOR::Render( group, aProject, id, aSource ) )
+            return false;
+
+        ++aResult.counts["groups"].get_ref<int64_t&>();
+    }
+
+    for( const JSON& variant : aFootprint["variants"] )
+    {
+        if( !VARIANT_GENERATOR::Render( variant, aSource ) )
+            return false;
+
+        ++aResult.counts["variants"].get_ref<int64_t&>();
     }
 
     aSource += "\t(embedded_fonts no)\n";

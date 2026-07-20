@@ -253,4 +253,87 @@ BOOST_AUTO_TEST_CASE( RequiresExplicitWholeLibraryOwnership )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project footprint_fabrication)
+  (library footprint Product (table project)
+    (uri "${KIPRJMOD}/Product.pretty") (managed true))
+  (footprint Product:SHIELDED_MODULE
+    (reference U) (value SHIELDED_MODULE)
+    (attributes (smd true))
+    (line shield_edge (start -3mm -2mm) (end 3mm -2mm)
+      (stroke 0.15mm solid) (layers F.SilkS))
+    (text assembly_note "SHIELD" (at 0mm 0mm) (rotation 0deg)
+      (layer F.Fab) (font (size 0.8mm 0.8mm))
+      (justify center center false))
+    (pad ground (number 1) (type smd) (shape rect) (at 0mm 0mm)
+      (size 2mm 2mm) (layers F.Cu F.Mask F.Paste))
+    (zone paste_window
+      (purpose copper) (name "Local copper window") (layers F.Cu)
+      (outline (polygon
+        (point -2mm -1.5mm) (point 2mm -1.5mm)
+        (point 2mm 1.5mm) (point -2mm 1.5mm)
+        (hole (point -0.4mm -0.4mm) (point -0.4mm 0.4mm)
+          (point 0.4mm 0.4mm) (point 0.4mm -0.4mm))))
+      (clearance 0.15mm) (min_thickness 0.2mm)
+      (connection thermal (thermal_gap 0.2mm) (thermal_spoke_width 0.25mm))
+      (islands remove_below (minimum_area 0.2mm2))
+      (fill hatched (thickness 0.25mm) (gap 0.2mm) (orientation 45deg)
+        (edge_smoothing fillet (amount 0.25))
+        (hole_min_area_ratio 0.1) (border hatch))
+      (priority 2) (border diagonal_edge (pitch 0.5mm))
+      (corner_smoothing fillet (radius 0.15mm)) (locked false))
+    (zone antenna_keepout
+      (purpose keepout) (layers all_copper F.Mask)
+      (outline (polygon
+        (point -4mm -3mm) (point 4mm -3mm)
+        (point 4mm 3mm) (point -4mm 3mm)))
+      (prohibit (copper true) (vias true) (tracks true)
+        (pads false) (footprints false))
+      (border solid) (locked true))
+    (group electrical_core (name "Electrical core") (locked false)
+      (member pad ground) (member graphic shield_edge) (member text assembly_note))
+    (group complete_module (name "Complete module") (locked true)
+      (member group electrical_core) (member zone antenna_keepout))
+    (variant production
+      (dnp false) (exclude_from_bom false) (exclude_from_position false)
+      (field "Value" "SHIELDED_MODULE-PROD")
+      (field "Manufacturer Part Number" "MODULE-001"))
+    (variant no_shield
+      (dnp true) (exclude_from_bom true) (exclude_from_position true)
+      (field "Value" "SHIELDED_MODULE-DNP")))
+))KDS";
+
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump( 2 ) );
+    const auto& footprint = compiled.ir["authoredFootprints"][0];
+    BOOST_CHECK_EQUAL( footprint["zones"].size(), 2 );
+    BOOST_CHECK_EQUAL( footprint["groups"].size(), 2 );
+    BOOST_CHECK_EQUAL( footprint["variants"].size(), 2 );
+    BOOST_CHECK_EQUAL( footprint["zones"][0]["fill"]["smoothing"], "fillet" );
+    BOOST_CHECK_EQUAL( footprint["zones"][0]["islands"]["minimumAreaNm2"],
+                       200000000000LL );
+
+    const KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT generated =
+            KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( generated.ok, generated.diagnostics.dump( 2 ) );
+    const std::string source = generated.sources["Product:SHIELDED_MODULE"].get<std::string>();
+    BOOST_CHECK_NE( source.find( "(name \"Local copper window\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(mode hatch)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(hatch_smoothing_level 2)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(island_area_min 0.2)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(keepout" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(placement (enabled no))" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(group \"Electrical core\"" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(variant" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(field (name \"Manufacturer Part Number\")" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( generated.counts["zones"], 2 );
+    BOOST_CHECK_EQUAL( generated.counts["groups"], 2 );
+    BOOST_CHECK_EQUAL( generated.counts["variants"], 2 );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()

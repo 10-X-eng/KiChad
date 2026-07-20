@@ -1255,18 +1255,97 @@ non-degenerate polygon outline and explicit four-sided margins. Generated text, 
 graphic objects all receive stable identities and are accepted and resaved by the KiCad 10 native
 footprint loader during apply.
 
+Footprint zones use one semantic form with an explicit `purpose`; there is no second keepout syntax
+and no native s-expression escape hatch:
+
+```scheme
+(zone exposed_pad_copper
+  (purpose copper)
+  (name "Exposed-pad local copper")
+  (layers F.Cu)
+  (outline (polygon
+    (point -2mm -1.5mm) (point 2mm -1.5mm)
+    (point 2mm 1.5mm) (point -2mm 1.5mm)
+    (hole (point -0.4mm -0.4mm) (point -0.4mm 0.4mm)
+      (point 0.4mm 0.4mm) (point 0.4mm -0.4mm))))
+  (clearance 0.15mm)
+  (min_thickness 0.2mm)
+  (connection thermal
+    (thermal_gap 0.2mm) (thermal_spoke_width 0.25mm))
+  (islands remove_below (minimum_area 0.2mm2))
+  (fill hatched
+    (thickness 0.25mm) (gap 0.2mm) (orientation 45deg)
+    (edge_smoothing fillet (amount 0.25))
+    (hole_min_area_ratio 0.1) (border hatch))
+  (priority 2)
+  (border diagonal_edge (pitch 0.5mm))
+  (corner_smoothing fillet (radius 0.15mm))
+  (locked false))
+
+(zone antenna_keepout
+  (purpose keepout)
+  (layers all_copper F.Mask)
+  (outline (polygon
+    (point -4mm -3mm) (point 4mm -3mm)
+    (point 4mm 3mm) (point -4mm 3mm)))
+  (prohibit
+    (copper true) (vias true) (tracks true)
+    (pads false) (footprints false))
+  (border solid)
+  (locked true))
+```
+
+Copper zones require explicit clearance, minimum thickness, pad connection, island, and fill
+policies. Keepouts require all five direct prohibitions and at least one must be true. Both forms
+validate bounded, non-zero, non-self-intersecting polygon geometry; holes must be strictly inside
+and mutually disjoint. KiCad's footprint file format represents one outer contour plus holes per
+zone, so a disjoint area is another stable `zone` declaration instead of an ambiguous multi-outline
+encoding. `all_copper` is the semantic wildcard available to keepouts; copper zones name their
+actual copper layers. Fill, thermal, border, priority, corner, lock, and rule-area placement policy
+lower to current KiCad 10 zone fields.
+
+Groups reference typed logical IDs, never native UUIDs. A member belongs to exactly one group,
+nested groups may be declared in any order, and cycles are rejected:
+
+```scheme
+(group electrical_core
+  (name "Electrical core") (locked false)
+  (member pad ground)
+  (member graphic shield_edge)
+  (member text assembly_note))
+
+(group complete_module
+  (name "Complete module") (locked true)
+  (member group electrical_core)
+  (member zone antenna_keepout))
+```
+
+Assembly variants likewise have one explicit effective-state representation. All three production
+flags are required so a model never has to infer an inherited DNP/BOM/position state. Variant
+fields may override bounded footprint metadata, but `Reference` is immutable because changing it
+would change schematic-to-board identity:
+
+```scheme
+(variant production
+  (dnp false)
+  (exclude_from_bom false)
+  (exclude_from_position false)
+  (field "Value" "SHIELDED_MODULE-PROD")
+  (field "Manufacturer Part Number" "MODULE-001"))
+```
+
 Model assignments are confined to `${KIPRJMOD}` and accept STEP, STP, or WRL paths with bounded
 offset, scale, rotation, visibility, and opacity. Referencing a model does not yet acquire or embed
 its bytes, so sourcing and package-data workflows must still provide that project asset separately.
 
 All footprints are sorted and emitted as KiCad 10 format `20260206` files with deterministic UUIDv8
-field, pad, graphic, text, and text-box identities. Apply uses the generated sources directly for compiler-created board
+field, pad, graphic, text, text-box, zone, and group identities. Apply uses the generated sources directly for compiler-created board
 instances, snapshots the exact prior whole library, atomically swaps a staging directory into place,
 and asks `kicad-cli fp upgrade --force` to parse and resave every file in an isolated directory.
 Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
 the operation and restore the prior library, project tables, schematics, and settings in reverse
 order. Footprint authoring remains intentionally partial: per-layer custom primitive geometry,
-secondary/tertiary drilling, zones/groups, variants, embedded assets, local rules/properties, and
+secondary/tertiary drilling, embedded assets, local rules/properties, component classes, and
 complete package-data-to-KLC geometry generation remain explicit capability gaps. Plugging,
 filling, capping, and covering are KiCad via—not footprint-pad—file semantics and are tracked under
 the board-via capability.

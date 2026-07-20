@@ -156,7 +156,8 @@ installed, native-loader validated, journaled, and restored exactly after an inj
 deterministic KDS-owned footprint library from semantic metadata, standard/custom/chamfered
 SMD/connect/PTH/NPTH pads, front/inner/back and named-inner padstacks, tenting and post-machining,
 fixed and curved artwork, polygons and fills, rich text and text boxes, local
-mask/paste/clearance/thermal policy, jumper/net-tie groups, and project-local 3D model transforms;
+mask/paste/clearance/thermal policy, jumper/net-tie groups, footprint-local copper zones and
+keepouts, nested stable-ID item groups, explicit assembly variants, and project-local 3D model transforms;
 the current KiCad 10 `.kicad_mod` artifacts are whole-library swapped, native-loader
 validated, journaled, and restored exactly after an injected rejection. Board vias also carry
 AI-native arbitrary per-layer copper geometry, top/bottom backdrilling, tenting, covering,

@@ -136,6 +136,8 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_graphic_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_graphic_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_group_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_group_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_hole_treatment_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_hole_treatment_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_custom_pad_compiler.cpp
@@ -147,6 +149,10 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_padstack_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_text_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_text_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_variant_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_variant_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_zone_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_zone_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_planner.cpp

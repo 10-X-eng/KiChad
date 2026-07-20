@@ -12,17 +12,23 @@
 #include "design_script_footprint_compiler.h"
 
 #include "design_script_footprint_graphic_compiler.h"
+#include "design_script_footprint_group_compiler.h"
 #include "design_script_footprint_pad_compiler.h"
 #include "design_script_footprint_text_compiler.h"
+#include "design_script_footprint_variant_compiler.h"
+#include "design_script_footprint_zone_compiler.h"
 
 #include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 
 namespace
@@ -32,13 +38,19 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT;
 using GRAPHIC_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER;
+using GROUP_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GROUP_COMPILER;
 using PAD_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER;
 using TEXT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_TEXT_COMPILER;
+using VARIANT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_VARIANT_COMPILER;
+using ZONE_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_ZONE_COMPILER;
 
 constexpr size_t MAX_FOOTPRINT_PADS = 4096;
 constexpr size_t MAX_FOOTPRINT_GRAPHICS = 8192;
 constexpr size_t MAX_FOOTPRINT_TEXT_ITEMS = 4096;
 constexpr size_t MAX_FOOTPRINT_MODELS = 64;
+constexpr size_t MAX_FOOTPRINT_ZONES = 512;
+constexpr size_t MAX_FOOTPRINT_GROUPS = 1024;
+constexpr size_t MAX_FOOTPRINT_VARIANTS = 256;
 constexpr int64_t MAX_MODEL_OFFSET_NM = 2'000'000'000LL;
 
 
@@ -447,11 +459,19 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
         { "duplicatePadNumbersAreJumpers", false }, { "jumperGroups", JSON::array() },
         { "netTieGroups", JSON::array() }, { "pads", JSON::array() },
         { "graphics", JSON::array() }, { "texts", JSON::array() },
-        { "textBoxes", JSON::array() }, { "models", JSON::array() }
+        { "textBoxes", JSON::array() }, { "zones", JSON::array() },
+        { "groups", JSON::array() }, { "variants", JSON::array() },
+        { "models", JSON::array() }
     };
     std::set<std::string> fields;
     std::set<std::string> padIds;
     std::set<std::string> objectIds;
+    std::set<std::string> graphicIds;
+    std::set<std::string> textIds;
+    std::set<std::string> textBoxIds;
+    std::set<std::string> zoneIds;
+    std::set<std::string> groupIds;
+    std::set<std::string> variantIds;
 
     for( size_t index = 2; index < node.children.size(); ++index )
     {
@@ -503,6 +523,9 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
                             "footprint graphic/text logical ID " + objectId
                                     + " occurs more than once" );
 
+            if( !objectId.empty() )
+                graphicIds.emplace( objectId );
+
             result.footprint["graphics"].push_back( std::move( graphic.graphic ) );
             continue;
         }
@@ -531,6 +554,9 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
                             "footprint graphic/text logical ID " + objectId
                                     + " occurs more than once" );
 
+            if( !objectId.empty() )
+                ( head == "text" ? textIds : textBoxIds ).emplace( objectId );
+
             result.footprint[head == "text" ? "texts" : "textBoxes"]
                     .push_back( std::move( text.text ) );
             continue;
@@ -545,6 +571,83 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
                 result.footprint["models"].push_back(
                         compileModel( aDocument, child, result ) );
 
+            continue;
+        }
+
+        if( head == "zone" )
+        {
+            if( result.footprint["zones"].size() >= MAX_FOOTPRINT_ZONES )
+            {
+                diagnostic( result, "too_many_authored_footprint_zones",
+                            "a footprint may contain at most 512 zones" );
+                continue;
+            }
+
+            ZONE_COMPILER::RESULT zone = ZONE_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : zone.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string zoneId = zone.zone.value( "id", "" );
+
+            if( !zoneId.empty() && !zoneIds.emplace( zoneId ).second )
+                diagnostic( result, "duplicate_authored_footprint_zone_id",
+                            "footprint zone logical ID " + zoneId + " occurs more than once" );
+
+            result.footprint["zones"].push_back( std::move( zone.zone ) );
+            continue;
+        }
+
+        if( head == "group" )
+        {
+            if( result.footprint["groups"].size() >= MAX_FOOTPRINT_GROUPS )
+            {
+                diagnostic( result, "too_many_authored_footprint_groups",
+                            "a footprint may contain at most 1024 groups" );
+                continue;
+            }
+
+            GROUP_COMPILER::RESULT group = GROUP_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : group.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string groupId = group.group.value( "id", "" );
+
+            if( !groupId.empty() && !groupIds.emplace( groupId ).second )
+                diagnostic( result, "duplicate_authored_footprint_group_id",
+                            "footprint group logical ID " + groupId + " occurs more than once" );
+
+            result.footprint["groups"].push_back( std::move( group.group ) );
+            continue;
+        }
+
+        if( head == "variant" )
+        {
+            if( result.footprint["variants"].size() >= MAX_FOOTPRINT_VARIANTS )
+            {
+                diagnostic( result, "too_many_authored_footprint_variants",
+                            "a footprint may contain at most 256 variants" );
+                continue;
+            }
+
+            VARIANT_COMPILER::RESULT variant = VARIANT_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : variant.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string variantId = variant.variant.value( "id", "" );
+            std::string folded = variantId;
+            std::transform( folded.begin(), folded.end(), folded.begin(), []( unsigned char character )
+            {
+                return static_cast<char>( std::tolower( character ) );
+            } );
+
+            if( !variantId.empty() && !variantIds.emplace( folded ).second )
+                diagnostic( result, "duplicate_authored_footprint_variant_id",
+                            "footprint variant " + variantId + " occurs more than once" );
+
+            result.footprint["variants"].push_back( std::move( variant.variant ) );
             continue;
         }
 
@@ -662,6 +765,79 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
         diagnostic( result, "invalid_authored_footprint_mounting_attributes",
                     "board_only footprints cannot also be classified as smd or through_hole" );
     }
+
+    const std::map<std::string, const std::set<std::string>*> memberSets = {
+        { "pad", &padIds }, { "graphic", &graphicIds }, { "text", &textIds },
+        { "text_box", &textBoxIds }, { "zone", &zoneIds }, { "group", &groupIds }
+    };
+    std::map<std::pair<std::string, std::string>, std::string> memberOwners;
+    std::map<std::string, std::vector<std::string>> groupEdges;
+
+    for( const JSON& group : result.footprint["groups"] )
+    {
+        if( !group.is_object() || !group.contains( "id" ) || !group["id"].is_string()
+            || !group.contains( "members" ) || !group["members"].is_array() )
+        {
+            continue;
+        }
+
+        const std::string groupId = group["id"].get<std::string>();
+
+        for( const JSON& member : group["members"] )
+        {
+            if( !member.is_object() || !member.contains( "type" ) || !member["type"].is_string()
+                || !member.contains( "id" ) || !member["id"].is_string() )
+            {
+                continue;
+            }
+
+            const std::string type = member["type"].get<std::string>();
+            const std::string memberId = member["id"].get<std::string>();
+            const auto available = memberSets.find( type );
+
+            if( available == memberSets.end() || !available->second->contains( memberId ) )
+            {
+                diagnostic( result, "unknown_authored_footprint_group_member",
+                            "group " + groupId + " references absent " + type + " " + memberId );
+                continue;
+            }
+
+            const std::pair<std::string, std::string> key = { type, memberId };
+            const auto owner = memberOwners.emplace( key, groupId );
+
+            if( !owner.second )
+                diagnostic( result, "multiply_owned_authored_footprint_group_member",
+                            type + " " + memberId + " belongs to both " + owner.first->second
+                                    + " and " + groupId );
+
+            if( type == "group" )
+                groupEdges[groupId].push_back( memberId );
+        }
+    }
+
+    std::map<std::string, int> groupVisit;
+    std::function<void( const std::string& )> visitGroup = [&]( const std::string& aGroup )
+    {
+        if( groupVisit[aGroup] == 1 )
+        {
+            diagnostic( result, "cyclic_authored_footprint_groups",
+                        "footprint groups contain a membership cycle through " + aGroup );
+            return;
+        }
+
+        if( groupVisit[aGroup] == 2 )
+            return;
+
+        groupVisit[aGroup] = 1;
+
+        for( const std::string& child : groupEdges[aGroup] )
+            visitGroup( child );
+
+        groupVisit[aGroup] = 2;
+    };
+
+    for( const std::string& groupId : groupIds )
+        visitGroup( groupId );
 
     result.ok = result.diagnostics.empty();
     return result;
