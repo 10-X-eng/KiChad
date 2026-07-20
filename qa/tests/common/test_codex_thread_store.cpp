@@ -22,7 +22,7 @@
 BOOST_AUTO_TEST_SUITE( CodexThreadStore )
 
 
-BOOST_AUTO_TEST_CASE( ResumesOnlyThreadsWithTheCurrentNativeToolSchema )
+BOOST_AUTO_TEST_CASE( PersistsConversationAcrossNativeToolSchemaChanges )
 {
     const wxString root = wxFileName::CreateTempFileName( wxS( "kichad-thread-store-" ) );
     BOOST_REQUIRE( wxRemoveFile( root ) );
@@ -33,24 +33,37 @@ BOOST_AUTO_TEST_CASE( ResumesOnlyThreadsWithTheCurrentNativeToolSchema )
 
     CODEX_THREAD_STORE store( index );
     wxString error;
-    BOOST_REQUIRE_MESSAGE( store.Save( project, "thread-current", 2, &error ), error );
-    BOOST_CHECK_EQUAL( store.Load( project, 2 ), "thread-current" );
-    BOOST_CHECK( store.Load( project, 1 ).empty() );
-    BOOST_CHECK( store.Load( wxFileName( root, wxS( "other" ) ).GetFullPath(), 2 ).empty() );
+    CODEX_THREAD_STORE::BINDING saved = {
+        "thread-current", 2,
+        { { "user", "Design a motor controller." },
+          { "assistant", "I created the design." } }
+    };
+    BOOST_REQUIRE_MESSAGE( store.Save( project, saved, &error ), error );
+
+    CODEX_THREAD_STORE::BINDING loaded = store.Load( project );
+    BOOST_CHECK_EQUAL( loaded.threadId, "thread-current" );
+    BOOST_CHECK_EQUAL( loaded.toolSchemaVersion, 2 );
+    BOOST_REQUIRE_EQUAL( loaded.messages.size(), 2 );
+    BOOST_CHECK_EQUAL( loaded.messages[0].role, "user" );
+    BOOST_CHECK_EQUAL( loaded.messages[0].text, "Design a motor controller." );
+    BOOST_CHECK_EQUAL( loaded.messages[1].role, "assistant" );
+    BOOST_CHECK_EQUAL( loaded.messages[1].text, "I created the design." );
+    BOOST_CHECK( store.Load( wxFileName( root, wxS( "other" ) ).GetFullPath() )
+                         .threadId.empty() );
 
     wxFFile file( index, wxS( "rb" ) );
     BOOST_REQUIRE( file.IsOpened() );
     wxString text;
     BOOST_REQUIRE( file.ReadAll( &text, wxConvUTF8 ) );
     nlohmann::json document = nlohmann::json::parse( std::string( text.ToUTF8() ) );
-    BOOST_CHECK_EQUAL( document["version"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( document["version"].get<int>(), 3 );
     file.Close();
 
     BOOST_CHECK( wxFileName::Rmdir( root, wxPATH_RMDIR_RECURSIVE ) );
 }
 
 
-BOOST_AUTO_TEST_CASE( RejectsLegacyUnversionedThreadBindings )
+BOOST_AUTO_TEST_CASE( LoadsLegacyUnversionedThreadBindingsForHistoryImport )
 {
     const wxString root = wxFileName::CreateTempFileName( wxS( "kichad-thread-legacy-" ) );
     BOOST_REQUIRE( wxRemoveFile( root ) );
@@ -72,12 +85,15 @@ BOOST_AUTO_TEST_CASE( RejectsLegacyUnversionedThreadBindings )
     file.Close();
 
     CODEX_THREAD_STORE store( index );
-    BOOST_CHECK( store.Load( project, 2 ).empty() );
+    CODEX_THREAD_STORE::BINDING loaded = store.Load( project );
+    BOOST_CHECK_EQUAL( loaded.threadId, "thread-legacy" );
+    BOOST_CHECK_EQUAL( loaded.toolSchemaVersion, 0 );
+    BOOST_CHECK( loaded.messages.empty() );
     BOOST_CHECK( wxFileName::Rmdir( root, wxPATH_RMDIR_RECURSIVE ) );
 }
 
 
-BOOST_AUTO_TEST_CASE( RejectsCorruptedToolSchemaWithoutThrowing )
+BOOST_AUTO_TEST_CASE( LoadsHistoryWhenToolSchemaMetadataIsCorrupted )
 {
     const wxString root = wxFileName::CreateTempFileName( wxS( "kichad-thread-corrupt-" ) );
     BOOST_REQUIRE( wxRemoveFile( root ) );
@@ -100,9 +116,11 @@ BOOST_AUTO_TEST_CASE( RejectsCorruptedToolSchemaWithoutThrowing )
     file.Close();
 
     CODEX_THREAD_STORE store( index );
-    std::string loaded;
-    BOOST_CHECK_NO_THROW( loaded = store.Load( project, 2 ) );
-    BOOST_CHECK( loaded.empty() );
+    CODEX_THREAD_STORE::BINDING loaded;
+    BOOST_CHECK_NO_THROW( loaded = store.Load( project ) );
+    BOOST_CHECK_EQUAL( loaded.threadId, "thread-corrupt" );
+    BOOST_CHECK_EQUAL( loaded.toolSchemaVersion, 0 );
+    BOOST_CHECK( loaded.messages.empty() );
     BOOST_CHECK( wxFileName::Rmdir( root, wxPATH_RMDIR_RECURSIVE ) );
 }
 

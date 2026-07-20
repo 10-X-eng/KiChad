@@ -78,11 +78,13 @@ private:
     void readModels();
     void updateReasoningChoices();
     void savePreferences();
+    void loadSavedConversation();
+    void renderConversation();
+    void persistConversation();
+    JSON conversationHistoryItems() const;
     void ensureThreadLoaded( const wxString& aDisplayedMessage,
                              std::function<void()> aReadyHandler );
     void startThread( std::function<void()> aReadyHandler );
-    void resumeThread( const wxString& aDisplayedMessage,
-                       std::function<void()> aReadyHandler );
     void startTurn( const std::string& aMessage );
     bool handleGoalCommand( const wxString& aMessage );
     void showGoal();
@@ -137,7 +139,9 @@ private:
     wxButton*                 m_revertButton;
     wxButton*                 m_newConversationButton;
     std::vector<JSON>         m_models;
+    std::vector<CODEX_THREAD_STORE::MESSAGE> m_conversationHistory;
     std::string               m_threadId;
+    std::string               m_savedThreadId;
     std::string               m_loginId;
     wxString                  m_threadProjectPath;
     std::string               m_turnId;
@@ -153,9 +157,11 @@ private:
     int                       m_nextToolTaskId;
     bool                      m_initialized;
     bool                      m_authenticated;
-    bool                      m_threadLoaded;
+    bool                      m_conversationLoaded;
+    bool                      m_threadPreparing;
     bool                      m_reasoningSummaryOpen;
     bool                      m_agentResponseOpen;
+    std::string               m_currentAgentMessage;
 };
 
 #endif // KICHAD_CODEX_PANEL_H

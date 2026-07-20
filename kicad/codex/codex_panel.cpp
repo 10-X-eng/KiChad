@@ -178,6 +178,54 @@ bool nativeToolFailureSummary( const JSON& aResult, wxString& aCode, wxString& a
     return true;
 }
 
+
+std::vector<CODEX_THREAD_STORE::MESSAGE> conversationMessages( const JSON& aTurns )
+{
+    std::vector<CODEX_THREAD_STORE::MESSAGE> messages;
+
+    if( !aTurns.is_array() )
+        return messages;
+
+    for( const JSON& turn : aTurns )
+    {
+        if( !turn.is_object() )
+            continue;
+
+        for( const JSON& item : turn.value( "items", JSON::array() ) )
+        {
+            const std::string type = item.value( "type", "" );
+
+            if( type == "userMessage" )
+            {
+                std::string text;
+
+                for( const JSON& content : item.value( "content", JSON::array() ) )
+                {
+                    if( content.value( "type", "" ) != "text" )
+                        continue;
+
+                    if( !text.empty() )
+                        text += "\n";
+
+                    text += content.value( "text", "" );
+                }
+
+                if( !text.empty() )
+                    messages.push_back( { "user", std::move( text ) } );
+            }
+            else if( type == "agentMessage" )
+            {
+                std::string text = item.value( "text", "" );
+
+                if( !text.empty() )
+                    messages.push_back( { "assistant", std::move( text ) } );
+            }
+        }
+    }
+
+    return messages;
+}
+
 } // namespace
 
 
@@ -213,7 +261,8 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_nextToolTaskId( 1 ),
         m_initialized( false ),
         m_authenticated( false ),
-        m_threadLoaded( false ),
+        m_conversationLoaded( false ),
+        m_threadPreparing( false ),
         m_reasoningSummaryOpen( false ),
         m_agentResponseOpen( false )
 {
@@ -412,7 +461,7 @@ void CODEX_PANEL::readAccount( bool aRefreshToken )
                                              : wxString::Format( _( "ChatGPT: %s" ),
                                                                  wxString::FromUTF8( email ) ) );
                     m_loginButton->SetLabel( _( "Sign out" ) );
-                    m_sendButton->Enable( m_initialized );
+                    loadSavedConversation();
                 }
                 else
                 {
@@ -422,8 +471,7 @@ void CODEX_PANEL::readAccount( bool aRefreshToken )
                 }
 
                 setLoginPending( false );
-                m_newConversationButton->Enable( m_initialized && m_client.IsRunning()
-                                                  && m_turnId.empty() );
+                setBusy( !m_turnId.empty() );
             } );
 }
 
@@ -540,13 +588,145 @@ void CODEX_PANEL::savePreferences()
 }
 
 
+void CODEX_PANEL::loadSavedConversation()
+{
+    selectProjectThread();
+
+    if( m_conversationLoaded || m_threadPreparing || !m_initialized || !m_authenticated )
+        return;
+
+    if( !m_conversationHistory.empty() )
+    {
+        renderConversation();
+        m_conversationLoaded = true;
+        setStatus( _( "Saved Codex conversation loaded." ) );
+        setBusy( false );
+        return;
+    }
+
+    if( m_savedThreadId.empty() )
+    {
+        m_conversationLoaded = true;
+        setBusy( false );
+        return;
+    }
+
+    const wxString project = m_threadProjectPath;
+    const std::string savedThreadId = m_savedThreadId;
+    m_threadPreparing = true;
+    setStatus( _( "Loading saved Codex conversation..." ) );
+    setBusy( false );
+
+    m_client.SendRequest(
+            "thread/read", { { "threadId", savedThreadId }, { "includeTurns", true } },
+            [this, project, savedThreadId]( const JSON& aResponse )
+            {
+                if( project != m_threadProjectPath || savedThreadId != m_savedThreadId )
+                    return;
+
+                m_threadPreparing = false;
+
+                if( !aResponse.contains( "result" ) )
+                {
+                    appendTranscript( wxS( "\n[" )
+                                      + responseErrorMessage(
+                                                aResponse,
+                                                _( "Could not load the saved Codex "
+                                                   "conversation." ) )
+                                      + _( " The saved conversation was preserved. Press Send "
+                                           "to retry, or use the new conversation button only "
+                                           "if you want to replace it.]\n" ) );
+                    setStatus( _( "Saved Codex conversation could not be loaded." ) );
+                    setBusy( false );
+                    return;
+                }
+
+                const JSON& thread = aResponse["result"].value( "thread", JSON::object() );
+                m_conversationHistory =
+                        conversationMessages( thread.value( "turns", JSON::array() ) );
+                m_conversationLoaded = true;
+                renderConversation();
+                persistConversation();
+                setStatus( _( "Saved Codex conversation loaded." ) );
+                setBusy( false );
+            } );
+}
+
+
+void CODEX_PANEL::renderConversation()
+{
+    m_transcript->Clear();
+
+    for( const CODEX_THREAD_STORE::MESSAGE& message : m_conversationHistory )
+    {
+        const wxString text = wxString::FromUTF8( message.text );
+
+        if( message.role == "user" )
+            appendTranscript( wxString::Format( _( "\nYou: %s\n" ), text ) );
+        else if( message.role == "assistant" )
+            appendTranscript( wxString::Format( _( "\nCodex: %s\n" ), text ) );
+    }
+}
+
+
+void CODEX_PANEL::persistConversation()
+{
+    const std::string& persistedThreadId =
+            m_threadId.empty() ? m_savedThreadId : m_threadId;
+
+    if( persistedThreadId.empty() )
+        return;
+
+    wxString error;
+    CODEX_THREAD_STORE::BINDING binding = {
+        persistedThreadId, CODEX_TOOL_REGISTRY::SCHEMA_VERSION, m_conversationHistory
+    };
+
+    if( !m_threadStore.Save( m_threadProjectPath, binding, &error ) )
+    {
+        appendTranscript( wxString::Format( _( "\n[Conversation persistence: %s]\n" ),
+                                            error ) );
+    }
+}
+
+
+CODEX_PANEL::JSON CODEX_PANEL::conversationHistoryItems() const
+{
+    JSON items = JSON::array();
+
+    for( const CODEX_THREAD_STORE::MESSAGE& message : m_conversationHistory )
+    {
+        if( message.role == "user" )
+        {
+            items.push_back( {
+                { "type", "message" },
+                { "role", "user" },
+                { "content", JSON::array( { { { "type", "input_text" },
+                                               { "text", message.text } } } ) }
+            } );
+        }
+        else if( message.role == "assistant" )
+        {
+            items.push_back( {
+                { "type", "message" },
+                { "role", "assistant" },
+                { "content", JSON::array( { { { "type", "output_text" },
+                                               { "text", message.text } } } ) }
+            } );
+        }
+    }
+
+    return items;
+}
+
+
 void CODEX_PANEL::ensureThreadLoaded( const wxString& aDisplayedMessage,
                                      std::function<void()> aReadyHandler )
 {
+    wxUnusedVar( aDisplayedMessage );
+
     if( m_threadId.empty() )
         startThread( std::move( aReadyHandler ) );
-    else if( !m_threadLoaded )
-        resumeThread( aDisplayedMessage, std::move( aReadyHandler ) );
     else
         aReadyHandler();
 }
@@ -554,6 +734,9 @@ void CODEX_PANEL::ensureThreadLoaded( const wxString& aDisplayedMessage,
 
 void CODEX_PANEL::startThread( std::function<void()> aReadyHandler )
 {
+    m_threadPreparing = true;
+    setBusy( true );
+
     wxString cwd = projectPath();
 
     JSON params = {
@@ -563,9 +746,9 @@ void CODEX_PANEL::startThread( std::function<void()> aReadyHandler )
         { "allowProviderModelFallback", false },
         { "sandbox", "read-only" },
         { "ephemeral", false },
-        // The local app-server build advertises paginated history in its experimental schema,
-        // but may not include the paginated thread-store backend.  Legacy history is the stable,
-        // persistent rollout contract and remains resumable across KiChad launches.
+        // Legacy history lets thread/read return complete turns for the one-time import into
+        // KiChad's project-scoped conversation store.  A fresh tool-enabled app-server thread is
+        // seeded from that store after each cold launch.
         { "historyMode", "legacy" },
         { "serviceName", "KiChad" },
         { "baseInstructions", agentInstructions() },
@@ -592,6 +775,7 @@ void CODEX_PANEL::startThread( std::function<void()> aReadyHandler )
                                                 _( "Could not start a persistent Codex "
                                                    "conversation." ) )
                                       + wxS( "]\n" ) );
+                    m_threadPreparing = false;
                     setBusy( false );
                     return;
                 }
@@ -601,108 +785,52 @@ void CODEX_PANEL::startThread( std::function<void()> aReadyHandler )
                 if( m_threadId.empty() )
                 {
                     appendTranscript( _( "\n[Codex returned no conversation identifier.]\n" ) );
+                    m_threadPreparing = false;
                     setBusy( false );
                     return;
                 }
 
-                m_threadLoaded = true;
+                JSON history = conversationHistoryItems();
 
-                wxString saveError;
-
-                if( !m_threadStore.Save( m_threadProjectPath, m_threadId,
-                                         CODEX_TOOL_REGISTRY::SCHEMA_VERSION, &saveError ) )
-                    appendTranscript( wxString::Format( _( "\n[Conversation persistence: %s]\n" ),
-                                                        saveError ) );
-
-                aReadyHandler();
-            } );
-}
-
-
-void CODEX_PANEL::resumeThread( const wxString& aDisplayedMessage,
-                               std::function<void()> aReadyHandler )
-{
-    wxString cwd = projectPath();
-    JSON params = {
-        { "threadId", m_threadId },
-        { "cwd", std::string( cwd.ToUTF8() ) },
-        { "runtimeWorkspaceRoots", JSON::array( { std::string( cwd.ToUTF8() ) } ) },
-        { "approvalPolicy", "never" },
-        { "sandbox", "read-only" },
-        { "baseInstructions", agentInstructions() },
-        { "developerInstructions", agentDeveloperInstructions() },
-        { "config", agentConfig() }
-    };
-
-    m_client.SendRequest(
-            "thread/resume", params,
-            [this, aDisplayedMessage,
-             aReadyHandler = std::move( aReadyHandler )]( const JSON& aResponse )
-            {
-                if( !aResponse.contains( "result" ) )
+                if( history.empty() )
                 {
-                    appendTranscript( wxS( "\n[" )
-                                      + responseErrorMessage(
-                                                aResponse,
-                                                _( "Could not resume the saved Codex "
-                                                   "conversation." ) )
-                                      + wxS( "]\n" ) );
-                    m_threadId.clear();
-                    m_threadLoaded = false;
-                    setBusy( false );
+                    m_savedThreadId = m_threadId;
+                    persistConversation();
+                    m_threadPreparing = false;
+                    aReadyHandler();
                     return;
                 }
 
-                m_threadLoaded = true;
-                const JSON& thread = aResponse["result"].value( "thread", JSON::object() );
-                const JSON& turns = thread.value( "turns", JSON::array() );
-
-                if( turns.is_array() )
-                {
-                    m_transcript->Clear();
-
-                    for( const JSON& turn : turns )
-                    {
-                        for( const JSON& item : turn.value( "items", JSON::array() ) )
+                const std::string startedThreadId = m_threadId;
+                m_client.SendRequest(
+                        "thread/inject_items",
+                        { { "threadId", startedThreadId }, { "items", std::move( history ) } },
+                        [this, startedThreadId,
+                         aReadyHandler = std::move( aReadyHandler )]( const JSON& aInjectResponse )
                         {
-                            std::string type = item.value( "type", "" );
+                            if( startedThreadId != m_threadId )
+                                return;
 
-                            if( type == "userMessage" )
+                            if( !aInjectResponse.contains( "result" ) )
                             {
-                                for( const JSON& content : item.value( "content", JSON::array() ) )
-                                {
-                                    if( content.value( "type", "" ) == "text" )
-                                    {
-                                        appendTranscript( wxString::Format(
-                                                _( "\nYou: %s\n" ),
-                                                wxString::FromUTF8( content.value( "text", "" ) ) ) );
-                                    }
-                                }
+                                appendTranscript( wxS( "\n[" )
+                                                  + responseErrorMessage(
+                                                            aInjectResponse,
+                                                            _( "Could not restore the saved "
+                                                               "conversation context." ) )
+                                                  + _( " The original conversation remains "
+                                                       "preserved; retry Send to try again.]\n" ) );
+                                m_threadId.clear();
+                                m_threadPreparing = false;
+                                setBusy( false );
+                                return;
                             }
-                            else if( type == "agentMessage" )
-                            {
-                                appendTranscript( wxString::Format(
-                                        _( "\nCodex: %s\n" ),
-                                        wxString::FromUTF8( item.value( "text", "" ) ) ) );
-                            }
-                            else if( type == "dynamicToolCall" )
-                            {
-                                appendTranscript( wxString::Format(
-                                        _( "\n[tool: %s — %s]\n" ),
-                                        wxString::FromUTF8( item.value( "tool", "" ) ),
-                                        item.value( "success", false ) ? _( "success" )
-                                                                        : _( "failed" ) ) );
-                            }
-                        }
-                    }
 
-                    // onSend displayed this prompt before the asynchronous resume.  Re-add it
-                    // after replacing the transcript with the persisted history.
-                    appendTranscript( wxString::Format(
-                            _( "\nYou: %s\n" ), aDisplayedMessage ) );
-                }
-
-                aReadyHandler();
+                            m_savedThreadId = m_threadId;
+                            persistConversation();
+                            m_threadPreparing = false;
+                            aReadyHandler();
+                        } );
             } );
 }
 
@@ -725,15 +853,26 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
     if( reasoningSelection >= 0 && m_reasoningChoice->IsEnabled() )
         params["effort"] = std::string( m_reasoningChoice->GetString( reasoningSelection ).ToUTF8() );
 
+    m_conversationHistory.push_back( { "user", aMessage } );
     beginTurnDisplay();
     m_client.SendRequest(
             "turn/start", params,
-            [this]( const JSON& aResponse )
+            [this, aMessage]( const JSON& aResponse )
             {
                 if( aResponse.contains( "result" ) )
+                {
                     m_turnId = aResponse["result"]["turn"].value( "id", "" );
+                    persistConversation();
+                }
                 else
                 {
+                    if( !m_conversationHistory.empty()
+                        && m_conversationHistory.back().role == "user"
+                        && m_conversationHistory.back().text == aMessage )
+                    {
+                        m_conversationHistory.pop_back();
+                    }
+
                     appendTranscript( wxS( "[" )
                                       + responseErrorMessage(
                                                 aResponse, _( "Codex turn failed to start." ) )
@@ -748,6 +887,7 @@ void CODEX_PANEL::beginTurnDisplay()
 {
     m_reasoningSummaryOpen = false;
     m_agentResponseOpen = false;
+    m_currentAgentMessage.clear();
     appendTranscript( _( "\n[Starting Codex turn...]\n" ) );
     setStatus( _( "Starting Codex turn..." ) );
 }
@@ -990,11 +1130,14 @@ void CODEX_PANEL::setBusy( bool aBusy )
 {
     // Goal control remains available while Codex is working so users can issue /goal pause or
     // /goal clear without first interrupting the current goal turn.
-    m_sendButton->Enable( m_initialized && m_authenticated );
-    m_newConversationButton->Enable( !aBusy && m_initialized );
-    m_stopButton->Enable( aBusy );
-    m_revertButton->Enable( !aBusy && !m_turnSnapshotHash.IsEmpty() );
-    m_input->Enable();
+    m_sendButton->Enable( m_initialized && m_authenticated
+                          && ( m_conversationLoaded || !m_savedThreadId.empty() )
+                          && !m_threadPreparing );
+    m_newConversationButton->Enable( !aBusy && m_initialized && !m_threadPreparing );
+    m_stopButton->Enable( aBusy && !m_threadPreparing );
+    m_revertButton->Enable( !aBusy && !m_threadPreparing
+                            && !m_turnSnapshotHash.IsEmpty() );
+    m_input->Enable( !m_threadPreparing );
 }
 
 
@@ -1096,14 +1239,20 @@ void CODEX_PANEL::selectProjectThread()
         return;
 
     m_threadProjectPath = activePath;
-    m_threadId = m_threadStore.Load( activePath, CODEX_TOOL_REGISTRY::SCHEMA_VERSION );
+    CODEX_THREAD_STORE::BINDING binding = m_threadStore.Load( activePath );
+    m_savedThreadId = std::move( binding.threadId );
+    m_conversationHistory = std::move( binding.messages );
+    m_threadId.clear();
     m_turnId.clear();
     m_turnSnapshotHash.clear();
     m_revertButton->Disable();
-    m_threadLoaded = false;
+    m_conversationLoaded = false;
+    m_threadPreparing = false;
+    m_currentAgentMessage.clear();
+    m_transcript->Clear();
 
-    if( !m_threadId.empty() )
-        setStatus( _( "Persistent Codex conversation ready." ) );
+    if( !m_savedThreadId.empty() )
+        setStatus( _( "Saved Codex conversation found." ) );
 }
 
 
@@ -1152,13 +1301,16 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
     {
         finishReasoningDisplay();
 
+        const std::string delta = aMessage["params"].value( "delta", "" );
+
         if( !m_agentResponseOpen )
         {
             appendTranscript( _( "\nCodex: " ) );
             m_agentResponseOpen = true;
         }
 
-        appendTranscript( wxString::FromUTF8( aMessage["params"].value( "delta", "" ) ) );
+        m_currentAgentMessage += delta;
+        appendTranscript( wxString::FromUTF8( delta ) );
         setStatus( _( "Codex is responding..." ) );
     }
     else if( method == "item/reasoning/summaryPartAdded" )
@@ -1262,6 +1414,11 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
         }
         else if( type == "agentMessage" )
         {
+            const std::string completedText = item.value( "text", "" );
+
+            if( !completedText.empty() )
+                m_currentAgentMessage = completedText;
+
             if( m_agentResponseOpen )
                 appendTranscript( wxS( "\n" ) );
 
@@ -1339,6 +1496,14 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
                                                 error ) );
             setStatus( wxString::Format( _( "Codex turn failed: %s" ), error ) );
         }
+
+        if( !m_currentAgentMessage.empty() )
+        {
+            m_conversationHistory.push_back( { "assistant", m_currentAgentMessage } );
+            m_currentAgentMessage.clear();
+        }
+
+        persistConversation();
 
         m_agentResponseOpen = false;
         m_turnId.clear();
@@ -1792,6 +1957,12 @@ void CODEX_PANEL::onSend( wxCommandEvent& aEvent )
 {
     selectProjectThread();
 
+    if( !m_conversationLoaded )
+    {
+        loadSavedConversation();
+        return;
+    }
+
     wxString message = m_input->GetValue();
     message.Trim( true ).Trim( false );
 
@@ -1884,11 +2055,16 @@ void CODEX_PANEL::onNewConversation( wxCommandEvent& aEvent )
         return;
     }
 
-    const std::string previousThreadId = m_threadId;
+    const std::string previousThreadId =
+            m_threadId.empty() ? m_savedThreadId : m_threadId;
     m_threadId.clear();
+    m_savedThreadId.clear();
+    m_conversationHistory.clear();
+    m_currentAgentMessage.clear();
     m_turnId.clear();
     m_turnSnapshotHash.clear();
-    m_threadLoaded = false;
+    m_conversationLoaded = true;
+    m_threadPreparing = false;
     m_reasoningSummaryOpen = false;
     m_agentResponseOpen = false;
     m_transcript->Clear();

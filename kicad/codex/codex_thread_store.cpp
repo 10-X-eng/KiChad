@@ -18,8 +18,7 @@
 #include <wx/intl.h>
 
 
-std::string CODEX_THREAD_STORE::Load( const wxString& aProjectPath,
-                                      int aToolSchemaVersion ) const
+CODEX_THREAD_STORE::BINDING CODEX_THREAD_STORE::Load( const wxString& aProjectPath ) const
 {
     const wxString path = storagePath();
 
@@ -47,25 +46,56 @@ std::string CODEX_THREAD_STORE::Load( const wxString& aProjectPath,
 
     const std::string key = projectKey( aProjectPath );
 
-    if( !document["projects"].contains( key ) || !document["projects"][key].is_object() )
+    if( !document["projects"].contains( key ) )
         return {};
 
     const nlohmann::json& entry = document["projects"][key];
 
-    if( !entry.contains( "threadId" ) || !entry["threadId"].is_string()
-        || !entry.contains( "toolSchemaVersion" )
-        || !entry["toolSchemaVersion"].is_number_integer()
-        || entry["toolSchemaVersion"].get<int>() != aToolSchemaVersion )
-    {
+    // Version 1 stored only the thread id.  Keep it readable so an upgrade can import the
+    // app-server's durable history instead of making an existing conversation disappear.
+    if( entry.is_string() )
+        return { entry.get<std::string>(), 0, {} };
+
+    if( !entry.is_object() || !entry.contains( "threadId" )
+        || !entry["threadId"].is_string() )
         return {};
+
+    BINDING binding;
+    binding.threadId = entry["threadId"].get<std::string>();
+
+    if( entry.contains( "toolSchemaVersion" )
+        && entry["toolSchemaVersion"].is_number_integer() )
+    {
+        binding.toolSchemaVersion = entry["toolSchemaVersion"].get<int>();
     }
 
-    return entry["threadId"].get<std::string>();
+    if( entry.contains( "messages" ) && entry["messages"].is_array() )
+    {
+        for( const nlohmann::json& message : entry["messages"] )
+        {
+            if( !message.is_object() || !message.contains( "role" )
+                || !message["role"].is_string() || !message.contains( "text" )
+                || !message["text"].is_string() )
+            {
+                continue;
+            }
+
+            std::string role = message["role"].get<std::string>();
+
+            if( role != "user" && role != "assistant" )
+                continue;
+
+            binding.messages.push_back( { std::move( role ),
+                                          message["text"].get<std::string>() } );
+        }
+    }
+
+    return binding;
 }
 
 
-bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& aThreadId,
-                               int aToolSchemaVersion, wxString* aError ) const
+bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const BINDING& aBinding,
+                               wxString* aError ) const
 {
     const wxString path = storagePath();
     wxFileName target( path );
@@ -104,9 +134,23 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
         existing.Close();
     }
 
-    document["version"] = 2;
-    document["projects"][projectKey( aProjectPath )] =
-            { { "threadId", aThreadId }, { "toolSchemaVersion", aToolSchemaVersion } };
+    nlohmann::json messages = nlohmann::json::array();
+
+    for( const MESSAGE& message : aBinding.messages )
+    {
+        if( ( message.role == "user" || message.role == "assistant" )
+            && !message.text.empty() )
+        {
+            messages.push_back( { { "role", message.role }, { "text", message.text } } );
+        }
+    }
+
+    document["version"] = 3;
+    document["projects"][projectKey( aProjectPath )] = {
+        { "threadId", aBinding.threadId },
+        { "toolSchemaVersion", aBinding.toolSchemaVersion },
+        { "messages", std::move( messages ) }
+    };
 
     wxString temporaryPath = path + wxS( ".tmp" );
     wxFFile temporary( temporaryPath, wxS( "wb" ) );

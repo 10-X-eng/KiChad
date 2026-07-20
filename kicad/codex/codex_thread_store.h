@@ -14,20 +14,34 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <wx/string.h>
 
 
-/** Persists app-server thread IDs and their native-tool schema keyed by project. */
+/** Persists the active Codex conversation keyed by project. */
 class CODEX_THREAD_STORE
 {
 public:
+    struct MESSAGE
+    {
+        std::string role;
+        std::string text;
+    };
+
+    struct BINDING
+    {
+        std::string          threadId;
+        int                  toolSchemaVersion = 0;
+        std::vector<MESSAGE> messages;
+    };
+
     explicit CODEX_THREAD_STORE( wxString aStoragePath = wxString() ) :
             m_storagePath( std::move( aStoragePath ) )
     {}
 
-    std::string Load( const wxString& aProjectPath, int aToolSchemaVersion ) const;
-    bool Save( const wxString& aProjectPath, const std::string& aThreadId, int aToolSchemaVersion,
+    BINDING Load( const wxString& aProjectPath ) const;
+    bool Save( const wxString& aProjectPath, const BINDING& aBinding,
                wxString* aError = nullptr ) const;
     bool Clear( const wxString& aProjectPath, wxString* aError = nullptr ) const;
 
