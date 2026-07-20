@@ -74,6 +74,25 @@ const char* agentInstructions()
            "arbitrary code execution, GUI automation, MCP, or direct ad-hoc file rewriting.";
 }
 
+
+wxString responseErrorMessage( const JSON& aResponse, const wxString& aFallback )
+{
+    if( !aResponse.contains( "error" ) || !aResponse["error"].is_object() )
+        return aFallback;
+
+    const JSON& error = aResponse["error"];
+
+    if( error.contains( "message" ) && error["message"].is_string() )
+    {
+        const std::string message = error["message"].get<std::string>();
+
+        if( !message.empty() )
+            return wxString::FromUTF8( message );
+    }
+
+    return aFallback;
+}
+
 } // namespace
 
 
@@ -364,7 +383,10 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "approvalPolicy", "never" },
         { "sandbox", "read-only" },
         { "ephemeral", false },
-        { "historyMode", "paginated" },
+        // The local app-server build advertises paginated history in its experimental schema,
+        // but may not include the paginated thread-store backend.  Legacy history is the stable,
+        // persistent rollout contract and remains resumable across KiChad launches.
+        { "historyMode", "legacy" },
         { "serviceName", "KiChad" },
         { "baseInstructions", agentInstructions() },
         { "config", agentConfig() }
@@ -383,7 +405,12 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
             {
                 if( !aResponse.contains( "result" ) )
                 {
-                    appendTranscript( _( "\n[Could not start a persistent Codex conversation.]\n" ) );
+                    appendTranscript( wxS( "\n[" )
+                                      + responseErrorMessage(
+                                                aResponse,
+                                                _( "Could not start a persistent Codex "
+                                                   "conversation." ) )
+                                      + wxS( "]\n" ) );
                     setBusy( false );
                     return;
                 }
@@ -421,9 +448,7 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
         { "approvalPolicy", "never" },
         { "sandbox", "read-only" },
         { "baseInstructions", agentInstructions() },
-        { "config", agentConfig() },
-        { "initialTurnsPage",
-          { { "limit", 20 }, { "sortDirection", "asc" }, { "itemsView", "full" } } }
+        { "config", agentConfig() }
     };
 
     m_client.SendRequest(
@@ -432,7 +457,12 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
             {
                 if( !aResponse.contains( "result" ) )
                 {
-                    appendTranscript( _( "\n[Could not resume the saved Codex conversation.]\n" ) );
+                    appendTranscript( wxS( "\n[" )
+                                      + responseErrorMessage(
+                                                aResponse,
+                                                _( "Could not resume the saved Codex "
+                                                   "conversation." ) )
+                                      + wxS( "]\n" ) );
                     m_threadId.clear();
                     m_threadLoaded = false;
                     setBusy( false );
@@ -440,13 +470,14 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
                 }
 
                 m_threadLoaded = true;
-                const JSON& page = aResponse["result"].value( "initialTurnsPage", JSON() );
+                const JSON& thread = aResponse["result"].value( "thread", JSON::object() );
+                const JSON& turns = thread.value( "turns", JSON::array() );
 
-                if( page.is_object() && page.contains( "data" ) )
+                if( turns.is_array() )
                 {
                     m_transcript->Clear();
 
-                    for( const JSON& turn : page["data"] )
+                    for( const JSON& turn : turns )
                     {
                         for( const JSON& item : turn.value( "items", JSON::array() ) )
                         {
@@ -480,6 +511,11 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
                             }
                         }
                     }
+
+                    // onSend displayed this prompt before the asynchronous resume.  Re-add it
+                    // after replacing the transcript with the persisted history.
+                    appendTranscript( wxString::Format(
+                            _( "\nYou: %s\n" ), wxString::FromUTF8( aMessage ) ) );
                 }
 
                 startTurn( aMessage );
@@ -514,7 +550,10 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
                     m_turnId = aResponse["result"]["turn"].value( "id", "" );
                 else
                 {
-                    appendTranscript( _( "[turn failed to start]\n" ) );
+                    appendTranscript( wxS( "[" )
+                                      + responseErrorMessage(
+                                                aResponse, _( "Codex turn failed to start." ) )
+                                      + wxS( "]\n" ) );
                     setBusy( false );
                 }
             } );
