@@ -50,7 +50,7 @@ private:
     using JSON = nlohmann::json;
 
     void initializeAppServer();
-    void readAccount();
+    void readAccount( bool aRefreshToken = false );
     void readModels();
     void updateReasoningChoices();
     void startThreadAndTurn( const std::string& aMessage );
@@ -89,6 +89,7 @@ private:
     wxButton*                 m_revertButton;
     std::vector<JSON>         m_models;
     std::string               m_threadId;
+    std::string               m_loginId;
     wxString                  m_threadProjectPath;
     std::string               m_turnId;
     wxString                  m_turnSnapshotHash;

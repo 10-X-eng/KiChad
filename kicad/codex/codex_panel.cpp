@@ -224,10 +224,10 @@ void CODEX_PANEL::initializeAppServer()
 }
 
 
-void CODEX_PANEL::readAccount()
+void CODEX_PANEL::readAccount( bool aRefreshToken )
 {
     m_client.SendRequest(
-            "account/read", { { "refreshToken", false } },
+            "account/read", { { "refreshToken", aRefreshToken } },
             [this]( const JSON& aResponse )
             {
                 if( !aResponse.contains( "result" ) )
@@ -238,11 +238,17 @@ void CODEX_PANEL::readAccount()
                 }
 
                 const JSON& account = aResponse["result"].value( "account", JSON() );
-                m_authenticated = account.is_object();
+                m_authenticated = account.is_object()
+                                  && account.value( "type", "" ) == "chatgpt";
 
-                if( m_authenticated && account.value( "type", "" ) == "chatgpt" )
+                if( m_authenticated )
                 {
-                    std::string email = account.value( "email", "" );
+                    std::string email;
+
+                    if( account.contains( "email" ) && account["email"].is_string() )
+                        email = account["email"].get<std::string>();
+
+                    m_loginId.clear();
                     setStatus( email.empty() ? _( "Signed in with ChatGPT" )
                                              : wxString::Format( _( "ChatGPT: %s" ),
                                                                  wxString::FromUTF8( email ) ) );
@@ -572,9 +578,40 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
 {
     const std::string method = aMessage.value( "method", "" );
 
-    if( method == "account/login/completed" )
+    if( method == "account/updated" )
     {
+        // Current app-server versions publish the authoritative authentication transition on
+        // account/updated.  Always re-read the owned credential store instead of trying to build
+        // an incomplete account from the notification's authMode and planType summary.
         readAccount();
+        readModels();
+    }
+    else if( method == "account/login/completed" )
+    {
+        const JSON& params = aMessage.value( "params", JSON::object() );
+        const std::string eventLoginId =
+                params.contains( "loginId" ) && params["loginId"].is_string()
+                        ? params["loginId"].get<std::string>()
+                        : std::string();
+
+        if( !m_loginId.empty() && !eventLoginId.empty() && eventLoginId != m_loginId )
+            return;
+
+        if( !params.value( "success", false ) )
+        {
+            const std::string error = params.contains( "error" ) && params["error"].is_string()
+                                              ? params["error"].get<std::string>()
+                                              : std::string();
+            setStatus( error.empty() ? _( "ChatGPT sign-in failed." )
+                                     : wxString::FromUTF8( error ) );
+            m_loginId.clear();
+            m_loginButton->Enable();
+            return;
+        }
+
+        // Match the working VibeCAD flow: force one refresh after successful OAuth before
+        // enabling inference, then reload the account-scoped model catalog.
+        readAccount( true );
         readModels();
     }
     else if( method == "item/agentMessage/delta" )
@@ -812,17 +849,21 @@ void CODEX_PANEL::onLogin( wxCommandEvent& aEvent )
     m_loginButton->Disable();
     setStatus( _( "Starting ChatGPT sign-in..." ) );
     m_client.SendRequest(
-            "account/login/start", { { "type", "chatgpt" }, { "codexStreamlinedLogin", true },
+            "account/login/start", { { "type", "chatgpt" },
                                      { "useHostedLoginSuccessPage", true },
-                                     { "appBrand", "codex" } },
+                                     { "appBrand", "chatgpt" } },
             [this]( const JSON& aResponse )
             {
                 if( aResponse.contains( "result" ) )
                 {
-                    std::string authUrl = aResponse["result"].value( "authUrl", "" );
+                    const JSON& result = aResponse["result"];
+                    std::string authUrl = result.value( "authUrl", "" );
+                    std::string loginId = result.value( "loginId", "" );
 
-                    if( !authUrl.empty() )
+                    if( result.value( "type", "" ) == "chatgpt" && !authUrl.empty()
+                        && !loginId.empty() )
                     {
+                        m_loginId = std::move( loginId );
                         wxLaunchDefaultBrowser( wxString::FromUTF8( authUrl ) );
                         setStatus( _( "Complete ChatGPT sign-in in your browser..." ) );
                         return;
