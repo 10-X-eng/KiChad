@@ -6858,8 +6858,11 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form",
                       "(board (stackup ...) (outline (rect (id ID) (at X Y) (size W H))) "
                       "(place REF (at X Y) ...) (route NET (id ID) (from X Y) (to X Y) ...) "
-                      "(via NET (id ID) (at X Y) (diameter D) (drill D) "
+                      "(via NET (id ID) (at X Y) (drill D) "
+                      "((diameter D)|(padstack front_inner_back|custom (layer LAYER ...)...)) "
                       "[(layers START END)] [(type through|blind|buried|micro)] "
+                      "[(backdrills (top (diameter D) (stop_layer LAYER)) "
+                      "(bottom (diameter D) (stop_layer LAYER)))] "
                       "[(protection (tenting ...) (covering ...) (plugging ...) "
                       "(filling inherit|filled|unfilled) (capping inherit|capped|uncapped) "
                       "(post_machining front|back counterbore|countersink ...))]) "

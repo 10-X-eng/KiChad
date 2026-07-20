@@ -11,6 +11,8 @@
 
 #include "design_script_board_compiler.h"
 
+#include "design_script_via_backdrill_compiler.h"
+#include "design_script_via_padstack_compiler.h"
 #include "design_script_via_protection_compiler.h"
 
 #include <algorithm>
@@ -1085,6 +1087,73 @@ void validateStackupLayers( const JSON& aStatements, RESULT& aResult )
                 diagnostic( aResult, "error", "invalid_microvia_span",
                             "microvias must connect adjacent copper layers" );
             }
+
+            const JSON& padstack = statement.value( "padstack", JSON( nullptr ) );
+
+            if( padstack.is_object() && padstack.value( "mode", "" ) == "custom" )
+            {
+                const int first = std::min( start, end );
+                const int last = std::max( start, end );
+                std::set<int> authored;
+
+                for( const JSON& layer : padstack.value( "layers", JSON::array() ) )
+                {
+                    const std::string name = layer.value( "name", "" );
+                    const int index = copperLayerIndex( name, copperLayers );
+
+                    if( index < first || index > last )
+                        diagnostic( aResult, "error", "via_padstack_layer_outside_span",
+                                    "custom via padstack layer " + name
+                                            + " is outside the drilled span" );
+                    else
+                        authored.emplace( index );
+                }
+
+                for( int index = first; index <= last; ++index )
+                {
+                    if( !authored.contains( index ) )
+                    {
+                        diagnostic( aResult, "error", "incomplete_via_padstack_span",
+                                    "custom via padstack must define every copper layer in its span" );
+                        break;
+                    }
+                }
+            }
+
+            const JSON& backdrills = statement.value( "backdrills", JSON( nullptr ) );
+
+            if( backdrills.is_object() )
+            {
+                int topStop = -1;
+                int bottomStop = -1;
+
+                if( backdrills["top"].is_object() )
+                    topStop = copperLayerIndex(
+                            backdrills["top"].value( "stopLayer", "" ), copperLayers );
+
+                if( backdrills["bottom"].is_object() )
+                    bottomStop = copperLayerIndex(
+                            backdrills["bottom"].value( "stopLayer", "" ), copperLayers );
+
+                if( ( topStop >= 0 && ( topStop == 0 || topStop == copperLayers - 1 ) )
+                    || ( bottomStop >= 0
+                         && ( bottomStop == 0 || bottomStop == copperLayers - 1 ) ) )
+                {
+                    diagnostic( aResult, "error", "invalid_via_backdrill_stop_layer",
+                                "backdrill must stop on an inner copper layer" );
+                }
+
+                if( ( backdrills["top"].is_object() && topStop < 0 )
+                    || ( backdrills["bottom"].is_object() && bottomStop < 0 ) )
+                {
+                    diagnostic( aResult, "error", "via_backdrill_layer_outside_stackup",
+                                "backdrill stop layer is absent from the board stackup" );
+                }
+
+                if( topStop >= 0 && bottomStop >= 0 && topStop >= bottomStop )
+                    diagnostic( aResult, "error", "overlapping_via_backdrills",
+                                "top and bottom backdrills must leave a plated layer span" );
+            }
         }
         else if( kind == "zone" || kind == "keepout" )
         {
@@ -1221,7 +1290,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     std::map<std::string, size_t> fields;
     collectFields( aDocument, aNode, 2,
                    { "id", "at", "diameter", "drill", "layers", "type", "locked",
-                     "protection" },
+                     "padstack", "protection", "backdrills" },
                    fields, aResult, "via" );
     std::string logicalId;
     JSON        position = JSON::object();
@@ -1231,7 +1300,9 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     std::string endLayer;
     std::string type = "through";
     bool        locked = false;
+    JSON        padstack = nullptr;
     JSON        protection = nullptr;
+    JSON        backdrills = nullptr;
 
     if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
         || !validIdentifier( logicalId ) )
@@ -1251,18 +1322,18 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
                     "via requires (at X Y) with explicit physical units" );
     }
 
-    if( !fields.contains( "diameter" )
-        || !parseDistanceForm( aDocument, fields["diameter"], diameter ) || diameter <= 0 )
+    if( fields.contains( "diameter" )
+        && ( !parseDistanceForm( aDocument, fields["diameter"], diameter ) || diameter <= 0 ) )
     {
         diagnostic( aResult, "error", "invalid_via_diameter",
-                    "via requires a positive physical diameter" );
+                    "via diameter must be a positive physical distance" );
     }
 
     if( !fields.contains( "drill" ) || !parseDistanceForm( aDocument, fields["drill"], drill )
-        || drill <= 0 || drill >= diameter )
+        || drill <= 0 )
     {
         diagnostic( aResult, "error", "invalid_via_drill",
-                    "via drill must be positive and smaller than its diameter" );
+                    "via drill must be a positive physical distance" );
     }
 
     if( fields.contains( "layers" ) )
@@ -1306,6 +1377,46 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
                     "via locked must be true or false" );
     }
 
+    if( fields.contains( "padstack" ) )
+    {
+        KICHAD::DESIGN_SCRIPT_VIA_PADSTACK_COMPILER::RESULT compiled =
+                KICHAD::DESIGN_SCRIPT_VIA_PADSTACK_COMPILER::Compile(
+                        aDocument, fields["padstack"] );
+
+        for( JSON& entry : compiled.diagnostics )
+            aResult.diagnostics.push_back( std::move( entry ) );
+
+        padstack = std::move( compiled.padstack );
+    }
+
+    if( padstack.is_object() == fields.contains( "diameter" ) )
+    {
+        diagnostic( aResult, "error", "ambiguous_via_copper_geometry",
+                    "via requires exactly one copper representation: diameter or padstack" );
+    }
+
+    if( !padstack.is_object() && diameter > 0 && drill >= diameter )
+        diagnostic( aResult, "error", "invalid_via_drill",
+                    "simple via drill must be smaller than its diameter" );
+
+    if( padstack.is_object() )
+    {
+        for( const JSON& layer : padstack["layers"] )
+        {
+            if( layer.contains( "size" )
+                && ( drill >= layer["size"]["xNm"].get<int64_t>()
+                     || drill >= layer["size"]["yNm"].get<int64_t>() ) )
+            {
+                diagnostic( aResult, "error", "invalid_via_padstack_annulus",
+                            "every via padstack copper shape must exceed the drill" );
+            }
+        }
+
+        if( padstack.value( "mode", "" ) == "front_inner_back" && type != "through" )
+            diagnostic( aResult, "error", "invalid_via_padstack_mode",
+                        "front_inner_back padstacks apply only to through vias" );
+    }
+
     if( fields.contains( "protection" ) )
     {
         KICHAD::DESIGN_SCRIPT_VIA_PROTECTION_COMPILER::RESULT compiled =
@@ -1316,6 +1427,39 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
             aResult.diagnostics.push_back( std::move( entry ) );
 
         protection = std::move( compiled.protection );
+    }
+
+    if( fields.contains( "backdrills" ) )
+    {
+        KICHAD::DESIGN_SCRIPT_VIA_BACKDRILL_COMPILER::RESULT compiled =
+                KICHAD::DESIGN_SCRIPT_VIA_BACKDRILL_COMPILER::Compile(
+                        aDocument, fields["backdrills"] );
+
+        for( JSON& entry : compiled.diagnostics )
+            aResult.diagnostics.push_back( std::move( entry ) );
+
+        backdrills = std::move( compiled.backdrills );
+    }
+
+    if( backdrills.is_object() )
+    {
+        if( type != "through" )
+            diagnostic( aResult, "error", "invalid_via_backdrill_type",
+                        "top/bottom backdrilling requires a through via" );
+
+        for( const char* side : { "top", "bottom" } )
+        {
+            if( !backdrills[side].is_object() )
+                continue;
+
+            if( backdrills[side].value( "diameterNm", int64_t{ 0 } ) <= drill )
+                diagnostic( aResult, "error", "invalid_via_backdrill_diameter",
+                            "backdrill diameter must exceed the primary via drill" );
+
+            if( !copperLayer( backdrills[side].value( "stopLayer", "" ) ) )
+                diagnostic( aResult, "error", "invalid_via_backdrill_stop_layer",
+                            "backdrill stop_layer must name a copper layer" );
+        }
     }
 
     if( protection.is_object() )
@@ -1369,7 +1513,9 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "startLayer", startLayer },
              { "endLayer", endLayer },
              { "viaType", type },
+             { "padstack", std::move( padstack ) },
              { "protection", std::move( protection ) },
+             { "backdrills", std::move( backdrills ) },
              { "locked", locked },
              { "typed", true } };
 }

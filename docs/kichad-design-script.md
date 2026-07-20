@@ -1500,8 +1500,39 @@ uses `open|tented`, covering uses `covered|uncovered`, and plugging uses `plugge
 LLM never has to infer an inverted boolean. Filling and capping use equally direct state words.
 Treatments on a physical side are rejected unless the via span reaches that outer copper layer.
 Counterbores require diameter and depth; countersinks require diameter and included angle. Their
-diameter must exceed the primary drill. Full per-layer via copper shapes, custom shape primitives,
-back/tertiary drill hits, layer-removal policy, and teardrops remain explicit gaps.
+diameter must exceed the primary drill.
+
+An advanced via replaces—not supplements—the simple circular `diameter` with exactly one semantic
+`padstack`. `front_inner_back` requires `F.Cu`, `inner`, and `B.Cu`. `custom` requires every named
+copper layer in the via's drilled span, so no unspecified layer silently inherits geometry:
+
+```scheme
+(via DDR_DQ0
+  (id ddr-dq0-via)
+  (at 24mm 16mm)
+  (drill 0.3mm)
+  (layers F.Cu B.Cu)
+  (type through)
+  (padstack custom
+    (layer F.Cu (shape circle) (size 0.7mm 0.7mm))
+    (layer In1.Cu (shape oval) (size 0.8mm 0.6mm))
+    (layer In2.Cu (shape rect) (size 0.7mm 0.7mm) (offset 0.05mm 0mm))
+    (layer B.Cu
+      (shape chamfered_rect) (size 0.8mm 0.7mm)
+      (roundrect_radius 0.05mm) (chamfer_ratio 0.2)
+      (chamfer top_left bottom_right)))
+  (backdrills
+    (top (diameter 0.5mm) (stop_layer In1.Cu))
+    (bottom (diameter 0.55mm) (stop_layer In2.Cu))))
+```
+
+Per-layer shapes are `circle`, `rect`, `oval`, `trapezoid`, `roundrect`, and `chamfered_rect`, with
+the same one-representation geometry used by footprint pads. Every copper shape must exceed the
+primary drill. `backdrills` names physical `top` and `bottom` operations instead of exposing
+KiCad's internal secondary/tertiary numbering; each operation requires a larger diameter and one
+inner stop layer. Two-sided backdrills must leave a non-empty plated layer span. Per-layer custom
+graphic primitives, unconnected-layer removal and forced-flash policy, and teardrops remain
+explicit gaps.
 
 ### Copper zone form
 

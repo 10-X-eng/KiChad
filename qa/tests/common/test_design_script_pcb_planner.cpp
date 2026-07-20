@@ -46,7 +46,13 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
         (covering (front covered) (back inherit))
         (plugging (front plugged) (back unplugged))
         (filling filled) (capping uncapped)
-        (post_machining front counterbore (diameter 0.6mm) (depth 0.15mm))))))
+        (post_machining front counterbore (diameter 0.6mm) (depth 0.15mm))))
+    (via SIGNAL (id via-b) (at 6mm 4mm) (drill 0.3mm)
+      (padstack custom
+        (layer F.Cu (shape circle) (size 0.7mm 0.7mm))
+        (layer B.Cu (shape chamfered_rect) (size 0.8mm 0.7mm)
+          (offset 0.05mm 0mm) (roundrect_radius 0.05mm)
+          (chamfer_ratio 0.2) (chamfer top_left bottom_right))))))
 )KDS";
 
 
@@ -79,13 +85,14 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
     BOOST_REQUIRE_MESSAGE( first.fullyLowered, first.diagnostics.dump() );
     BOOST_CHECK_EQUAL( first.operations.dump(), second.operations.dump() );
-    BOOST_REQUIRE_EQUAL( first.operations.size(), 4 );
-    BOOST_CHECK_EQUAL( first.counts["upserts"].get<int>(), 4 );
+    BOOST_REQUIRE_EQUAL( first.operations.size(), 5 );
+    BOOST_CHECK_EQUAL( first.counts["upserts"].get<int>(), 5 );
 
     checkProtobufJson<kiapi::board::types::BoardGraphicShape>( first.operations[0]["item"] );
     checkProtobufJson<kiapi::board::types::Track>( first.operations[1]["item"] );
     checkProtobufJson<kiapi::board::types::Arc>( first.operations[2]["item"] );
     checkProtobufJson<kiapi::board::types::Via>( first.operations[3]["item"] );
+    checkProtobufJson<kiapi::board::types::Via>( first.operations[4]["item"] );
 
     BOOST_CHECK_EQUAL( first.operations[1]["item"]["width"]["valueNm"].get<std::string>(),
                        "250000" );
@@ -100,10 +107,70 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     BOOST_CHECK_EQUAL( viaStack["frontPostMachining"]["mode"], "VDPM_COUNTERBORE" );
     BOOST_CHECK_EQUAL( viaStack["frontPostMachining"]["size"], 600000 );
     BOOST_CHECK_EQUAL( viaStack["frontPostMachining"]["depth"], 150000 );
+    const nlohmann::json& customStack = first.operations[4]["item"]["padStack"];
+    BOOST_CHECK_EQUAL( customStack["type"], "PST_CUSTOM" );
+    BOOST_REQUIRE_EQUAL( customStack["copperLayers"].size(), 2 );
+    BOOST_CHECK_EQUAL( customStack["copperLayers"][1]["shape"], "PSS_CHAMFEREDRECT" );
+    BOOST_CHECK_CLOSE( customStack["copperLayers"][1]["cornerRoundingRatio"].get<double>(),
+                       0.0714285714, 0.0001 );
+    BOOST_CHECK( customStack["copperLayers"][1]["chamferedCorners"]["topLeft"]
+                         .get<bool>() );
     const std::string id = first.operations[1]["itemId"].get<std::string>();
     BOOST_CHECK_EQUAL( id, "c3fc8149-6c3c-8f2d-94c6-2d462e6d2a49" );
     BOOST_CHECK_EQUAL( id[14], '8' );
     BOOST_CHECK( id[19] == '8' || id[19] == '9' || id[19] == 'a' || id[19] == 'b' );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersCompleteFourLayerViaStackAndTwoSidedBackdrilling )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1) (project advanced_via)
+  (component R1 (symbol "Device:R") (value "1k") (footprint "R:R"))
+  (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
+  (net SIGNAL (pin R1 1 1) (pin R2 1 1))
+  (board
+    (stackup
+      (finish "ENIG") (impedance_controlled false)
+      (edge_connector none) (edge_plating false)
+      (layers
+        (copper F.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.3mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked false))
+        (copper In1.Cu (thickness 35um))
+        (dielectric core (thickness 0.8mm) (material "FR4")
+          (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
+        (copper In2.Cu (thickness 35um))
+        (dielectric prepreg (thickness 0.3mm) (material "FR4")
+          (epsilon_r 4.2) (loss_tangent 0.02) (locked false))
+        (copper B.Cu (thickness 35um))))
+    (via SIGNAL (id stacked) (at 5mm 5mm) (drill 0.3mm)
+      (padstack custom
+        (layer F.Cu (shape circle) (size 0.7mm 0.7mm))
+        (layer In1.Cu (shape oval) (size 0.8mm 0.6mm))
+        (layer In2.Cu (shape rect) (size 0.7mm 0.7mm) (offset 0.05mm 0mm))
+        (layer B.Cu (shape roundrect) (size 0.8mm 0.7mm)
+          (roundrect_radius 0.1mm)))
+      (backdrills
+        (top (diameter 0.5mm) (stop_layer In1.Cu))
+        (bottom (diameter 0.55mm) (stop_layer In2.Cu))))))
+)KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump( 2 ) );
+    const KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump( 2 ) );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 2 );
+    const nlohmann::json& item = plan.operations[1]["item"];
+    checkProtobufJson<kiapi::board::types::Via>( item );
+    const nlohmann::json& stack = item["padStack"];
+    BOOST_CHECK_EQUAL( stack["type"], "PST_CUSTOM" );
+    BOOST_REQUIRE_EQUAL( stack["copperLayers"].size(), 4 );
+    BOOST_CHECK_EQUAL( stack["secondaryDrill"]["startLayer"], "BL_F_Cu" );
+    BOOST_CHECK_EQUAL( stack["secondaryDrill"]["endLayer"], "BL_In1_Cu" );
+    BOOST_CHECK_EQUAL( stack["tertiaryDrill"]["startLayer"], "BL_B_Cu" );
+    BOOST_CHECK_EQUAL( stack["tertiaryDrill"]["endLayer"], "BL_In2_Cu" );
 }
 
 

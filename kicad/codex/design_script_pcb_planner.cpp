@@ -933,7 +933,7 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "via", logicalId );
     const std::string startLayer = layerEnum( aStatement.at( "startLayer" ).get<std::string>() );
     const std::string endLayer = layerEnum( aStatement.at( "endLayer" ).get<std::string>() );
-    const std::string diameter = std::to_string( aStatement.at( "diameterNm" ).get<int64_t>() );
+    const std::string diameter = std::to_string( aStatement.value( "diameterNm", int64_t{ 0 } ) );
     const std::string drill = std::to_string( aStatement.at( "drillNm" ).get<int64_t>() );
     const std::string type = aStatement.at( "viaType" ).get<std::string>();
     std::string       typeEnum;
@@ -948,19 +948,110 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
         typeEnum = "VT_MICRO";
 
     JSON padStack = {
-        { "type", "PST_NORMAL" },
         { "layers", JSON::array( { startLayer, endLayer } ) },
         { "drill",
           { { "startLayer", startLayer },
             { "endLayer", endLayer },
             { "diameter", { { "xNm", drill }, { "yNm", drill } } },
             { "shape", "DS_CIRCLE" } } },
-        { "unconnectedLayerRemoval", "ULR_KEEP" },
-        { "copperLayers",
-          JSON::array( { { { "layer", "BL_F_Cu" },
-                            { "shape", "PSS_CIRCLE" },
-                            { "size", { { "xNm", diameter }, { "yNm", diameter } } } } } ) }
+        { "unconnectedLayerRemoval", "ULR_KEEP" }
     };
+    const JSON authoredPadstack = aStatement.value( "padstack", JSON( nullptr ) );
+
+    if( authoredPadstack.is_object() )
+    {
+        static const std::map<std::string, std::string> shapes = {
+            { "circle", "PSS_CIRCLE" }, { "rect", "PSS_RECTANGLE" },
+            { "oval", "PSS_OVAL" }, { "trapezoid", "PSS_TRAPEZOID" },
+            { "roundrect", "PSS_ROUNDRECT" },
+            { "chamfered_rect", "PSS_CHAMFEREDRECT" }
+        };
+        padStack["type"] = authoredPadstack.at( "mode" ) == "front_inner_back"
+                                   ? "PST_FRONT_INNER_BACK" : "PST_CUSTOM";
+        padStack["copperLayers"] = JSON::array();
+
+        for( const JSON& source : authoredPadstack.at( "layers" ) )
+        {
+            const std::string name = source.at( "name" ).get<std::string>();
+            const std::string shape = source.at( "shape" ).get<std::string>();
+            JSON layer = {
+                { "layer", name == "inner" ? "BL_In1_Cu" : layerEnum( name ) },
+                { "shape", shapes.at( shape ) },
+                { "size", vectorProto( source.at( "size" ) ) },
+                { "offset", vectorProto( source.at( "offset" ) ) }
+            };
+            const int64_t deltaX = source.at( "trapezoidDelta" ).at( "xNm" ).get<int64_t>();
+            const int64_t deltaY = source.at( "trapezoidDelta" ).at( "yNm" ).get<int64_t>();
+
+            if( deltaX != 0 || deltaY != 0 )
+                layer["trapezoidDelta"] = vectorProto( source.at( "trapezoidDelta" ) );
+
+            if( source.at( "roundrectRadiusNm" ).is_number_integer() )
+            {
+                const int64_t width = source.at( "size" ).at( "xNm" ).get<int64_t>();
+                const int64_t height = source.at( "size" ).at( "yNm" ).get<int64_t>();
+                layer["cornerRoundingRatio"] =
+                        static_cast<double>( source.at( "roundrectRadiusNm" ).get<int64_t>() )
+                        / static_cast<double>( std::min( width, height ) );
+            }
+
+            if( source.at( "chamferRatioPpm" ).is_number_integer() )
+            {
+                layer["chamferRatio"] =
+                        static_cast<double>( source.at( "chamferRatioPpm" ).get<int64_t>() )
+                        / 1'000'000.0;
+                JSON corners = {
+                    { "topLeft", false }, { "topRight", false },
+                    { "bottomLeft", false }, { "bottomRight", false }
+                };
+
+                for( const JSON& corner : source.at( "chamferCorners" ) )
+                {
+                    const std::string value = corner.get<std::string>();
+                    corners[value == "top_left" ? "topLeft"
+                            : value == "top_right" ? "topRight"
+                            : value == "bottom_left" ? "bottomLeft" : "bottomRight"] = true;
+                }
+
+                layer["chamferedCorners"] = std::move( corners );
+            }
+
+            padStack["copperLayers"].push_back( std::move( layer ) );
+        }
+    }
+    else
+    {
+        padStack["type"] = "PST_NORMAL";
+        padStack["copperLayers"] =
+                JSON::array( { { { "layer", "BL_F_Cu" },
+                                  { "shape", "PSS_CIRCLE" },
+                                  { "size", { { "xNm", diameter }, { "yNm", diameter } } } } } );
+    }
+
+    const JSON backdrills = aStatement.value( "backdrills", JSON( nullptr ) );
+
+    if( backdrills.is_object() )
+    {
+        const auto mapBackdrill = [&]( const char* aSide, const char* aProtoField )
+        {
+            if( !backdrills[aSide].is_object() )
+                return;
+
+            const JSON& source = backdrills[aSide];
+            const std::string backdrillDiameter =
+                    std::to_string( source.at( "diameterNm" ).get<int64_t>() );
+            padStack[aProtoField] = {
+                { "startLayer", aSide[0] == 't' ? "BL_F_Cu" : "BL_B_Cu" },
+                { "endLayer", layerEnum( source.at( "stopLayer" ).get<std::string>() ) },
+                { "diameter",
+                  { { "xNm", backdrillDiameter }, { "yNm", backdrillDiameter } } },
+                { "shape", "DS_CIRCLE" }
+            };
+        };
+        mapBackdrill( "top", "secondaryDrill" );
+        mapBackdrill( "bottom", "tertiaryDrill" );
+    }
+
     const JSON protection = aStatement.value( "protection", JSON( nullptr ) );
 
     if( protection.is_object() )

@@ -159,8 +159,9 @@ fixed and curved artwork, polygons and fills, rich text and text boxes, local
 mask/paste/clearance/thermal policy, jumper/net-tie groups, and project-local 3D model transforms;
 the current KiCad 10 `.kicad_mod` artifacts are whole-library swapped, native-loader
 validated, journaled, and restored exactly after an injected rejection. Board vias also carry
-AI-native tenting, covering, plugging, filling, capping, and post-machining intent through KiCad's
-official typed padstack IPC message. It creates and fills a
+AI-native arbitrary per-layer copper geometry, top/bottom backdrilling, tenting, covering,
+plugging, filling, capping, and post-machining intent through KiCad's official typed padstack IPC
+message. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.
