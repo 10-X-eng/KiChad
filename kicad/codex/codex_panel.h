@@ -59,6 +59,7 @@ private:
     void selectProjectThread();
     void appendTranscript( const wxString& aText );
     void setBusy( bool aBusy );
+    void setLoginPending( bool aPending );
     void setStatus( const wxString& aStatus );
     wxString projectPath() const;
 
@@ -66,6 +67,8 @@ private:
     void onAppServerState( bool aRunning, const wxString& aDetail );
     void onToolCompleted( wxThreadEvent& aEvent );
     void onLogin( wxCommandEvent& aEvent );
+    void onDeviceLogin( wxCommandEvent& aEvent );
+    void onCancelLogin( wxCommandEvent& aEvent );
     void onSend( wxCommandEvent& aEvent );
     void onStop( wxCommandEvent& aEvent );
     void onRevertTurn( wxCommandEvent& aEvent );
@@ -80,6 +83,8 @@ private:
     wxStaticText*             m_status;
     wxStaticText*             m_processStatus;
     wxButton*                 m_loginButton;
+    wxButton*                 m_deviceLoginButton;
+    wxButton*                 m_cancelLoginButton;
     wxChoice*                 m_modelChoice;
     wxChoice*                 m_reasoningChoice;
     wxTextCtrl*               m_transcript;

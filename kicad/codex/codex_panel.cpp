@@ -107,6 +107,8 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_status( nullptr ),
         m_processStatus( nullptr ),
         m_loginButton( nullptr ),
+        m_deviceLoginButton( nullptr ),
+        m_cancelLoginButton( nullptr ),
         m_modelChoice( nullptr ),
         m_reasoningChoice( nullptr ),
         m_transcript( nullptr ),
@@ -125,12 +127,19 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     wxBoxSizer* statusRow = new wxBoxSizer( wxHORIZONTAL );
     m_status = new wxStaticText( this, wxID_ANY, _( "Codex is starting..." ) );
     m_loginButton = new wxButton( this, wxID_ANY, _( "Sign in" ) );
+    m_deviceLoginButton = new wxButton( this, wxID_ANY, _( "Device code" ) );
+    m_cancelLoginButton = new wxButton( this, wxID_ANY, _( "Cancel" ) );
     m_loginButton->Disable();
+    m_deviceLoginButton->Disable();
+    m_cancelLoginButton->Disable();
     statusRow->Add( m_status, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP( 8 ) );
-    statusRow->Add( m_loginButton, 0, wxALIGN_CENTER_VERTICAL );
+    statusRow->Add( m_loginButton, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP( 6 ) );
+    statusRow->Add( m_deviceLoginButton, 0,
+                    wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP( 6 ) );
+    statusRow->Add( m_cancelLoginButton, 0, wxALIGN_CENTER_VERTICAL );
     root->Add( statusRow, 0, wxEXPAND | wxALL, FromDIP( 8 ) );
 
-    m_processStatus = new wxStaticText( this, wxID_ANY, _( "app-server: starting..." ) );
+    m_processStatus = new wxStaticText( this, wxID_ANY, _( "Codex service: connecting..." ) );
     root->Add( m_processStatus, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
 
     wxBoxSizer* modelRow = new wxBoxSizer( wxHORIZONTAL );
@@ -173,6 +182,8 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     SetSizer( root );
 
     m_loginButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onLogin, this );
+    m_deviceLoginButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onDeviceLogin, this );
+    m_cancelLoginButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onCancelLogin, this );
     m_sendButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onSend, this );
     m_stopButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onStop, this );
     m_revertButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onRevertTurn, this );
@@ -252,7 +263,7 @@ void CODEX_PANEL::readAccount( bool aRefreshToken )
                 if( !aResponse.contains( "result" ) )
                 {
                     setStatus( _( "Could not read the Codex account." ) );
-                    m_loginButton->Enable();
+                    setLoginPending( false );
                     return;
                 }
 
@@ -281,7 +292,7 @@ void CODEX_PANEL::readAccount( bool aRefreshToken )
                     m_sendButton->Disable();
                 }
 
-                m_loginButton->Enable();
+                setLoginPending( false );
             } );
 }
 
@@ -576,6 +587,15 @@ void CODEX_PANEL::setBusy( bool aBusy )
 }
 
 
+void CODEX_PANEL::setLoginPending( bool aPending )
+{
+    const bool ready = m_initialized && m_client.IsRunning();
+    m_loginButton->Enable( ready && !aPending );
+    m_deviceLoginButton->Enable( ready && !aPending && !m_authenticated );
+    m_cancelLoginButton->Enable( ready && aPending && !m_loginId.empty() );
+}
+
+
 void CODEX_PANEL::setStatus( const wxString& aStatus )
 {
     m_status->SetLabel( aStatus );
@@ -644,12 +664,13 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
             setStatus( error.empty() ? _( "ChatGPT sign-in failed." )
                                      : wxString::FromUTF8( error ) );
             m_loginId.clear();
-            m_loginButton->Enable();
+            setLoginPending( false );
             return;
         }
 
         // Match the working VibeCAD flow: force one refresh after successful OAuth before
         // enabling inference, then reload the account-scoped model catalog.
+        m_cancelLoginButton->Disable();
         readAccount( true );
         readModels();
     }
@@ -858,12 +879,11 @@ void CODEX_PANEL::onAppServerState( bool aRunning, const wxString& aDetail )
 
     if( aRunning )
     {
-        m_processStatus->SetLabel( wxString::Format( _( "app-server: owned child PID %ld" ),
-                                                     m_client.ProcessId() ) );
+        m_processStatus->SetLabel( _( "Codex service: connected" ) );
     }
     else
     {
-        m_processStatus->SetLabel( _( "app-server: stopped" ) );
+        m_processStatus->SetLabel( _( "Codex service: unavailable" ) );
     }
 
     if( !aRunning )
@@ -871,6 +891,8 @@ void CODEX_PANEL::onAppServerState( bool aRunning, const wxString& aDetail )
         m_initialized = false;
         m_authenticated = false;
         m_loginButton->Disable();
+        m_deviceLoginButton->Disable();
+        m_cancelLoginButton->Disable();
         m_sendButton->Disable();
         m_stopButton->Disable();
     }
@@ -881,12 +903,14 @@ void CODEX_PANEL::onLogin( wxCommandEvent& aEvent )
 {
     if( m_authenticated )
     {
+        setLoginPending( true );
         m_client.SendRequest( "account/logout", JSON::object(),
                               [this]( const JSON& ) { readAccount(); } );
         return;
     }
 
-    m_loginButton->Disable();
+    m_loginId.clear();
+    setLoginPending( true );
     setStatus( _( "Starting ChatGPT sign-in..." ) );
     m_client.SendRequest(
             "account/login/start", { { "type", "chatgpt" },
@@ -904,14 +928,87 @@ void CODEX_PANEL::onLogin( wxCommandEvent& aEvent )
                         && !loginId.empty() )
                     {
                         m_loginId = std::move( loginId );
+                        setLoginPending( true );
                         wxLaunchDefaultBrowser( wxString::FromUTF8( authUrl ) );
                         setStatus( _( "Complete ChatGPT sign-in in your browser..." ) );
                         return;
                     }
                 }
 
-                setStatus( _( "Could not start ChatGPT sign-in." ) );
-                m_loginButton->Enable();
+                setStatus( responseErrorMessage(
+                        aResponse, _( "Could not start ChatGPT sign-in." ) ) );
+                m_loginId.clear();
+                setLoginPending( false );
+            } );
+}
+
+
+void CODEX_PANEL::onDeviceLogin( wxCommandEvent& aEvent )
+{
+    if( m_authenticated )
+        return;
+
+    m_loginId.clear();
+    setLoginPending( true );
+    setStatus( _( "Requesting a ChatGPT device code..." ) );
+    m_client.SendRequest(
+            "account/login/start", { { "type", "chatgptDeviceCode" } },
+            [this]( const JSON& aResponse )
+            {
+                if( aResponse.contains( "result" ) )
+                {
+                    const JSON& result = aResponse["result"];
+                    std::string loginId = result.value( "loginId", "" );
+                    std::string verificationUrl = result.value( "verificationUrl", "" );
+                    std::string userCode = result.value( "userCode", "" );
+
+                    if( result.value( "type", "" ) == "chatgptDeviceCode"
+                        && !loginId.empty() && !verificationUrl.empty() && !userCode.empty() )
+                    {
+                        m_loginId = std::move( loginId );
+                        setLoginPending( true );
+
+                        const wxString url = wxString::FromUTF8( verificationUrl );
+                        const wxString code = wxString::FromUTF8( userCode );
+                        wxLaunchDefaultBrowser( url );
+                        setStatus( wxString::Format( _( "Enter device code %s" ), code ) );
+                        appendTranscript( wxString::Format(
+                                _( "\n[ChatGPT device sign-in: open %s and enter code %s.]\n" ),
+                                url, code ) );
+                        return;
+                    }
+                }
+
+                setStatus( responseErrorMessage(
+                        aResponse, _( "Could not request a ChatGPT device code." ) ) );
+                m_loginId.clear();
+                setLoginPending( false );
+            } );
+}
+
+
+void CODEX_PANEL::onCancelLogin( wxCommandEvent& aEvent )
+{
+    if( m_loginId.empty() )
+        return;
+
+    const std::string loginId = m_loginId;
+    m_cancelLoginButton->Disable();
+    setStatus( _( "Cancelling ChatGPT sign-in..." ) );
+    m_client.SendRequest(
+            "account/login/cancel", { { "loginId", loginId } },
+            [this, loginId]( const JSON& aResponse )
+            {
+                if( m_loginId == loginId )
+                    m_loginId.clear();
+
+                if( aResponse.contains( "result" ) )
+                    setStatus( _( "ChatGPT sign-in cancelled." ) );
+                else
+                    setStatus( responseErrorMessage(
+                            aResponse, _( "Could not cancel ChatGPT sign-in." ) ) );
+
+                setLoginPending( false );
             } );
 }
 
