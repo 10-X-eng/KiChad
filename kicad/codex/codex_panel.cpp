@@ -39,16 +39,38 @@ using JSON = nlohmann::json;
 JSON agentConfig()
 {
     return {
-        { "features",
-          { { "shell_tool", false }, { "unified_exec", false }, { "apps", false },
-            { "browser_use", false }, { "computer_use", false },
-            { "image_generation", false }, { "multi_agent", false },
-            { "plugins", false }, { "enable_mcp_apps", false }, { "hooks", false },
-            { "skill_mcp_dependency_install", false },
-            { "workspace_dependencies", false } } },
+        // Keep this narrow capability configuration aligned with VibeCAD's proven app-server
+        // integration.  Dotted keys are app-server config overrides, not nested JSON paths.
+        { "features.apps", false },
+        { "features.browser_use", false },
+        { "features.code_mode", false },
+        { "features.computer_use", false },
+        { "features.enable_mcp_apps", false },
+        { "features.goals", false },
+        { "features.hooks", false },
+        { "features.image_generation", false },
+        { "features.multi_agent", false },
+        { "features.multi_agent_v2", false },
+        { "features.plugins", false },
+        { "features.shell_tool", false },
+        { "features.skill_mcp_dependency_install", false },
+        { "features.tool_suggest", false },
+        { "features.unified_exec", false },
+        { "features.workspace_dependencies", false },
+        { "include_apps_instructions", false },
+        { "include_collaboration_mode_instructions", false },
+        { "include_environment_context", false },
+        { "include_permissions_instructions", false },
         { "mcp_servers", JSON::object() },
+        { "orchestrator.mcp.enabled", false },
+        { "orchestrator.skills.enabled", false },
+        { "project_doc_fallback_filenames", JSON::array() },
+        { "project_doc_max_bytes", 0 },
+        { "skills.bundled.enabled", false },
+        { "skills.include_instructions", false },
+        { "tools.experimental_request_user_input.enabled", false },
+        { "tools.web_search.context_size", "high" },
         { "web_search", "live" },
-        { "tools", { { "web_search", { { "context_size", "high" } } } } }
     };
 }
 
@@ -72,6 +94,17 @@ const char* agentInstructions()
            "allowWaivers unless the user explicitly approved releasing ignored checks or "
            "exclusions. Never create or depend on a separate context projection. Never use shell, "
            "arbitrary code execution, GUI automation, MCP, or direct ad-hoc file rewriting.";
+}
+
+
+const char* agentDeveloperInstructions()
+{
+    return "Operate only through the supplied native KiChad dynamic tools for electronics "
+           "design and Codex live web search for component research. Do not use or propose "
+           "shell, general filesystem, coding, patching, planning, goal-management, plugin, "
+           "app, skill, MCP, browser-automation, computer-control, collaboration, multi-agent, "
+           "or other generic Codex workflow tools. KDS changes must go through the native "
+           "design tool, never through generic file editing.";
 }
 
 
@@ -392,6 +425,7 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "cwd", std::string( cwd.ToUTF8() ) },
         { "runtimeWorkspaceRoots", JSON::array( { std::string( cwd.ToUTF8() ) } ) },
         { "approvalPolicy", "never" },
+        { "allowProviderModelFallback", false },
         { "sandbox", "read-only" },
         { "ephemeral", false },
         // The local app-server build advertises paginated history in its experimental schema,
@@ -400,6 +434,8 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "historyMode", "legacy" },
         { "serviceName", "KiChad" },
         { "baseInstructions", agentInstructions() },
+        { "developerInstructions", agentDeveloperInstructions() },
+        { "environments", JSON::array() },
         { "config", agentConfig() }
     };
 
@@ -459,6 +495,7 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
         { "approvalPolicy", "never" },
         { "sandbox", "read-only" },
         { "baseInstructions", agentInstructions() },
+        { "developerInstructions", agentDeveloperInstructions() },
         { "config", agentConfig() }
     };
 
@@ -539,7 +576,8 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
     JSON params = {
         { "threadId", m_threadId },
         { "input", JSON::array( { { { "type", "text" }, { "text", aMessage },
-                                     { "text_elements", JSON::array() } } } ) }
+                                     { "text_elements", JSON::array() } } } ) },
+        { "environments", JSON::array() }
     };
 
     int modelSelection = m_modelChoice->GetSelection();
