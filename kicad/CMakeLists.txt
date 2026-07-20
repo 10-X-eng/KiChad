@@ -37,10 +37,13 @@ set( KICAD_SRCS
     codex/design_script_pcb_reconciler.cpp
     codex/design_script_schematic_planner.cpp
     codex/design_script_schematic_reconciler.cpp
+    codex/design_script_symbol_compiler.cpp
+    codex/design_script_symbol_library_generator.cpp
     codex/design_script_symbol_resolver.cpp
     codex/fabrication_artifact_validator.cpp
     codex/legacy_bom_artifact_validator.cpp
     codex/mechanical_artifact_validator.cpp
+    codex/managed_symbol_library_io.cpp
     codex/schematic_bom_artifact_validator.cpp
     codex/schematic_dxf_artifact_validator.cpp
     codex/schematic_pdf_artifact_validator.cpp

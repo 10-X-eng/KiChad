@@ -602,6 +602,7 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
     {
         if( !library.is_object() || library.value( "kind", "" ) != "symbol"
             || library.value( "table", "" ) != "project"
+            || library.value( "managed", false )
             || !usedNicknames.contains( library.value( "id", "" ) ) )
         {
             continue;

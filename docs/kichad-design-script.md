@@ -948,6 +948,54 @@ rows, type/version mismatches, and tables larger than 1 MiB or 256 rows are reje
 mutation. These native files are compiler artifacts; the authored `.kicad_kds` declarations remain
 the only external design representation.
 
+### KDS-owned symbol libraries
+
+KDS can explicitly own and compile a complete project symbol library. Ownership is opt-in because
+replacing an editor-managed library implicitly would be destructive:
+
+```scheme
+(library symbol ProductSymbols (table project)
+  (uri "${KIPRJMOD}/libraries/ProductSymbols.kicad_sym")
+  (managed true))
+
+(symbol ProductSymbols:SENSOR
+  (reference U)
+  (value SENSOR)
+  (datasheet "https://example.com/SENSOR.pdf")
+  (description "Two-pin sensor")
+  (keywords "sensor precision")
+  (property "Manufacturer" "Example Semiconductor")
+  (pin_names_offset 0.254mm)
+  (unit common
+    (rectangle body (from -2.54mm -1.27mm) (to 2.54mm 1.27mm)
+      (stroke 0.254mm default) (fill background)))
+  (unit 1
+    (pin 1 (name IN) (electrical input) (shape line)
+      (at -5.08mm 0mm) (orientation right) (length 2.54mm))
+    (pin 2 (name OUT) (electrical output) (shape inverted)
+      (at 5.08mm 0mm) (orientation left) (length 2.54mm))))
+```
+
+`symbol` is semantic KDS, not embedded native s-expression text. A `common` unit maps graphics to
+native unit zero; numbered units range from 1 through 256. Optional `body_style` ranges from 1
+through 64. The initial qualified lowering covers mandatory metadata, custom properties, inclusion
+flags, pin-name/number visibility, rectangular graphics, and KiCad's complete electrical pin-type
+and pin-shape enumerations. Coordinates are explicitly dimensioned, bounded to ±2 m, and lowered
+to exact decimal millimetres without floating-point formatting drift. Pin orientations use the
+cardinal words `right`, `down`, `left`, and `up`.
+
+All top-level symbols targeting a managed library are sorted into one deterministic current-format
+`.kicad_sym` compiler artifact (`version 20251024`). A managed library must contain at least one
+symbol, cannot target a global nickname, and cannot be mixed silently with unmanaged library
+content. Before apply, the generated library is used directly for exact symbol/unit/pin resolution,
+so schematic planning and the installed artifact consume identical bytes. Apply journals exact
+prior presence and bytes, atomically installs the library after its project table, asks KiCad
+10.0.4's native symbol loader to parse and resave an isolated copy, and only then installs generated
+schematics. Native rejection or any later pre-commit failure restores the prior symbol library,
+tables, schematics, and settings in reverse order. Parent directories must already exist and file
+symlinks are rejected. Remaining symbol graphics and field-layout semantics are listed explicitly
+as partial coverage rather than being accepted and ignored.
+
 ### Stackup form
 
 KDS authors one explicit top-to-bottom physical stack. Copper-layer count and total board thickness
@@ -1352,7 +1400,9 @@ complete net-class table uses a typed native project endpoint, is persisted with
 is journaled and restored after the global rules. Custom rules use a bounded native board endpoint,
 are compiled by KiCad's real DRC parser and engine, and are journaled and restored after net classes
 and before project library tables and transactional PCB items. Project library tables are parsed by
-KiCad before atomic installation and journaled as exact prior bytes. A zone explicitly declares
+KiCad before atomic installation and journaled as exact prior bytes. KDS-owned symbol libraries
+are then installed from deterministic current-format source, validated by KiCad's native symbol
+loader, and journaled with exact rollback bytes before schematic reconciliation. A zone explicitly declares
 its net, stable ID, one or more copper layers, bounded
 polygon/hole geometry, clearance, minimum thickness, connection and thermal policy, island policy,
 solid or hatched fill, priority, border display, and lock state. No manufacturing setting is
@@ -1460,7 +1510,10 @@ instances are executable through KiCad's native parser and transaction API. Free
 native graphics, embedded images, complete table grids/cells, named/locked nested groups, and
 complete per-unit component field rendering are executable through lossless reconciliation and
 KiCad's native schematic loader. Global installed symbol content, library
-authoring, footprint/model authoring, and the incomplete schematic facets named by the capability
-catalog remain non-executable until their own lossless backends and rollback tests land. Nested
+content publishing, footprint/model authoring, and the incomplete schematic facets named by the
+capability catalog remain non-executable until their own lossless backends and rollback tests land.
+AI-native symbol authoring is executable for metadata, properties, common/numbered units, body
+styles, rectangles, and fully typed pins; the capability catalog keeps its remaining authoring
+facets partial until their dedicated backends land. Nested
 sheet hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

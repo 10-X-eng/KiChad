@@ -17,9 +17,11 @@
 #include "design_script_pcb_reconciler.h"
 #include "design_script_schematic_planner.h"
 #include "design_script_schematic_reconciler.h"
+#include "design_script_symbol_library_generator.h"
 #include "design_script_symbol_resolver.h"
 #include "kicad_ipc_client.h"
 #include "kicad_ipc_transaction.h"
+#include "managed_symbol_library_io.h"
 #include "project_settings_ipc.h"
 
 #include <kiid.h>
@@ -64,6 +66,18 @@ struct PROJECT_LIBRARY_TABLE_UPDATE
 
 struct SCHEMATIC_FILE_UPDATE
 {
+    std::string relativePath;
+    wxFileName  path;
+    std::string source;
+    bool        previousPresent = false;
+    std::string previousSource;
+    bool        applied = false;
+};
+
+
+struct MANAGED_SYMBOL_LIBRARY_UPDATE
+{
+    std::string nickname;
     std::string relativePath;
     wxFileName  path;
     std::string source;
@@ -245,14 +259,28 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT generatedSymbols =
+                KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( compiled.ir );
         JSON symbolLibrarySources;
         JSON footprintSources;
+
+        if( !generatedSymbols.ok )
+        {
+            return failure( "symbol_generation_failed",
+                            generatedSymbols.diagnostics.empty()
+                                    ? "managed symbol libraries could not be generated"
+                                    : generatedSymbols.diagnostics.front().value(
+                                              "message", "managed symbol generation failed" ) );
+        }
 
         if( !KICHAD::CODEX_TOOLS::InventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
                                               symbolLibrarySources, pathError ) )
         {
             return failure( "symbol_inventory_failed", pathError );
         }
+
+        for( const auto& [nickname, nativeSource] : generatedSymbols.sources.items() )
+            symbolLibrarySources[nickname] = nativeSource;
 
         if( !KICHAD::CODEX_TOOLS::InventoryProjectFootprints( aProjectPath, compiled.ir,
                                          footprintSources, pathError ) )
@@ -375,6 +403,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "boardPlan", std::move( boardPlan ) },
                          { "schematicPlan", std::move( schematicPlan ) } };
 
+        payload["managedSymbolLibraries"] = {
+            { "counts", generatedSymbols.counts },
+            { "nicknames", JSON::array() }
+        };
+
+        for( const auto& entry : generatedSymbols.sources.items() )
+            payload["managedSymbolLibraries"]["nicknames"].push_back( entry.key() );
+
         if( hasPath )
             payload["path"] = aArguments["path"];
 
@@ -424,14 +460,28 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+        KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT generatedSymbols =
+                KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( compiled.ir );
         JSON symbolLibrarySources;
         JSON footprintSources;
+
+        if( !generatedSymbols.ok )
+        {
+            return failure( "symbol_generation_failed",
+                            generatedSymbols.diagnostics.empty()
+                                    ? "managed symbol libraries could not be generated"
+                                    : generatedSymbols.diagnostics.front().value(
+                                              "message", "managed symbol generation failed" ) );
+        }
 
         if( !KICHAD::CODEX_TOOLS::InventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
                                               symbolLibrarySources, pathError ) )
         {
             return failure( "symbol_inventory_failed", pathError );
         }
+
+        for( const auto& [nickname, nativeSource] : generatedSymbols.sources.items() )
+            symbolLibrarySources[nickname] = nativeSource;
 
         if( !KICHAD::CODEX_TOOLS::InventoryProjectFootprints( aProjectPath, compiled.ir,
                                          footprintSources, pathError ) )
@@ -885,6 +935,42 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             libraryTableUpdates.emplace_back( std::move( update ) );
         }
 
+        std::vector<MANAGED_SYMBOL_LIBRARY_UPDATE> managedSymbolLibraryUpdates;
+
+        for( const JSON& library : compiled.ir["libraries"] )
+        {
+            if( !library.is_object() || library.value( "kind", "" ) != "symbol"
+                || library.value( "table", "" ) != "project"
+                || !library.value( "managed", false ) )
+            {
+                continue;
+            }
+
+            MANAGED_SYMBOL_LIBRARY_UPDATE update;
+            update.nickname = library.value( "id", "" );
+
+            if( update.nickname.empty() || !generatedSymbols.sources.contains( update.nickname )
+                || !generatedSymbols.sources[update.nickname].is_string()
+                || !library.contains( "uri" ) || !library["uri"].is_string() )
+            {
+                return failure( "invalid_plan",
+                                "KDS produced an inconsistent managed symbol library" );
+            }
+
+            update.source = generatedSymbols.sources[update.nickname].get<std::string>();
+
+            if( !KICHAD::MANAGED_SYMBOL_LIBRARY_IO::Resolve(
+                        aProjectPath, library["uri"].get<std::string>(), update.path,
+                        update.relativePath, pathError )
+                || !KICHAD::MANAGED_SYMBOL_LIBRARY_IO::ReadOptional(
+                        update.path, update.previousPresent, update.previousSource, pathError ) )
+            {
+                return failure( "managed_symbol_library_inventory_failed", pathError );
+            }
+
+            managedSymbolLibraryUpdates.emplace_back( std::move( update ) );
+        }
+
         KICHAD_IPC_CLIENT client( "org.kichad.codex.design", aIpcSocketDirectory );
         KICHAD_IPC_TARGET target;
 
@@ -1116,6 +1202,23 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 applyJournal["previousProjectLibraryTables"].push_back(
                         { { "kind", update.kind },
                           { "path", update.path.GetFullName().ToStdString() },
+                          { "present", update.previousPresent },
+                          { "sourceBase64",
+                            wxBase64Encode( update.previousSource.data(),
+                                            update.previousSource.size() )
+                                    .ToStdString() } } );
+            }
+        }
+
+        if( !managedSymbolLibraryUpdates.empty() )
+        {
+            applyJournal["previousManagedSymbolLibraries"] = JSON::array();
+
+            for( const MANAGED_SYMBOL_LIBRARY_UPDATE& update : managedSymbolLibraryUpdates )
+            {
+                applyJournal["previousManagedSymbolLibraries"].push_back(
+                        { { "nickname", update.nickname },
+                          { "path", update.relativePath },
                           { "present", update.previousPresent },
                           { "sourceBase64",
                             wxBase64Encode( update.previousSource.data(),
@@ -1445,6 +1548,81 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             ++libraryTablesApplied;
         }
 
+        size_t managedSymbolLibrariesApplied = 0;
+
+        auto rollbackManagedSymbolLibraries = [&]( std::string& aMessage )
+        {
+            for( auto update = managedSymbolLibraryUpdates.rbegin();
+                 update != managedSymbolLibraryUpdates.rend(); ++update )
+            {
+                if( !update->applied )
+                    continue;
+
+                std::string rollbackError;
+
+                if( !KICHAD::MANAGED_SYMBOL_LIBRARY_IO::InstallAtomically(
+                            update->path, update->previousPresent,
+                            update->previousSource, rollbackError ) )
+                {
+                    aMessage += "; managed symbol library rollback also failed: "
+                                + rollbackError;
+                }
+            }
+        };
+
+        for( MANAGED_SYMBOL_LIBRARY_UPDATE& update : managedSymbolLibraryUpdates )
+        {
+            const bool installed = KICHAD::MANAGED_SYMBOL_LIBRARY_IO::InstallAtomically(
+                    update.path, true, update.source, pathError );
+            const bool nativeValid = installed
+                                     && ( m_symbolLibraryValidator
+                                                  ? m_symbolLibraryValidator( update.path,
+                                                                              pathError )
+                                                  : KICHAD::MANAGED_SYMBOL_LIBRARY_IO::ValidateNative(
+                                                            update.path, pathError ) );
+
+            if( !nativeValid )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !KICHAD::MANAGED_SYMBOL_LIBRARY_IO::InstallAtomically(
+                            update.path, update.previousPresent,
+                            update.previousSource, rollbackError ) )
+                {
+                    message += "; current managed symbol library rollback also failed: "
+                               + rollbackError;
+                }
+
+                rollbackManagedSymbolLibraries( message );
+
+                for( auto library = libraryTableUpdates.rbegin();
+                     library != libraryTableUpdates.rend(); ++library )
+                {
+                    if( !library->applied )
+                        continue;
+
+                    rollbackError.clear();
+
+                    if( !KICHAD::CODEX_TOOLS::InstallTextFileAtomically(
+                                library->path, library->previousPresent,
+                                library->previousSource, rollbackError ) )
+                    {
+                        message += "; library-table rollback also failed: " + rollbackError;
+                    }
+                }
+
+                rollbackAllSettings( message );
+                return failure( installed ? "managed_symbol_library_validation_failed"
+                                          : "managed_symbol_library_apply_failed",
+                                message );
+            }
+
+            update.applied = true;
+            ++managedSymbolLibrariesApplied;
+        }
+
         size_t schematicFilesApplied = 0;
 
         auto rollbackSchematicFiles = [&]( std::string& aMessage )
@@ -1480,6 +1658,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 }
 
                 rollbackSchematicFiles( message );
+                rollbackManagedSymbolLibraries( message );
 
                 for( auto library = libraryTableUpdates.rbegin();
                      library != libraryTableUpdates.rend(); ++library )
@@ -1539,6 +1718,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     std::string message = pathError
                                           + "; the apply journal was retained for safe recovery";
                     rollbackSchematicFiles( message );
+                    rollbackManagedSymbolLibraries( message );
 
                     for( auto library = libraryTableUpdates.rbegin();
                          library != libraryTableUpdates.rend(); ++library )
@@ -1566,6 +1746,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         auto rollbackAllArtifacts = [&]( std::string& aMessage )
         {
             rollbackSchematicFiles( aMessage );
+            rollbackManagedSymbolLibraries( aMessage );
 
             for( auto update = libraryTableUpdates.rbegin();
                  update != libraryTableUpdates.rend(); ++update )
@@ -1607,6 +1788,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                                || textVariablesApplied
                                                || fieldTemplatesApplied
                                                || customRulesApplied || libraryTablesApplied > 0
+                                               || managedSymbolLibrariesApplied > 0
                                                || schematicFilesApplied > 0
                                        ? "design settings applied"
                                        : "no board changes" },
@@ -1618,6 +1800,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "fieldTemplatesApplied", fieldTemplatesApplied },
                              { "customRulesApplied", customRulesApplied },
                              { "libraryTablesApplied", libraryTablesApplied },
+                             { "managedSymbolLibrariesApplied", managedSymbolLibrariesApplied },
                              { "schematicFilesApplied", schematicFilesApplied },
                              { "schematicCounts", schematicReconciled.counts },
                              { "journalRetained", !journalRemoved } };
@@ -1694,6 +1877,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "fieldTemplatesApplied", fieldTemplatesApplied },
                          { "customRulesApplied", customRulesApplied },
                          { "libraryTablesApplied", libraryTablesApplied },
+                         { "managedSymbolLibrariesApplied", managedSymbolLibrariesApplied },
                          { "schematicFilesApplied", schematicFilesApplied },
                          { "schematicCounts", schematicReconciled.counts },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },

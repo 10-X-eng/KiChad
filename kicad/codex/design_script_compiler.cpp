@@ -14,6 +14,7 @@
 #include "design_script_capabilities.h"
 
 #include "design_script_board_compiler.h"
+#include "design_script_symbol_compiler.h"
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
@@ -650,7 +651,8 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
         return JSON::object();
     }
 
-    JSON library = { { "kind", kind }, { "id", id }, { "uri", nullptr } };
+    JSON library = { { "kind", kind }, { "id", id }, { "uri", nullptr },
+                     { "managed", false } };
     std::set<std::string> fields;
 
     for( size_t i = 3; i < node.children.size(); ++i )
@@ -659,11 +661,11 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
         const std::string head = aDocument.ListHead( child );
         std::string       value;
 
-        if( ( head != "uri" && head != "table" )
+        if( ( head != "uri" && head != "table" && head != "managed" )
             || !parseSingleValueForm( aDocument, child, value ) )
         {
             diagnostic( aResult, "error", "invalid_library_field",
-                        "library fields must be uri or table with one scalar value" );
+                        "library fields must be uri, table, or managed with one scalar value" );
             continue;
         }
 
@@ -674,7 +676,22 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
             continue;
         }
 
-        library[head] = value;
+        if( head == "managed" )
+        {
+            if( value != "true" && value != "false" )
+            {
+                diagnostic( aResult, "error", "invalid_library_management",
+                            "library managed must be true or false" );
+            }
+            else
+            {
+                library["managed"] = value == "true";
+            }
+        }
+        else
+        {
+            library[head] = value;
+        }
     }
 
     const std::string table = library.value( "table", "" );
@@ -689,6 +706,13 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
     {
         diagnostic( aResult, "error", "redundant_global_library_uri",
                     "global library dependencies use their installed nickname and cannot set uri" );
+    }
+
+    if( library.value( "managed", false )
+        && ( table != "project" || kind != "symbol" ) )
+    {
+        diagnostic( aResult, "error", "unsupported_managed_library",
+                    "KDS version 1 managed libraries currently require a project symbol library" );
     }
 
     if( table == "project" )
@@ -6643,7 +6667,20 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form",
                       "(library symbol|footprint|model ID (table global)) | "
                       "(library symbol|footprint|model ID (table project) "
-                      "(uri ${KIPRJMOD}/PATH))" } },
+                      "(uri ${KIPRJMOD}/PATH) [(managed true)])" } },
+                  { { "form",
+                      "(symbol LIBRARY:NAME (reference PREFIX) (value TEXT) "
+                      "(footprint TEXT) (datasheet TEXT) (description TEXT) "
+                      "(keywords TEXT) (property NAME VALUE) "
+                      "(exclude_from_sim BOOL) (in_bom BOOL) (on_board BOOL) "
+                      "(in_pos_files BOOL) (hide_pin_names BOOL) "
+                      "(hide_pin_numbers BOOL) (pin_names_offset DISTANCE) "
+                      "(unit common|1..256 [(body_style 1..64)] "
+                      "(rectangle ID (from X Y) (to X Y) (stroke WIDTH STYLE) "
+                      "(fill none|outline|background)) | "
+                      "(pin NUMBER (name TEXT) (electrical TYPE) (shape SHAPE) "
+                      "(at X Y) (orientation right|down|left|up) (length DISTANCE) "
+                      "(hidden BOOL) (name_size DISTANCE) (number_size DISTANCE)) ...))" } },
                   { { "form",
                       "(component REF (symbol LIB:ID) (value VALUE) "
                       "(footprint LIB:ID|none) "
@@ -6900,6 +6937,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "units", "mm" },
         { "project", JSON::object() },
         { "libraries", JSON::array() },
+        { "authoredSymbols", JSON::array() },
         { "schematic",
           { { "sheets", JSON::array() }, { "components", JSON::array() },
             { "nets", JSON::array() }, { "noConnects", JSON::array() },
@@ -6922,6 +6960,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    componentIds;
     std::set<std::string>    netNames;
     std::set<std::string>    libraryIds;
+    std::set<std::string>    authoredSymbolIds;
     std::set<std::string>    sheetIds;
     bool                     sawRules = false;
     bool                     sawNetClasses = false;
@@ -7000,6 +7039,24 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             }
 
             result.ir["libraries"].emplace_back( std::move( library ) );
+        }
+        else if( form == "symbol" )
+        {
+            KICHAD::DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT authored =
+                    KICHAD::DESIGN_SCRIPT_SYMBOL_COMPILER::Compile( *document, formNode );
+
+            for( JSON& symbolDiagnostic : authored.diagnostics )
+                result.diagnostics.emplace_back( std::move( symbolDiagnostic ) );
+
+            const std::string id = authored.symbol.value( "id", "" );
+
+            if( !id.empty() && !authoredSymbolIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_authored_symbol",
+                            "authored symbol " + id + " occurs more than once" );
+            }
+
+            result.ir["authoredSymbols"].emplace_back( std::move( authored.symbol ) );
         }
         else if( form == "component" )
         {
@@ -8042,9 +8099,17 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     size_t projectSymbolLibraries = 0;
     size_t projectFootprintLibraries = 0;
+    std::map<std::string, const JSON*> symbolLibraries;
+    std::map<std::string, size_t> managedSymbolCounts;
 
     for( const JSON& library : result.ir["libraries"] )
     {
+        if( library.is_object() && library.value( "kind", "" ) == "symbol"
+            && !library.value( "id", "" ).empty() )
+        {
+            symbolLibraries[library.value( "id", "" )] = &library;
+        }
+
         if( !library.is_object() || library.value( "table", "" ) != "project" )
             continue;
 
@@ -8052,6 +8117,52 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             ++projectSymbolLibraries;
         else if( library.value( "kind", "" ) == "footprint" )
             ++projectFootprintLibraries;
+    }
+
+    if( result.ir["authoredSymbols"].size() > 4096 )
+    {
+        diagnostic( result, "error", "too_many_authored_symbols",
+                    "a script may author at most 4096 symbols" );
+    }
+
+    for( const JSON& symbol : result.ir["authoredSymbols"] )
+    {
+        if( !symbol.is_object() || !symbol.contains( "library" )
+            || !symbol["library"].is_string() )
+        {
+            continue;
+        }
+
+        const std::string nickname = symbol["library"].get<std::string>();
+        auto library = symbolLibraries.find( nickname );
+
+        if( library == symbolLibraries.end() )
+        {
+            diagnostic( result, "error", "unresolved_authored_symbol_library",
+                        "authored symbol " + symbol.value( "id", "" )
+                                + " has no declared symbol library " + nickname );
+        }
+        else if( library->second->value( "table", "" ) != "project"
+                 || !library->second->value( "managed", false ) )
+        {
+            diagnostic( result, "error", "unmanaged_authored_symbol_library",
+                        "authored symbol " + symbol.value( "id", "" )
+                                + " requires a project symbol library with (managed true)" );
+        }
+        else
+        {
+            ++managedSymbolCounts[nickname];
+        }
+    }
+
+    for( const auto& [nickname, library] : symbolLibraries )
+    {
+        if( library->value( "managed", false ) && managedSymbolCounts[nickname] == 0 )
+        {
+            diagnostic( result, "error", "empty_managed_symbol_library",
+                        "managed symbol library " + nickname
+                                + " requires at least one top-level symbol declaration" );
+        }
     }
 
     if( projectSymbolLibraries > MAX_PROJECT_LIBRARIES_PER_TABLE
@@ -8148,6 +8259,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "boardFullyTyped", boardFullyTyped },
         { "counts",
           { { "libraries", result.ir["libraries"].size() },
+            { "authoredSymbols", result.ir["authoredSymbols"].size() },
             { "sheets", result.ir["schematic"]["sheets"].size() },
             { "components", result.ir["schematic"]["components"].size() },
             { "nets", result.ir["schematic"]["nets"].size() },

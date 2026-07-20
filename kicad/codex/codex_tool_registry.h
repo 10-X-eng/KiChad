@@ -38,7 +38,9 @@ public:
                                   std::function<bool( const wxFileName&, std::string& )>
                                           aSchematicValidator = {},
                                   NATIVE_CHECK_RUNNER aNativeCheckRunner = {},
-                                  NATIVE_FABRICATION_RUNNER aNativeFabricationRunner = {} );
+                                  NATIVE_FABRICATION_RUNNER aNativeFabricationRunner = {},
+                                  std::function<bool( const wxFileName&, std::string& )>
+                                          aSymbolLibraryValidator = {} );
 
     JSON Specs() const;
     static bool RequiresFinalConfirmation( const std::string& aTool,
@@ -71,6 +73,7 @@ private:
     std::function<bool( const wxFileName&, std::string& )> m_schematicValidator;
     NATIVE_CHECK_RUNNER m_nativeCheckRunner;
     NATIVE_FABRICATION_RUNNER m_nativeFabricationRunner;
+    std::function<bool( const wxFileName&, std::string& )> m_symbolLibraryValidator;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

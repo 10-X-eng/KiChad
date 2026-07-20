@@ -1941,6 +1941,162 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackGeneratedCustomRulesAtomically )
 }
 
 
+BOOST_AUTO_TEST_CASE( AppliesAndRollsBackKdsOwnedNativeSymbolLibrary )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName libraries = wxFileName::DirName( fixture.Root() );
+    libraries.AppendDir( wxS( "libraries" ) );
+    BOOST_REQUIRE( wxFileName::Mkdir( libraries.GetFullPath(), 0700 ) );
+    wxFileName footprints = libraries;
+    footprints.AppendDir( wxS( "Empty.pretty" ) );
+    BOOST_REQUIRE( wxFileName::Mkdir( footprints.GetFullPath(), 0700 ) );
+    {
+        wxFFile schematic( wxFileName( fixture.Root(), wxS( "design.kicad_sch" ) )
+                                   .GetFullPath(), wxS( "wb" ) );
+        BOOST_REQUIRE( schematic.IsOpened() );
+        BOOST_REQUIRE( schematic.Write(
+                wxS( "(kicad_sch\n"
+                     "  (version 20260306)\n"
+                     "  (generator \"eeschema\")\n"
+                     "  (generator_version \"10.0\")\n"
+                     "  (uuid \"11111111-2222-4333-8444-555555555555\")\n"
+                     "  (paper \"A4\")\n"
+                     "  (lib_symbols)\n"
+                     "  (sheet_instances (path \"/\" (page \"1\")))\n"
+                     "  (embedded_fonts no)\n"
+                     ")\n" ) ) );
+    }
+    wxFileName socketPath( fixture.Root(), wxS( "api-managed-symbol-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-managed-symbol-token";
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    bool rejectSymbol = false;
+    int symbolValidationCalls = 0;
+    CODEX_TOOL_REGISTRY registry(
+            [&fixture]() { return fixture.Root(); }, []() { return true; },
+            [&fixture]() { return fixture.Root(); },
+            []( const wxFileName&, std::string& ) { return true; }, {}, {},
+            [&]( const wxFileName& path, std::string& error )
+            {
+                ++symbolValidationCalls;
+                BOOST_CHECK_EQUAL( path.GetFullName(), wxS( "Product.kicad_sym" ) );
+
+                if( rejectSymbol )
+                {
+                    error = "injected native symbol rejection";
+                    return false;
+                }
+
+                return true;
+            } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project design)
+  (library symbol Product (table project)
+    (uri "${KIPRJMOD}/libraries/Product.kicad_sym") (managed true))
+  (library footprint Empty (table project)
+    (uri "${KIPRJMOD}/libraries/Empty.pretty"))
+  (symbol Product:R
+    (reference R) (value R) (description "Managed resistor")
+    (unit common
+      (rectangle body (from -1.016mm -2.54mm) (to 1.016mm 2.54mm)
+        (stroke 0.254mm default) (fill none)))
+    (unit 1
+      (pin 1 (at 0mm 3.81mm) (orientation up) (length 1.27mm))
+      (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm))))
+  (sheet root (parent none) (file "design.kicad_sch") (title "Managed"))
+  (component R1 (symbol "Product:R") (value "10k") (footprint none)
+    (unit 1 (sheet root) (at 20mm 20mm) (rotation 0deg) (mirror none))))
+)KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "managed-symbol.kicad_kds" },
+                                                { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON preview = registry.Handle( "design", { { "operation", "preview" },
+                                                  { "path", "managed-symbol.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( preview.at( "success" ).get<bool>(), preview.dump() );
+    BOOST_CHECK_EQUAL( envelope( preview )["data"]["managedSymbolLibraries"]["counts"]
+                                         ["libraries"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( envelope( preview )["data"]["managedSymbolLibraries"]["counts"]
+                                         ["pins"].get<int>(), 2 );
+
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", "managed-symbol.kicad_kds" },
+                                                  { "boardPath", "design.kicad_pcb" },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    BOOST_CHECK_EQUAL( envelope( applied )["data"]["managedSymbolLibrariesApplied"].get<int>(),
+                       1 );
+    BOOST_CHECK_EQUAL( symbolValidationCalls, 1 );
+    const wxFileName symbolPath( libraries.GetFullPath(), wxS( "Product.kicad_sym" ) );
+    BOOST_REQUIRE( symbolPath.FileExists() );
+    const std::string installed = readExactTextFile( symbolPath );
+    BOOST_CHECK_NE( installed.find( "Managed resistor" ), std::string::npos );
+
+    std::string changed = std::regex_replace( source, std::regex( "Managed resistor" ),
+                                               "Rejected resistor" );
+    saved = registry.Handle( "design", { { "operation", "save" },
+                                           { "path", "managed-symbol.kicad_kds" },
+                                           { "source", changed },
+                                           { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    rejectSymbol = true;
+    JSON rejected = registry.Handle( "design", { { "operation", "apply" },
+                                                   { "path", "managed-symbol.kicad_kds" },
+                                                   { "boardPath", "design.kicad_pcb" },
+                                                   { "expectedSha256", hash } } );
+    BOOST_CHECK( !rejected.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( rejected )["error"]["code"].get<std::string>(),
+                       "managed_symbol_library_validation_failed" );
+    BOOST_CHECK_EQUAL( readExactTextFile( symbolPath ), installed );
+    BOOST_CHECK_EQUAL( symbolValidationCalls, 2 );
+    const wxFileName journalPath( fixture.Root(),
+                                  wxS( "managed-symbol.kicad_kds_journal" ) );
+    BOOST_REQUIRE( journalPath.FileExists() );
+    const JSON journal = JSON::parse( readExactTextFile( journalPath ) );
+    BOOST_REQUIRE_EQUAL( journal["previousManagedSymbolLibraries"].size(), 1 );
+    BOOST_CHECK_EQUAL( journal["previousManagedSymbolLibraries"][0]["nickname"], "Product" );
+    BOOST_CHECK_EQUAL( journal["previousManagedSymbolLibraries"][0]["path"],
+                       "libraries/Product.kicad_sym" );
+    BOOST_CHECK( journal["previousManagedSymbolLibraries"][0]["present"].get<bool>() );
+    BOOST_CHECK( !journal["previousManagedSymbolLibraries"][0]["sourceBase64"]
+                          .get<std::string>().empty() );
+    server.Stop();
+}
+
+
 BOOST_AUTO_TEST_CASE( AppliesKdsPlacementAsNarrowSchematicFootprintUpdate )
 {
     TOOL_PROJECT_FIXTURE fixture;
