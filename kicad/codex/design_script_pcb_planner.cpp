@@ -11,6 +11,7 @@
 
 #include "design_script_pcb_planner.h"
 
+#include "design_script_board_graphic_proto_generator.h"
 #include "design_script_custom_pad_proto_generator.h"
 
 #include <algorithm>
@@ -670,23 +671,14 @@ JSON planOutline( const JSON& aStatement, const std::string& aProject )
     const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
     const std::string itemId =
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "shape", logicalId );
+    JSON item;
 
-    JSON item = {
-        { "id", { { "value", itemId } } },
-        { "shape",
-          { { "attributes",
-              { { "stroke",
-                  { { "width",
-                      { { "valueNm",
-                          std::to_string( aStatement.at( "lineWidthNm" ).get<int64_t>() ) } } },
-                    { "style", "SLS_SOLID" } } },
-                { "fill", { { "fillType", "GFT_UNFILLED" } } } } },
-            { "rectangle",
-              { { "topLeft", vectorProto( aStatement.at( "topLeft" ) ) },
-                { "bottomRight", vectorProto( aStatement.at( "bottomRight" ) ) } } } } },
-        { "layer", layerEnum( aStatement.at( "layer" ).get<std::string>() ) },
-        { "locked", lockedEnum( aStatement ) }
-    };
+    if( !KICHAD::DESIGN_SCRIPT_BOARD_GRAPHIC_PROTO_GENERATOR::Render(
+                aStatement.at( "graphic" ), aProject, item )
+        || item.at( "id" ).at( "value" ) != itemId )
+    {
+        throw std::runtime_error( "invalid board outline IR" );
+    }
 
     return { { "action", "upsert" },
              { "itemType", "shape" },
@@ -1498,7 +1490,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 
             const std::string kind = statement["kind"].get<std::string>();
 
-            if( kind == "outline_rect" )
+            if( kind == "outline_shape" )
             {
                 result.operations.emplace_back( planOutline( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();

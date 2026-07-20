@@ -169,6 +169,8 @@ message. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic
 typography, and creates all five native dimension styles with exact geometry and measurement policy.
+The manufactured board contour supports stable line, rounded-rectangle, arc, circle, polygon, and
+Bezier geometry, including cutouts and multiple islands, through the typed board-shape API.
 It also resolves and places an existing schematic-linked footprint on the back side while proving
 the footprint UUID, symbol path, pad UUID, and flipped pad layers are preserved. A second absent
 footprint is parsed from the declared project-local `.pretty` library, linked to its deterministic

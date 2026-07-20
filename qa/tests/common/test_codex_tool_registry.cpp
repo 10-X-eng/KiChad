@@ -511,7 +511,9 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
     (footprint "LED_SMD:LED_0603_1608Metric"))
   (net LED_A (pin R1 1 1) (pin LED1 1 1))
   (board
-    (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
+    (outline
+      (rectangle board-edge (start 0mm 0mm) (end 40mm 30mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
       (width 0.25mm) (layer F.Cu)))
   (check erc)
@@ -1383,7 +1385,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
         (dielectric core (thickness 1.53mm) (material "FR4")
           (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
         (copper B.Cu (thickness 35um))))
-    (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
+    (outline
+      (rectangle edge (start 0mm 0mm) (end 20mm 10mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
       (width 0.25mm) (layer F.Cu)))
   (rules
@@ -1435,7 +1439,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
     const std::string reduced = R"KDS((kichad_design
   (version 1)
   (project managed_design)
-  (board (outline (rect (id edge) (at 0mm 0mm) (size 25mm 10mm)))))
+  (board (outline
+    (rectangle edge (start 0mm 0mm) (end 25mm 10mm)
+      (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))))
 )KDS";
     JSON replaced = registry.Handle( "design", { { "operation", "save" },
                                                   { "path", "managed.kicad_kds" },
@@ -1470,7 +1476,9 @@ BOOST_AUTO_TEST_CASE( AppliesReusableDesignsIdempotentlyWithManagedState )
         (dielectric core (thickness 1.53mm) (material "FR4")
           (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
         (copper B.Cu (thickness 35um))))
-    (outline (rect (id edge) (at 0mm 0mm) (size 30mm 10mm)))
+    (outline
+      (rectangle edge (start 0mm 0mm) (end 30mm 10mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (route SIGNAL (id recovered-trace) (from 1mm 2mm) (to 4mm 4mm)
       (width 0.3mm) (layer F.Cu)))
   (rules

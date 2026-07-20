@@ -64,7 +64,9 @@ const std::string VALID_PROGRAM = R"KDS((kichad_design
         (dielectric core (thickness 1.53mm) (material "FR4")
           (epsilon_r 4.5) (loss_tangent 0.02) (locked true))
         (copper B.Cu (thickness 35um))))
-    (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
+    (outline
+      (rectangle board-edge (start 0mm 0mm) (end 40mm 30mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
       (width 0.25mm) (layer F.Cu))
@@ -728,7 +730,9 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalBoardIntent )
         (dielectric prepreg (thickness 11mm) (material "FR4")
           (epsilon_r 4.2) (loss_tangent 0.02) (locked true))
         (copper B.Cu (thickness 35um))))
-    (outline (rect (id same) (at 0 0mm) (size -1mm 2mm)))
+    (outline
+      (rectangle same (start 0 0mm) (end -1mm 2mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (route POWER (id same) (from 0mm 0mm) (to 0mm 0mm)
       (width 0mm) (layer Edge.Cuts))
     (via POWER (id via1) (at 1mm 1mm) (diameter 0.4mm) (drill 0.5mm)
@@ -742,7 +746,7 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalBoardIntent )
     const std::string diagnostics = result.diagnostics.dump();
 
     for( const char* code : { "invalid_stackup_layers", "invalid_stackup_thickness",
-                              "invalid_outline_position", "invalid_outline_size",
+                              "invalid_authored_board_outline_geometry",
                               "duplicate_board_id", "zero_length_route", "invalid_route_width",
                               "invalid_route_layer", "invalid_via_drill",
                               "invalid_through_via_layers" } )

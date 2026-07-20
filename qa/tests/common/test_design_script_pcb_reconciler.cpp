@@ -31,7 +31,9 @@ const std::string SOURCE = R"KDS((kichad_design
   (component R2 (symbol "Device:R") (value "2k") (footprint "R:R"))
   (net SIGNAL (pin R1 1 1) (pin R2 1 1))
   (board
-    (outline (rect (id edge) (at 0mm 0mm) (size 20mm 10mm)))
+    (outline
+      (rectangle edge (start 0mm 0mm) (end 20mm 10mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (route SIGNAL (id trace-a) (from 1mm 2mm) (to 3mm 4mm)
       (width 0.25mm) (layer F.Cu))
     (via SIGNAL (id via-a) (at 3mm 4mm) (diameter 0.8mm) (drill 0.4mm))

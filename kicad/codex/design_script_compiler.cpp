@@ -6890,7 +6890,9 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(pin NAME input|output|bidirectional|tri_state|passive "
                       "(at X Y) (side left|right|top|bottom)) ...])" } },
                   { { "form",
-                      "(board (stackup ...) (outline (rect (id ID) (at X Y) (size W H))) "
+                      "(board (stackup ...) (outline "
+                      "(line|rectangle|arc|circle|polygon|bezier ID ... "
+                      "(stroke WIDTH solid) (layers Edge.Cuts) (fill none)) ...) "
                       "(place REF (at X Y) ...) (route NET (id ID) (from X Y) (to X Y) ...) "
                       "(via NET (id ID) (at X Y) (drill D) "
                       "((diameter D)|(padstack front_inner_back|custom "

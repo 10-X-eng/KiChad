@@ -11,6 +11,7 @@
 
 #include "design_script_board_compiler.h"
 
+#include "design_script_board_outline_compiler.h"
 #include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
 #include "design_script_via_padstack_compiler.h"
@@ -821,91 +822,27 @@ void compileOutline( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     if( outline.children.size() < 2 )
     {
         diagnostic( aResult, "error", "empty_outline",
-                    "outline requires at least one rect declaration" );
+                    "outline requires at least one Edge.Cuts graphic primitive" );
         return;
     }
 
     for( size_t i = 1; i < outline.children.size(); ++i )
     {
-        const size_t rectNode = outline.children[i];
+        KICHAD::DESIGN_SCRIPT_BOARD_OUTLINE_COMPILER::RESULT compiled =
+                KICHAD::DESIGN_SCRIPT_BOARD_OUTLINE_COMPILER::Compile(
+                        aDocument, outline.children[i] );
 
-        if( aDocument.ListHead( rectNode ) != "rect" )
-        {
-            diagnostic( aResult, "error", "unsupported_outline_shape",
-                        "KDS version 1 currently supports rect board outlines" );
-            continue;
-        }
+        for( JSON& entry : compiled.diagnostics )
+            aResult.diagnostics.push_back( std::move( entry ) );
 
-        std::map<std::string, size_t> fields;
-        collectFields( aDocument, rectNode, 1, { "id", "at", "size", "line_width" }, fields,
-                       aResult, "outline rect" );
-        std::string logicalId;
-        JSON        topLeft = JSON::object();
-        JSON        size = JSON::object();
-        int64_t     lineWidth = 50000;
+        const std::string logicalId = compiled.statement.value( "logicalId", "" );
 
-        if( !fields.contains( "id" )
-            || !parseScalarForm( aDocument, fields["id"], logicalId )
-            || !validIdentifier( logicalId ) )
-        {
-            diagnostic( aResult, "error", "invalid_board_id",
-                        "outline rect requires a bounded (id LOGICAL_ID)" );
-        }
-        else if( !aLogicalIds.emplace( logicalId ).second )
-        {
+        if( !logicalId.empty() && !aLogicalIds.emplace( logicalId ).second )
             diagnostic( aResult, "error", "duplicate_board_id",
                         "board logical id " + logicalId + " occurs more than once" );
-        }
 
-        if( !fields.contains( "at" ) || !parseVectorForm( aDocument, fields["at"], topLeft ) )
-        {
-            diagnostic( aResult, "error", "invalid_outline_position",
-                        "outline rect requires (at X Y) with explicit physical units" );
-        }
-
-        if( !fields.contains( "size" ) || !parseVectorForm( aDocument, fields["size"], size )
-            || size.value( "xNm", int64_t( 0 ) ) <= 0 || size.value( "yNm", int64_t( 0 ) ) <= 0 )
-        {
-            diagnostic( aResult, "error", "invalid_outline_size",
-                        "outline rect requires a positive (size WIDTH HEIGHT)" );
-        }
-
-        if( fields.contains( "line_width" )
-            && ( !parseDistanceForm( aDocument, fields["line_width"], lineWidth )
-                 || lineWidth <= 0 ) )
-        {
-            diagnostic( aResult, "error", "invalid_outline_line_width",
-                        "outline line_width must be a positive physical distance" );
-        }
-
-        const int64_t x = topLeft.value( "xNm", int64_t( 0 ) );
-        const int64_t y = topLeft.value( "yNm", int64_t( 0 ) );
-        const int64_t width = size.value( "xNm", int64_t( 0 ) );
-        const int64_t height = size.value( "yNm", int64_t( 0 ) );
-        int64_t       right = x;
-        int64_t       bottom = y;
-
-        if( width > 0 && x <= std::numeric_limits<int64_t>::max() - width )
-            right += width;
-        else if( width > 0 )
-            diagnostic( aResult, "error", "outline_coordinate_overflow",
-                        "outline rect exceeds the supported coordinate range" );
-
-        if( height > 0 && y <= std::numeric_limits<int64_t>::max() - height )
-            bottom += height;
-        else if( height > 0 )
-            diagnostic( aResult, "error", "outline_coordinate_overflow",
-                        "outline rect exceeds the supported coordinate range" );
-
-        JSON bottomRight = { { "xNm", right }, { "yNm", bottom } };
-
-        aResult.statements.push_back( { { "kind", "outline_rect" },
-                                        { "logicalId", logicalId },
-                                        { "topLeft", std::move( topLeft ) },
-                                        { "bottomRight", std::move( bottomRight ) },
-                                        { "lineWidthNm", lineWidth },
-                                        { "layer", "Edge.Cuts" },
-                                        { "typed", true } } );
+        if( compiled.statement.is_object() && !logicalId.empty() )
+            aResult.statements.push_back( std::move( compiled.statement ) );
     }
 }
 

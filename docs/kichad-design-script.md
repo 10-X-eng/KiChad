@@ -156,7 +156,9 @@ transaction order.
         (dielectric core (thickness 1.53mm) (material "FR4")
           (epsilon_r 4.5) (loss_tangent 0.02) (locked false))
         (copper B.Cu (thickness 35um))))
-    (outline (rect (id board-edge) (at 0mm 0mm) (size 40mm 30mm)))
+    (outline
+      (rectangle board-edge (start 0mm 0mm) (end 40mm 30mm)
+        (radius 0mm) (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
       (width 0.25mm) (layer F.Cu))
@@ -1640,6 +1642,36 @@ constraints. It validates UTF-8, parses and compiles the complete document, inst
 reloads the live DRC engine, and reads it back byte-for-byte. Failure restores both the previous
 file and previous engine rules. KDS journals that exact prior state and restores it on a lost
 acknowledgement or any later pre-commit failure.
+
+### Board outline geometry
+
+The manufactured contour is a collection of stable-ID `Edge.Cuts` graphics using the same six
+semantic primitives as footprint artwork. There is no raw KiCad geometry form and no separate
+cutout syntax: closed inner circles or polygons are cutouts, while additional closed outer contours
+are independent board islands.
+
+```scheme
+(outline
+  (line lower (start 0mm 20mm) (end 30mm 20mm)
+    (stroke 0.05mm solid) (layers Edge.Cuts) (fill none))
+  (arc right_end (start 30mm 20mm) (mid 35mm 10mm) (end 30mm 0mm)
+    (stroke 0.05mm solid) (layers Edge.Cuts) (fill none))
+  (bezier upper (start 30mm 0mm) (control1 20mm -1mm)
+    (control2 10mm 1mm) (end 0mm 0mm)
+    (stroke 0.05mm solid) (layers Edge.Cuts) (fill none))
+  (line left (start 0mm 0mm) (end 0mm 20mm)
+    (stroke 0.05mm solid) (layers Edge.Cuts) (fill none))
+  (circle mounting_cutout (center 5mm 5mm) (radius 1.5mm)
+    (stroke 0.05mm solid) (layers Edge.Cuts) (fill none))
+  (polygon connector_cutout
+    (point 12mm 7mm) (point 18mm 7mm) (point 18mm 10mm) (point 12mm 10mm)
+    (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
+```
+
+`rectangle` additionally accepts a corner `radius`; polygons close implicitly. Every primitive is
+unfilled, solid-stroked, and explicitly on `Edge.Cuts`, and lowers to KiCad 10's typed
+`BoardGraphicShape` API. The final DRC/fabrication gate remains responsible for whole-contour
+topology such as endpoint closure, self-intersections, and illegal nesting.
 
 ### Board routing and via protection
 

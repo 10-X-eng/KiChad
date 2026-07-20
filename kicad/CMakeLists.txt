@@ -31,6 +31,8 @@ set( KICAD_SRCS
     codex/codex_tool_project.cpp
     codex/codex_tool_verify.cpp
     codex/design_script_board_compiler.cpp
+    codex/design_script_board_graphic_proto_generator.cpp
+    codex/design_script_board_outline_compiler.cpp
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
     codex/design_script_custom_pad_proto_generator.cpp
