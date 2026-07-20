@@ -62,6 +62,7 @@ set( QA_COMMON_SRCS
     test_design_script_schematic_planner.cpp
     test_design_script_schematic_reconciler.cpp
     test_design_script_symbol_resolver.cpp
+    test_design_script_symbol_graphics.cpp
     test_design_script_symbol_library_generator.cpp
     test_managed_symbol_library_io.cpp
     test_coroutine.cpp
@@ -132,6 +133,8 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_graphics_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_graphics_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_library_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_resolver.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp

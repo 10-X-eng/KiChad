@@ -99,7 +99,12 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
     (reference R) (value R) (description "Resistor")
     (unit common
       (rectangle body (from -1.016mm -2.54mm) (to 1.016mm 2.54mm)
-        (stroke 0.254mm default) (fill none)))
+        (stroke 0.254mm default) (fill none))
+      (circle center_mark (center 0mm 0mm) (radius 0.5mm))
+      (arc top_arc (start -1mm 1mm) (mid 0mm 2mm) (end 1mm 1mm))
+      (bezier accent (start -1mm -1mm) (control1 -0.5mm -2mm)
+        (control2 0.5mm -2mm) (end 1mm -1mm))
+      (polyline arrow (point -0.5mm 0mm) (point 0mm 0.5mm) (point 0.5mm 0mm)))
     (unit 1
       (pin 1 (at 0mm 3.81mm) (orientation up) (length 1.27mm))
       (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm)))))

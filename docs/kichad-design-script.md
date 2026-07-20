@@ -968,7 +968,12 @@ replacing an editor-managed library implicitly would be destructive:
   (pin_names_offset 0.254mm)
   (unit common
     (rectangle body (from -2.54mm -1.27mm) (to 2.54mm 1.27mm)
-      (stroke 0.254mm default) (fill background)))
+      (radius 0.2mm) (stroke 0.254mm default) (fill background))
+    (circle target (center 0mm 0mm) (radius 0.5mm))
+    (arc accent (start -1mm 0mm) (mid 0mm 1mm) (end 1mm 0mm))
+    (bezier curve (start -1mm -0.5mm) (control1 -0.5mm -1mm)
+      (control2 0.5mm -1mm) (end 1mm -0.5mm))
+    (polyline marker (point -0.5mm 0mm) (point 0mm 0.5mm) (point 0.5mm 0mm)))
   (unit 1
     (pin 1 (name IN) (electrical input) (shape line)
       (at -5.08mm 0mm) (orientation right) (length 2.54mm))
@@ -978,9 +983,15 @@ replacing an editor-managed library implicitly would be destructive:
 
 `symbol` is semantic KDS, not embedded native s-expression text. A `common` unit maps graphics to
 native unit zero; numbered units range from 1 through 256. Optional `body_style` ranges from 1
-through 64. The initial qualified lowering covers mandatory metadata, custom properties, inclusion
-flags, pin-name/number visibility, rectangular graphics, and KiCad's complete electrical pin-type
-and pin-shape enumerations. Coordinates are explicitly dimensioned, bounded to ±2 m, and lowered
+through 64. The qualified lowering covers mandatory metadata, custom properties, inclusion flags,
+pin-name/number visibility, and all five KiCad vector primitives: rectangles (including rounded
+corners), circles, three-point arcs, four-point cubic Beziers, and arbitrary polylines. Every
+graphic has a stable logical ID and may declare `(private true)`. Strokes support `default`,
+`solid`, `dash`, `dot`, `dash_dot`, and `dash_dot_dot`; fills support `none`, `outline`,
+`background`, `color`, `hatch`, `reverse_hatch`, and `cross_hatch`. A stroke or fill can carry an
+explicit `(color RED GREEN BLUE ALPHA)` with integer RGB channels and alpha from zero through one.
+The same lowering covers KiCad's complete electrical pin-type and pin-shape enumerations.
+Coordinates are explicitly dimensioned, bounded to ±2 m, and lowered
 to exact decimal millimetres without floating-point formatting drift. Pin orientations use the
 cardinal words `right`, `down`, `left`, and `up`.
 
@@ -993,7 +1004,7 @@ prior presence and bytes, atomically installs the library after its project tabl
 10.0.4's native symbol loader to parse and resave an isolated copy, and only then installs generated
 schematics. Native rejection or any later pre-commit failure restores the prior symbol library,
 tables, schematics, and settings in reverse order. Parent directories must already exist and file
-symlinks are rejected. Remaining symbol graphics and field-layout semantics are listed explicitly
+symlinks are rejected. Symbol text/text-box graphics and field-layout semantics are listed explicitly
 as partial coverage rather than being accepted and ignored.
 
 ### Stackup form
@@ -1513,7 +1524,7 @@ KiCad's native schematic loader. Global installed symbol content, library
 content publishing, footprint/model authoring, and the incomplete schematic facets named by the
 capability catalog remain non-executable until their own lossless backends and rollback tests land.
 AI-native symbol authoring is executable for metadata, properties, common/numbered units, body
-styles, rectangles, and fully typed pins; the capability catalog keeps its remaining authoring
+styles, every native vector primitive, and fully typed pins; the capability catalog keeps its remaining authoring
 facets partial until their dedicated backends land. Nested
 sheet hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

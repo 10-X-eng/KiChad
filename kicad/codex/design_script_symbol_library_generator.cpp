@@ -11,6 +11,7 @@
 
 #include "design_script_symbol_library_generator.h"
 
+#include "design_script_symbol_graphics_generator.h"
 #include "lossless_sexpr_document.h"
 
 #include <algorithm>
@@ -28,6 +29,7 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT;
+using GRAPHICS_GENERATOR = KICHAD::DESIGN_SCRIPT_SYMBOL_GRAPHICS_GENERATOR;
 
 constexpr size_t MAX_NATIVE_LIBRARY_BYTES = 16 * 1024 * 1024;
 
@@ -122,38 +124,6 @@ bool validPoint( const JSON& aPoint )
 {
     return aPoint.is_object() && aPoint.contains( "xNm" ) && aPoint["xNm"].is_number_integer()
            && aPoint.contains( "yNm" ) && aPoint["yNm"].is_number_integer();
-}
-
-
-bool renderRectangle( const JSON& aItem, std::string& aSource )
-{
-    if( !aItem.is_object() || aItem.value( "kind", "" ) != "rectangle"
-        || !aItem.contains( "from" ) || !validPoint( aItem["from"] )
-        || !aItem.contains( "to" ) || !validPoint( aItem["to"] )
-        || !aItem.contains( "stroke" ) || !aItem["stroke"].is_object()
-        || !aItem["stroke"].contains( "widthNm" )
-        || !aItem["stroke"]["widthNm"].is_number_integer()
-        || !aItem["stroke"].contains( "style" ) || !aItem["stroke"]["style"].is_string()
-        || !aItem.contains( "fill" ) || !aItem["fill"].is_string() )
-    {
-        return false;
-    }
-
-    aSource += "\t\t\t(rectangle\n"
-               "\t\t\t\t(start " + millimetres( aItem["from"]["xNm"].get<int64_t>() ) + " "
-               + millimetres( aItem["from"]["yNm"].get<int64_t>() ) + ")\n"
-               "\t\t\t\t(end " + millimetres( aItem["to"]["xNm"].get<int64_t>() ) + " "
-               + millimetres( aItem["to"]["yNm"].get<int64_t>() ) + ")\n"
-               "\t\t\t\t(stroke\n"
-               "\t\t\t\t\t(width "
-               + millimetres( aItem["stroke"]["widthNm"].get<int64_t>() ) + ")\n"
-               "\t\t\t\t\t(type " + aItem["stroke"]["style"].get<std::string>() + ")\n"
-               "\t\t\t\t)\n"
-               "\t\t\t\t(fill\n"
-               "\t\t\t\t\t(type " + aItem["fill"].get<std::string>() + ")\n"
-               "\t\t\t\t)\n"
-               "\t\t\t)\n";
-    return true;
 }
 
 
@@ -310,8 +280,8 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         for( const JSON& item : ( *unit )["items"] )
         {
             const std::string kind = item.value( "kind", "" );
-            const bool rendered = kind == "rectangle" ? renderRectangle( item, aSource )
-                                  : kind == "pin" ? renderPin( item, aSource ) : false;
+            const bool rendered = kind == "pin" ? renderPin( item, aSource )
+                                  : GRAPHICS_GENERATOR::Render( item, aSource );
 
             if( !rendered )
                 return false;

@@ -11,6 +11,8 @@
 
 #include "design_script_symbol_compiler.h"
 
+#include "design_script_symbol_graphics_compiler.h"
+
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -26,6 +28,7 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT;
+using GRAPHICS_COMPILER = KICHAD::DESIGN_SCRIPT_SYMBOL_GRAPHICS_COMPILER;
 
 constexpr size_t MAX_TEXT_BYTES = 4096;
 constexpr size_t MAX_SYMBOL_PROPERTIES = 256;
@@ -169,118 +172,6 @@ bool point( const DOCUMENT& aDocument, size_t aNode, int64_t& aX, int64_t& aY )
     return node.children.size() == 3 && scalar( aDocument, node.children[1], x )
            && scalar( aDocument, node.children[2], y ) && distance( x, aX )
            && distance( y, aY );
-}
-
-
-JSON compileRectangle( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
-                       std::set<std::string>& aIds )
-{
-    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
-    std::string id;
-
-    if( node.children.size() < 2 || !scalar( aDocument, node.children[1], id )
-        || !identifier( id ) )
-    {
-        diagnostic( aResult, "invalid_authored_symbol_rectangle",
-                    "symbol rectangle requires a bounded logical ID" );
-        return JSON::object();
-    }
-
-    if( !aIds.emplace( id ).second )
-    {
-        diagnostic( aResult, "duplicate_authored_symbol_item",
-                    "symbol unit item ID " + id + " occurs more than once" );
-    }
-
-    JSON rectangle = { { "kind", "rectangle" }, { "id", id },
-                       { "stroke", { { "widthNm", 0 }, { "style", "default" } } },
-                       { "fill", "none" } };
-    std::set<std::string> fields;
-
-    for( size_t index = 2; index < node.children.size(); ++index )
-    {
-        const size_t child = node.children[index];
-        const std::string head = aDocument.ListHead( child );
-
-        if( !fields.emplace( head ).second )
-        {
-            diagnostic( aResult, "duplicate_authored_symbol_rectangle_field",
-                        "rectangle " + id + " field " + head + " occurs more than once" );
-            continue;
-        }
-
-        if( head == "from" || head == "to" )
-        {
-            int64_t x = 0;
-            int64_t y = 0;
-
-            if( !point( aDocument, child, x, y ) )
-            {
-                diagnostic( aResult, "invalid_authored_symbol_rectangle_point",
-                            "rectangle " + id + " " + head
-                                    + " requires two coordinates between -2 m and 2 m" );
-                continue;
-            }
-
-            rectangle[head] = { { "xNm", x }, { "yNm", y } };
-        }
-        else if( head == "stroke" )
-        {
-            const DOCUMENT::NODE& stroke = aDocument.Nodes().at( child );
-            std::string widthText;
-            std::string style;
-            int64_t width = 0;
-            static const std::set<std::string> styles = {
-                "default", "solid", "dash", "dot", "dash_dot", "dash_dot_dot"
-            };
-
-            if( stroke.children.size() != 3
-                || !scalar( aDocument, stroke.children[1], widthText )
-                || !scalar( aDocument, stroke.children[2], style )
-                || !distance( widthText, width ) || width < 0 || width > 10'000'000
-                || !styles.contains( style ) )
-            {
-                diagnostic( aResult, "invalid_authored_symbol_rectangle_stroke",
-                            "rectangle " + id
-                                    + " stroke requires 0..10 mm and a supported line style" );
-                continue;
-            }
-
-            rectangle["stroke"] = { { "widthNm", width }, { "style", style } };
-        }
-        else if( head == "fill" )
-        {
-            std::string fill;
-
-            if( !oneValue( aDocument, child, fill )
-                || ( fill != "none" && fill != "outline" && fill != "background" ) )
-            {
-                diagnostic( aResult, "invalid_authored_symbol_rectangle_fill",
-                            "rectangle " + id + " fill must be none, outline, or background" );
-                continue;
-            }
-
-            rectangle["fill"] = fill;
-        }
-        else
-        {
-            diagnostic( aResult, "unknown_authored_symbol_rectangle_field",
-                        "rectangle " + id + " supports from, to, stroke, and fill" );
-        }
-    }
-
-    if( !rectangle.contains( "from" ) || !rectangle.contains( "to" ) )
-    {
-        diagnostic( aResult, "missing_authored_symbol_rectangle_geometry",
-                    "rectangle " + id + " requires from and to" );
-    }
-    else if( rectangle["from"] == rectangle["to"] )
-    {
-        diagnostic( aResult, "degenerate_authored_symbol_rectangle",
-                    "rectangle " + id + " must have nonzero width or height" );
-    }
-
-    return rectangle;
 }
 
 
@@ -502,10 +393,22 @@ JSON compileUnit( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
             break;
         }
 
-        if( head == "rectangle" )
+        if( GRAPHICS_COMPILER::IsGraphic( head ) )
         {
-            unit["items"].push_back(
-                    compileRectangle( aDocument, child, aResult, itemIds ) );
+            GRAPHICS_COMPILER::RESULT graphic = GRAPHICS_COMPILER::Compile( aDocument, child );
+
+            for( const JSON& entry : graphic.diagnostics )
+                aResult.diagnostics.push_back( entry );
+
+            const std::string itemId = graphic.item.value( "id", "" );
+
+            if( !itemId.empty() && !itemIds.emplace( itemId ).second )
+            {
+                diagnostic( aResult, "duplicate_authored_symbol_item",
+                            "symbol unit item ID " + itemId + " occurs more than once" );
+            }
+
+            unit["items"].push_back( std::move( graphic.item ) );
         }
         else if( head == "pin" )
         {
@@ -521,7 +424,7 @@ JSON compileUnit( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
         else
         {
             diagnostic( aResult, "unknown_authored_symbol_unit_item",
-                        "symbol unit currently supports body_style, rectangle, and pin" );
+                        "symbol unit supports body_style, vector graphics, and pin" );
         }
     }
 
