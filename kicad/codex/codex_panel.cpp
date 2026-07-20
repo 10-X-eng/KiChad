@@ -679,9 +679,10 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
     }
     else if( method == "error" )
     {
+        const JSON& params = aMessage.value( "params", JSON::object() );
         appendTranscript( wxString::Format( _( "\n[Codex error: %s]\n" ),
-                                            wxString::FromUTF8(
-                                                    aMessage["params"].value( "message", "unknown" ) ) ) );
+                                            responseErrorMessage(
+                                                    params, _( "Unknown Codex error." ) ) ) );
     }
     else if( method == "item/tool/call" && aMessage.contains( "id" ) )
     {
