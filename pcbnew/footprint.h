@@ -1274,6 +1274,11 @@ public:
         return m_transientComponentClassNames;
     }
 
+    const std::unordered_set<wxString>& GetTransientComponentClassNames() const
+    {
+        return m_transientComponentClassNames;
+    }
+
     /// Remove the transient component class names
     void ClearTransientComponentClassNames() { m_transientComponentClassNames.clear(); };
 

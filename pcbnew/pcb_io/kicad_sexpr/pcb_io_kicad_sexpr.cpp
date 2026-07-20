@@ -72,6 +72,9 @@
 #include <filter_reader.h>
 #include <ctl_flags.h>
 
+#include <algorithm>
+#include <vector>
+
 
 using namespace PCB_KEYS_T;
 
@@ -1246,17 +1249,33 @@ void PCB_IO_KICAD_SEXPR::format( const FOOTPRINT* aFootprint ) const
         m_out->Print( ")" );
     }
 
-    if( const COMPONENT_CLASS* compClass = aFootprint->GetStaticComponentClass() )
+    std::vector<wxString> componentClassNames;
+
+    if( const COMPONENT_CLASS* compClass = aFootprint->GetStaticComponentClass();
+        compClass && !compClass->IsEmpty() )
     {
-        if( !compClass->IsEmpty() )
-        {
-            m_out->Print( "(component_classes" );
+        for( const COMPONENT_CLASS* constituent : compClass->GetConstituentClasses() )
+            componentClassNames.push_back( constituent->GetName() );
+    }
+    else
+    {
+        for( const wxString& name : aFootprint->GetTransientComponentClassNames() )
+            componentClassNames.push_back( name );
+    }
 
-            for( const COMPONENT_CLASS* constituent : compClass->GetConstituentClasses() )
-                m_out->Print( "(class %s)", m_out->Quotew( constituent->GetName() ).c_str() );
+    if( !componentClassNames.empty() )
+    {
+        std::sort( componentClassNames.begin(), componentClassNames.end(),
+                   []( const wxString& aLeft, const wxString& aRight )
+                   {
+                       return aLeft.Cmp( aRight ) < 0;
+                   } );
+        m_out->Print( "(component_classes" );
 
-            m_out->Print( ")" );
-        }
+        for( const wxString& name : componentClassNames )
+            m_out->Print( "(class %s)", m_out->Quotew( name ).c_str() );
+
+        m_out->Print( ")" );
     }
 
     if( !aFootprint->GetFilters().empty() )

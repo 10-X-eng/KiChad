@@ -11,6 +11,7 @@
 
 #include "design_script_footprint_library_generator.h"
 
+#include "design_script_footprint_component_classes_generator.h"
 #include "design_script_footprint_graphic_generator.h"
 #include "design_script_footprint_group_generator.h"
 #include "design_script_footprint_pad_generator.h"
@@ -38,6 +39,8 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT;
+using COMPONENT_CLASSES_GENERATOR =
+        KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPONENT_CLASSES_GENERATOR;
 using GRAPHIC_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_GENERATOR;
 using GROUP_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GROUP_GENERATOR;
 using PAD_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR;
@@ -230,7 +233,7 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
         { "texts", JSON::value_t::array }, { "textBoxes", JSON::value_t::array },
         { "zones", JSON::value_t::array },
         { "groups", JSON::value_t::array }, { "variants", JSON::value_t::array },
-        { "properties", JSON::value_t::array },
+        { "properties", JSON::value_t::array }, { "componentClasses", JSON::value_t::array },
         { "rules", JSON::value_t::object }, { "privateLayers", JSON::value_t::array },
         { "models", JSON::value_t::array }
     };
@@ -283,6 +286,9 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
 
         ++aResult.counts["properties"].get_ref<int64_t&>();
     }
+
+    if( !COMPONENT_CLASSES_GENERATOR::Render( aFootprint["componentClasses"], aSource ) )
+        return false;
 
     if( !SETTINGS_GENERATOR::RenderRules( aFootprint["rules"], aSource ) )
         return false;

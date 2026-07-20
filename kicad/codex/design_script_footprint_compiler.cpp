@@ -11,6 +11,7 @@
 
 #include "design_script_footprint_compiler.h"
 
+#include "design_script_footprint_component_classes_compiler.h"
 #include "design_script_footprint_graphic_compiler.h"
 #include "design_script_footprint_group_compiler.h"
 #include "design_script_footprint_pad_compiler.h"
@@ -40,6 +41,8 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT;
+using COMPONENT_CLASSES_COMPILER =
+        KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPONENT_CLASSES_COMPILER;
 using GRAPHIC_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER;
 using GROUP_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GROUP_COMPILER;
 using PAD_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER;
@@ -467,7 +470,7 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
         { "graphics", JSON::array() }, { "texts", JSON::array() },
         { "textBoxes", JSON::array() }, { "zones", JSON::array() },
         { "groups", JSON::array() }, { "variants", JSON::array() },
-        { "properties", JSON::array() },
+        { "properties", JSON::array() }, { "componentClasses", JSON::array() },
         { "rules",
           { { "clearanceNm", nullptr }, { "solderMaskMarginNm", nullptr },
             { "solderPasteMarginNm", nullptr }, { "solderPasteMarginPpm", nullptr },
@@ -725,6 +728,25 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
             result.footprint[head == "rules" ? "rules"
                              : head == "stackup" ? "stackup" : "privateLayers"] =
                     std::move( settings.value );
+            continue;
+        }
+
+        if( head == "component_classes" )
+        {
+            if( !settingsForms.emplace( head ).second )
+            {
+                diagnostic( result, "duplicate_authored_footprint_component_classes",
+                            "footprint component_classes occurs more than once" );
+                continue;
+            }
+
+            COMPONENT_CLASSES_COMPILER::RESULT classes =
+                    COMPONENT_CLASSES_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : classes.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.footprint["componentClasses"] = std::move( classes.classes );
             continue;
         }
 

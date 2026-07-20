@@ -169,6 +169,7 @@ FOOTPRINT::FOOTPRINT( const FOOTPRINT& aFootprint ) :
 
     m_componentClassCacheProxy->SetStaticComponentClass(
             aFootprint.m_componentClassCacheProxy->GetStaticComponentClass() );
+    m_transientComponentClassNames = aFootprint.m_transientComponentClassNames;
 
     std::map<EDA_ITEM*, EDA_ITEM*> ptrMap;
 
@@ -971,6 +972,7 @@ FOOTPRINT& FOOTPRINT::operator=( FOOTPRINT&& aOther )
 
     m_componentClassCacheProxy->SetStaticComponentClass(
             aOther.m_componentClassCacheProxy->GetStaticComponentClass() );
+    m_transientComponentClassNames = std::move( aOther.m_transientComponentClassNames );
 
     // Clear the other item's containers since this is a move
     aOther.m_fields.clear();
@@ -1132,6 +1134,7 @@ FOOTPRINT& FOOTPRINT::operator=( const FOOTPRINT& aOther )
 
     m_componentClassCacheProxy->SetStaticComponentClass(
             aOther.m_componentClassCacheProxy->GetStaticComponentClass() );
+    m_transientComponentClassNames = aOther.m_transientComponentClassNames;
 
     EMBEDDED_FILES::operator=( aOther );
 

@@ -268,6 +268,7 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
       (visible false) (keep_upright true) (knockout false)
       (font (size 0.8mm 0.8mm) (thickness auto))
       (justify center center false))
+    (component_classes "Precision Analog" "Thermal Critical")
     (rules
       (clearance 0.1mm) (solder_mask_margin -0.02mm)
       (solder_paste_margin inherit) (solder_paste_margin_ratio -0.1)
@@ -326,6 +327,7 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
     BOOST_CHECK_EQUAL( footprint["groups"].size(), 2 );
     BOOST_CHECK_EQUAL( footprint["variants"].size(), 2 );
     BOOST_CHECK_EQUAL( footprint["properties"].size(), 1 );
+    BOOST_CHECK_EQUAL( footprint["componentClasses"].size(), 2 );
     BOOST_CHECK_EQUAL( footprint["stackup"].size(), 4 );
     BOOST_CHECK_EQUAL( footprint["rules"]["clearanceNm"], 100000 );
     BOOST_CHECK_EQUAL( footprint["zones"][0]["fill"]["smoothing"], "fillet" );
@@ -347,6 +349,9 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
     BOOST_CHECK_NE( source.find( "(field (name \"Manufacturer Part Number\")" ),
                     std::string::npos );
     BOOST_CHECK_NE( source.find( "(property \"Manufacturer Part Number\" \"MODULE-BASE\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( source.find( "(component_classes (class \"Precision Analog\") "
+                                 "(class \"Thermal Critical\"))" ),
                     std::string::npos );
     BOOST_CHECK_NE( source.find( "(clearance 0.1)" ), std::string::npos );
     BOOST_CHECK_NE( source.find( "(solder_mask_margin -0.02)" ), std::string::npos );

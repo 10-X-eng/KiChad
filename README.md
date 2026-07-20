@@ -157,7 +157,7 @@ deterministic KDS-owned footprint library from semantic metadata, standard/custo
 SMD/connect/PTH/NPTH pads, front/inner/back and named-inner padstacks, tenting and post-machining,
 fixed and curved artwork, polygons and fills, rich text and text boxes, local
 pad and footprint-wide mask/paste/clearance/thermal policy, custom copper stacks, private layers,
-stable-ID displayable metadata properties, jumper/net-tie groups, footprint-local copper zones and
+stable-ID displayable metadata properties, native component-class membership, jumper/net-tie groups, footprint-local copper zones and
 keepouts, nested stable-ID item groups, explicit assembly variants, and project-local 3D model transforms;
 the current KiCad 10 `.kicad_mod` artifacts are whole-library swapped, native-loader
 validated, journaled, and restored exactly after an injected rejection. Board vias also carry

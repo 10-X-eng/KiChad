@@ -1309,6 +1309,17 @@ logical ID, and variants may override only an existing non-Reference mandatory o
 The compiler emits current KiCad property syntax with a deterministic UUID and full font,
 justification, visibility, orientation, keep-upright, and knockout semantics.
 
+Footprint component classes are an explicit set of native class names:
+
+```scheme
+(component_classes "Precision Analog" "Thermal Critical")
+```
+
+The form accepts 1 through 256 unique bounded names and emits them in canonical lexical order.
+Names remain the actual Board Setup/DRC class identifiers; KDS does not invent a second aliasing
+layer. KiChad also preserves unresolved class names while a `.kicad_mod` is loaded and resaved
+without board context, preventing whole-library validation from silently removing this metadata.
+
 Footprint zones use one semantic form with an explicit `purpose`; there is no second keepout syntax
 and no native s-expression escape hatch:
 
@@ -1400,7 +1411,7 @@ and asks `kicad-cli fp upgrade --force` to parse and resave every file in an iso
 Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
 the operation and restore the prior library, project tables, schematics, and settings in reverse
 order. Footprint authoring remains intentionally partial: per-layer custom primitive geometry,
-secondary/tertiary drilling, embedded assets, component classes, and
+secondary/tertiary drilling, embedded assets, and
 complete package-data-to-KLC geometry generation remain explicit capability gaps. Plugging,
 filling, capping, and covering are KiCad via—not footprint-pad—file semantics and are tracked under
 the board-via capability.

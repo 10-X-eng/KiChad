@@ -6768,6 +6768,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(zone_connection inherit|none|thermal|solid|pth_thermal))] "
                       "[(stackup custom (layers F.Cu In1.Cu... B.Cu))] "
                       "[(private_layers LAYER...)] "
+                      "[(component_classes NAME...)] "
                       "(zone ID (purpose copper|keepout) [(name TEXT)] (layers LAYER...) "
                       "(outline (polygon (point X Y)... [(hole (point X Y)...)...])) "
                       "[(clearance DISTANCE) (min_thickness DISTANCE) "
