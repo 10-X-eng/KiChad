@@ -104,7 +104,12 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
     (value R) (description "Resistor")
     (property "Manufacturer" "Example" (at 3mm 4mm) (visible true)
       (show_name true) (justify right bottom) (hyperlink "#2"))
+    (body_styles "IEC" "ANSI")
+    (units_locked true)
+    (footprint_filter "Resistor_SMD:*")
+    (footprint_filter "Resistor_THT:*")
     (unit common
+      (body_style 1)
       (rectangle body (from -1.016mm -2.54mm) (to 1.016mm 2.54mm)
         (stroke 0.254mm default) (fill none))
       (circle center_mark (center 0mm 0mm) (radius 0.5mm))
@@ -121,10 +126,16 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
         (stroke 0.1mm dash (color 40 50 60 0.5))
         (fill color (color 70 80 90 0.25))
         (justify right bottom) (hyperlink "#2")))
-    (unit 1
+    (unit common (body_style 2)
+      (rectangle ansi_body (from -2.54mm -1.016mm) (to 2.54mm 1.016mm)
+        (stroke 0.254mm default) (fill none)))
+    (unit 1 (body_style 1) (display_name "Resistor element")
       (pin 1 (at 0mm 3.81mm) (orientation up) (length 1.27mm)
         (alternate SENSE input line) (alternate DRIVE output inverted))
-      (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm))))
+      (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm)))
+    (unit 1 (body_style 2) (display_name "Resistor element")
+      (pin 1 (at -3.81mm 0mm) (orientation right) (length 1.27mm))
+      (pin 2 (at 3.81mm 0mm) (orientation left) (length 1.27mm))))
   (symbol Product:POWER_BASE
     (reference "#PWR") (value VCC) (power global)
     (duplicate_pin_numbers_are_jumpers true) (jumper_group 1 2)
@@ -152,6 +163,12 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
     BOOST_CHECK_EQUAL( relative, "libraries/Product.kicad_sym" );
     BOOST_CHECK( !resolved.FileExists() );
     const std::string source = generated.sources["Product"].get<std::string>();
+    BOOST_CHECK_NE( source.find( "(body_styles \"IEC\" \"ANSI\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(unit_name \"Resistor element\")" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(property \"ki_locked\" \"\"" ), std::string::npos );
+    BOOST_CHECK_NE( source.find(
+            "(property \"ki_fp_filters\" \"Resistor_SMD:* Resistor_THT:*\"" ),
+            std::string::npos );
     BOOST_REQUIRE_MESSAGE( KICHAD::MANAGED_SYMBOL_LIBRARY_IO::InstallAtomically(
                                    resolved, true, source, error ), error );
     BOOST_REQUIRE( resolved.FileExists() );

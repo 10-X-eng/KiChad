@@ -234,6 +234,9 @@ sheet reference. Text boxes add independently bounded container size, four margi
 hidden/visible border state, every native line/fill mode, and the same complete text-effects block.
 Both lower to stable-UUID KiCad expressions with simulation inclusion, color, mirroring, and
 hyperlink state intact; no presentation field is silently dropped.
+Managed AI-native symbols also lower named or De Morgan body-style inventories, consistent logical
+unit display names, non-interchangeable unit locking, and ordered footprint-filter patterns into the
+current KiCad 10 symbol-library semantics before native-loader validation.
 Native schematic polylines, rounded rectangles, circles, three-point arcs, and cubic Bézier curves
 use separate canonical forms with shared complete stroke/fill IR. Geometry is normalized and
 validated before planning, then lowered to same-named current KiCad 10 objects under stable UUID

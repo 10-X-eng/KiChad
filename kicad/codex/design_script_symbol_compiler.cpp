@@ -19,6 +19,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
@@ -414,7 +415,7 @@ JSON compileUnit( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     }
 
     JSON unit = { { "number", number }, { "bodyStyle", bodyStyle },
-                  { "items", JSON::array() } };
+                  { "displayName", "" }, { "items", JSON::array() } };
     std::set<std::string> itemIds;
     std::set<std::string> pinNumbers;
 
@@ -425,6 +426,26 @@ JSON compileUnit( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
 
         if( head == "body_style" )
             continue;
+
+        if( head == "display_name" )
+        {
+            std::string displayName;
+
+            if( !fields.emplace( head ).second || number == 0
+                || !oneValue( aDocument, child, displayName ) || displayName.empty()
+                || displayName.size() > 256 || displayName.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( aResult, "invalid_authored_symbol_unit_display_name",
+                            "a numbered symbol unit accepts one display_name of 1 through 256 "
+                            "UTF-8 bytes" );
+            }
+            else
+            {
+                unit["displayName"] = displayName;
+            }
+
+            continue;
+        }
 
         if( unit["items"].size() >= MAX_UNIT_ITEMS )
         {
@@ -520,7 +541,9 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
         { "pinNamesOffsetNm", 0 }, { "properties", JSON::array() },
         { "units", JSON::array() }, { "power", "normal" }, { "extends", "" },
         { "declaredFields", JSON::array() }, { "duplicatePinNumbersAreJumpers", false },
-        { "jumperGroups", JSON::array() }, { "fieldLayouts", JSON::object() }
+        { "jumperGroups", JSON::array() }, { "fieldLayouts", JSON::object() },
+        { "bodyStyles", { { "mode", "default" }, { "names", JSON::array() } } },
+        { "unitsLocked", false }, { "footprintFilters", JSON::array() }
     };
     std::set<std::string> fields;
     std::set<std::string> propertyNames;
@@ -530,6 +553,83 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
     {
         const size_t child = node.children[index];
         const std::string head = aDocument.ListHead( child );
+
+        if( head == "footprint_filter" )
+        {
+            std::string filter;
+
+            if( result.symbol["footprintFilters"].size() >= 256
+                || !oneValue( aDocument, child, filter ) || filter.empty()
+                || filter.size() > 256 || filter.find_first_of( " \t\r\n" ) != std::string::npos
+                || filter.find( '\0' ) != std::string::npos )
+            {
+                diagnostic( result, "invalid_authored_symbol_footprint_filter",
+                            "footprint_filter requires one unique whitespace-free pattern" );
+            }
+            else
+            {
+                bool duplicate = false;
+
+                for( const JSON& existing : result.symbol["footprintFilters"] )
+                    duplicate = duplicate || existing == filter;
+
+                if( duplicate )
+                    diagnostic( result, "duplicate_authored_symbol_footprint_filter",
+                                "footprint filter " + filter + " occurs more than once" );
+                else
+                    result.symbol["footprintFilters"].push_back( filter );
+            }
+
+            continue;
+        }
+
+        if( head == "body_styles" )
+        {
+            if( !fields.emplace( head ).second )
+            {
+                diagnostic( result, "duplicate_authored_symbol_body_styles",
+                            "symbol body_styles occurs more than once" );
+                continue;
+            }
+
+            const DOCUMENT::NODE& declaration = aDocument.Nodes().at( child );
+            JSON names = JSON::array();
+            bool valid = declaration.children.size() >= 2;
+            bool demorgan = false;
+
+            for( size_t style = 1; valid && style < declaration.children.size(); ++style )
+            {
+                std::string styleName;
+                valid = scalar( aDocument, declaration.children[style], styleName )
+                        && !styleName.empty() && styleName.size() <= 128
+                        && styleName.find( '\0' ) == std::string::npos;
+
+                if( style == 1 && declaration.children.size() == 2 && styleName == "demorgan" )
+                    demorgan = true;
+                else
+                    names.push_back( styleName );
+            }
+
+            if( !valid || ( !demorgan && ( names.empty() || names.size() > 64 ) ) )
+                diagnostic( result, "invalid_authored_symbol_body_styles",
+                            "body_styles requires demorgan or 1 through 64 unique display names" );
+            else
+            {
+                std::set<std::string> unique;
+
+                for( const JSON& styleName : names )
+                    valid = valid && unique.emplace( styleName.get<std::string>() ).second;
+
+                if( !valid )
+                    diagnostic( result, "duplicate_authored_symbol_body_style_name",
+                                "body style display names must be unique" );
+                else
+                    result.symbol["bodyStyles"] = { { "mode", demorgan ? "demorgan" : "named" },
+                                                      { "names", std::move( names ) } };
+            }
+
+            continue;
+        }
 
         if( head == "jumper_group" )
         {
@@ -647,7 +747,7 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
 
             static const std::set<std::string> reserved = {
                 "Reference", "Value", "Footprint", "Datasheet", "Description",
-                "ki_keywords", "ki_fp_filters"
+                "ki_keywords", "ki_fp_filters", "ki_locked"
             };
 
             if( reserved.contains( propertyName ) )
@@ -742,22 +842,52 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
             else
                 result.symbol["duplicatePinNumbersAreJumpers"] = parsed;
         }
+        else if( head == "units_locked" )
+        {
+            bool parsed = false;
+
+            if( !boolean( value, parsed ) )
+                diagnostic( result, "invalid_authored_symbol_units_locked",
+                            "units_locked must be true or false" );
+            else
+                result.symbol["unitsLocked"] = parsed;
+        }
         else
         {
             diagnostic( result, "unknown_authored_symbol_field",
                         "symbol supports reference, value, footprint, datasheet, description, "
-                        "keywords, inclusion flags, pin display fields, property, and unit" );
+                        "keywords, inclusion flags, pin display fields, library metadata, "
+                        "property, and unit" );
         }
     }
 
     bool hasNumberedUnit = false;
     bool hasPowerInput = false;
     std::set<std::string> availablePinNumbers;
+    std::map<int64_t, std::string> unitDisplayNames;
+    int64_t maximumBodyStyle = 1;
 
     for( const JSON& unit : result.symbol["units"] )
     {
         if( unit.is_object() && unit.value( "number", 0 ) > 0 )
             hasNumberedUnit = true;
+
+        if( unit.is_object() )
+        {
+            maximumBodyStyle = std::max<int64_t>( maximumBodyStyle,
+                                                  unit.value( "bodyStyle", int64_t{ 1 } ) );
+            const int64_t unitNumber = unit.value( "number", 0 );
+            const std::string displayName = unit.value( "displayName", "" );
+
+            if( !displayName.empty() )
+            {
+                auto [entry, inserted] = unitDisplayNames.emplace( unitNumber, displayName );
+
+                if( !inserted && entry->second != displayName )
+                    diagnostic( result, "conflicting_authored_symbol_unit_display_name",
+                                "all body styles of one unit require the same display_name" );
+            }
+        }
 
         if( unit.is_object() && unit.contains( "items" ) && unit["items"].is_array() )
         {
@@ -777,6 +907,15 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
         result.symbol["declaredFields"].push_back( field );
 
     const bool derived = !result.symbol["extends"].get_ref<const std::string&>().empty();
+    const std::string bodyStyleMode = result.symbol["bodyStyles"]["mode"].get<std::string>();
+    const int64_t availableBodyStyles = bodyStyleMode == "demorgan" ? 2
+                                            : bodyStyleMode == "named"
+                                                      ? result.symbol["bodyStyles"]["names"].size()
+                                                      : 1;
+
+    if( maximumBodyStyle > availableBodyStyles )
+        diagnostic( result, "undeclared_authored_symbol_body_style",
+                    "unit body_style exceeds the declared body_styles inventory" );
 
     if( derived && !result.symbol["units"].empty() )
     {
@@ -796,6 +935,12 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
     if( derived && !result.symbol["jumperGroups"].empty() )
         diagnostic( result, "derived_authored_symbol_jumper_groups",
                     "derived symbol " + id + " inherits jumper groups" );
+
+    if( derived && ( !result.symbol["footprintFilters"].empty()
+                     || result.symbol["unitsLocked"].get<bool>()
+                     || bodyStyleMode != "default" ) )
+        diagnostic( result, "derived_authored_symbol_library_metadata",
+                    "derived symbol " + id + " inherits filters, locking, and body styles" );
 
     if( derived )
     {

@@ -964,13 +964,17 @@ replacing an editor-managed library implicitly would be destructive:
   (datasheet "https://example.com/SENSOR.pdf")
   (description "Two-pin sensor")
   (keywords "sensor precision")
+  (body_styles "Normal" "Alternate")
+  (units_locked true)
+  (footprint_filter "Package_SO:*")
+  (footprint_filter "Package_DFN_QFN:*")
   (property "Manufacturer" "Example Semiconductor"
     (at 0mm 3.81mm) (visible true) (show_name true) (autoplace false)
     (private false) (rotation 0deg) (size 1.27mm 1.27mm)
     (font stroke) (line_spacing 1) (thickness auto) (color default)
     (justify center top) (bold false) (italic false) (hyperlink none))
   (pin_names_offset 0.254mm)
-  (unit common
+  (unit common (body_style 1)
     (rectangle body (from -2.54mm -1.27mm) (to 2.54mm 1.27mm)
       (radius 0.2mm) (stroke 0.254mm default) (fill background))
     (circle target (center 0mm 0mm) (radius 0.5mm))
@@ -981,7 +985,7 @@ replacing an editor-managed library implicitly would be destructive:
     (text label "SENSOR" (at 0mm 2mm) (size 1mm 1mm) (justify center bottom))
     (text_box note "Calibrated" (at -2mm -3mm) (box_size 4mm 1.5mm)
       (margins 0.1mm 0.1mm 0.1mm 0.1mm)))
-  (unit 1
+  (unit 1 (body_style 1) (display_name "Sensor channel")
     (pin 1 (name IN) (electrical input) (shape line)
       (at -5.08mm 0mm) (orientation right) (length 2.54mm)
       (alternate GPIO bidirectional line))
@@ -990,8 +994,14 @@ replacing an editor-managed library implicitly would be destructive:
 ```
 
 `symbol` is semantic KDS, not embedded native s-expression text. A `common` unit maps graphics to
-native unit zero; numbered units range from 1 through 256. Optional `body_style` ranges from 1
-through 64. The qualified lowering covers mandatory metadata, custom properties, inclusion flags,
+native unit zero; numbered units range from 1 through 256. A root symbol can declare the exact
+body-style inventory once as `(body_styles demorgan)` or as 1 through 64 unique display names.
+Each unit's optional `body_style` selects that 1-based inventory. A numbered unit may carry one
+bounded `display_name`; declarations for the same unit across body styles must agree because KiCad
+stores one display name per logical unit. `(units_locked true)` preserves non-interchangeable unit
+semantics. Repeated `footprint_filter` forms carry unique whitespace-free library patterns and
+lower to KiCad's native filter inventory in declaration order. Derived aliases inherit all four
+facets and cannot contradict their root. The qualified lowering covers mandatory metadata, custom properties, inclusion flags,
 pin-name/number visibility, and all five KiCad vector primitives: rectangles (including rounded
 corners), circles, three-point arcs, four-point cubic Beziers, and arbitrary polylines. Every
 graphic has a stable logical ID and may declare `(private true)`. Strokes support `default`,
@@ -1052,8 +1062,8 @@ prior presence and bytes, atomically installs the library after its project tabl
 10.0.4's native symbol loader to parse and resave an isolated copy, and only then installs generated
 schematics. Native rejection or any later pre-commit failure restores the prior symbol library,
 tables, schematics, and settings in reverse order. Parent directories must already exist and file
-symlinks are rejected. Field-layout semantics are listed explicitly
-as partial coverage rather than being accepted and ignored.
+symlinks are rejected. Embedded-font ownership and unmanaged-library publishing remain explicit
+partial coverage rather than being accepted and ignored.
 
 ### Stackup form
 
@@ -1572,7 +1582,8 @@ KiCad's native schematic loader. Global installed symbol content, library
 content publishing, footprint/model authoring, and the incomplete schematic facets named by the
 capability catalog remain non-executable until their own lossless backends and rollback tests land.
 AI-native symbol authoring is executable for metadata, completely laid-out fields, properties,
-common/numbered units, body styles, all native vector/text graphics, and fully typed pins; the capability catalog keeps its remaining authoring
+common/numbered units, named and De Morgan body styles, unit display names, unit locking, footprint
+filters, all native vector/text graphics, and fully typed pins; the capability catalog keeps its remaining authoring
 facets partial until their dedicated backends land. Nested
 sheet hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

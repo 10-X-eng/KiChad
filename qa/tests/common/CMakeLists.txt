@@ -65,6 +65,7 @@ set( QA_COMMON_SRCS
     test_design_script_symbol_fields.cpp
     test_design_script_symbol_graphics.cpp
     test_design_script_symbol_library_generator.cpp
+    test_design_script_symbol_metadata.cpp
     test_design_script_symbol_text.cpp
     test_managed_symbol_library_io.cpp
     test_coroutine.cpp

@@ -125,6 +125,88 @@ std::string property( const std::string& aName, const std::string& aValue, bool 
 }
 
 
+bool renderBodyStyles( const JSON& aBodyStyles, std::string& aSource )
+{
+    if( !aBodyStyles.is_object() || !aBodyStyles.contains( "mode" )
+        || !aBodyStyles["mode"].is_string() || !aBodyStyles.contains( "names" )
+        || !aBodyStyles["names"].is_array() )
+    {
+        return false;
+    }
+
+    const std::string mode = aBodyStyles["mode"].get<std::string>();
+    const JSON& names = aBodyStyles["names"];
+
+    if( mode == "default" )
+        return names.empty();
+
+    if( mode == "demorgan" )
+    {
+        if( !names.empty() )
+            return false;
+
+        aSource += "\t\t(body_styles demorgan)\n";
+        return true;
+    }
+
+    if( mode != "named" || names.empty() || names.size() > 64 )
+        return false;
+
+    std::set<std::string> unique;
+    aSource += "\t\t(body_styles";
+
+    for( const JSON& name : names )
+    {
+        if( !name.is_string() || name.get_ref<const std::string&>().empty()
+            || name.get_ref<const std::string&>().size() > 128
+            || name.get_ref<const std::string&>().find( '\0' ) != std::string::npos
+            || !unique.emplace( name.get<std::string>() ).second )
+        {
+            return false;
+        }
+
+        aSource += " " + quoted( name.get<std::string>() );
+    }
+
+    aSource += ")\n";
+    return true;
+}
+
+
+bool renderLibraryMetadataProperties( const JSON& aSymbol, std::string& aSource )
+{
+    if( aSymbol["unitsLocked"].get<bool>() )
+        aSource += property( "ki_locked", "", true );
+
+    if( aSymbol["footprintFilters"].empty() )
+        return true;
+
+    std::string filters;
+    std::set<std::string> unique;
+
+    for( const JSON& filter : aSymbol["footprintFilters"] )
+    {
+        if( !filter.is_string() || filter.get_ref<const std::string&>().empty()
+            || filter.get_ref<const std::string&>().size() > 256
+            || filter.get_ref<const std::string&>().find_first_of( " \t\r\n" )
+                       != std::string::npos
+            || filter.get_ref<const std::string&>().find( '\0' ) != std::string::npos
+            || !unique.emplace( filter.get<std::string>() ).second )
+        {
+            return false;
+        }
+
+        if( !filters.empty() )
+            filters += " ";
+
+        filters += filter.get<std::string>();
+    }
+
+    aSource += property( "ki_fp_filters", filters, true );
+    return true;
+}
+
+
 bool renderField( const JSON& aSymbol, const std::string& aRole,
                   const std::string& aNativeName, const std::string& aValue,
                   bool aHidden, int64_t aX, int64_t aY, std::string& aSource )
@@ -249,7 +331,9 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         { "power", JSON::value_t::string }, { "extends", JSON::value_t::string },
         { "declaredFields", JSON::value_t::array },
         { "duplicatePinNumbersAreJumpers", JSON::value_t::boolean },
-        { "jumperGroups", JSON::value_t::array }, { "fieldLayouts", JSON::value_t::object }
+        { "jumperGroups", JSON::value_t::array }, { "fieldLayouts", JSON::value_t::object },
+        { "bodyStyles", JSON::value_t::object }, { "unitsLocked", JSON::value_t::boolean },
+        { "footprintFilters", JSON::value_t::array }
     };
 
     if( !aSymbol.is_object() )
@@ -267,6 +351,15 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
 
     if( !parent.empty() )
     {
+        std::string bodyStyleSource;
+
+        if( aSymbol["unitsLocked"].get<bool>() || !aSymbol["footprintFilters"].empty()
+            || !renderBodyStyles( aSymbol["bodyStyles"], bodyStyleSource )
+            || !bodyStyleSource.empty() )
+        {
+            return false;
+        }
+
         std::set<std::string> declared;
 
         for( const JSON& field : aSymbol["declaredFields"] )
@@ -325,6 +418,9 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
     if( power == "global" || power == "local" )
         aSource += "\t\t(power " + power + ")\n";
     else if( power != "normal" )
+        return false;
+
+    if( !renderBodyStyles( aSymbol["bodyStyles"], aSource ) )
         return false;
 
     if( aSymbol["hidePinNumbers"].get<bool>() )
@@ -396,6 +492,9 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
             return false;
     }
 
+    if( !renderLibraryMetadataProperties( aSymbol, aSource ) )
+        return false;
+
     std::vector<const JSON*> units;
 
     for( const JSON& unit : aSymbol["units"] )
@@ -412,15 +511,29 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         if( !unit->is_object() || !unit->contains( "number" )
             || !( *unit )["number"].is_number_integer() || !unit->contains( "bodyStyle" )
             || !( *unit )["bodyStyle"].is_number_integer() || !unit->contains( "items" )
-            || !( *unit )["items"].is_array() )
+            || !( *unit )["items"].is_array() || !unit->contains( "displayName" )
+            || !( *unit )["displayName"].is_string() )
         {
             return false;
         }
 
         aSource += "\t\t(symbol "
                    + quoted( name + "_" + std::to_string( ( *unit )["number"].get<int64_t>() )
-                             + "_" + std::to_string( ( *unit )["bodyStyle"].get<int64_t>() ) )
+                   + "_" + std::to_string( ( *unit )["bodyStyle"].get<int64_t>() ) )
                    + "\n";
+
+        const std::string displayName = ( *unit )["displayName"].get<std::string>();
+
+        if( !displayName.empty() )
+        {
+            if( ( *unit )["number"].get<int64_t>() == 0 || displayName.size() > 256
+                || displayName.find( '\0' ) != std::string::npos )
+            {
+                return false;
+            }
+
+            aSource += "\t\t\t(unit_name " + quoted( displayName ) + ")\n";
+        }
 
         for( const JSON& item : ( *unit )["items"] )
         {
