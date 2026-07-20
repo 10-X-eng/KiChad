@@ -41,6 +41,7 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
     (route SIGNAL (id arc-a) (from 3mm 4mm) (mid 4mm 5mm) (to 5mm 4mm)
       (width 0.2mm) (layer B.Cu) (locked true))
     (via SIGNAL (id via-a) (at 5mm 4mm) (diameter 0.8mm) (drill 0.4mm)
+      (unconnected_layers keep_start_end)
       (protection
         (tenting (front open) (back tented))
         (covering (front covered) (back inherit))
@@ -110,6 +111,8 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     BOOST_CHECK_EQUAL( first.operations[2]["item"]["locked"].get<std::string>(), "LS_LOCKED" );
     const nlohmann::json& viaStack = first.operations[3]["item"]["padStack"];
     BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["solderMaskMode"], "SMM_MASKED" );
+    BOOST_CHECK_EQUAL( viaStack["unconnectedLayerRemoval"],
+                       "ULR_REMOVE_EXCEPT_START_AND_END" );
     BOOST_CHECK_EQUAL( viaStack["backOuterLayers"]["solderMaskMode"], "SMM_UNMASKED" );
     BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["coveringMode"], "VCM_COVERED" );
     BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["pluggingMode"], "VPM_PLUGGED" );

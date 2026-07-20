@@ -6894,6 +6894,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(custom (anchor circle|rect) "
                       "(line|rectangle|arc|circle|polygon|bezier ID ...)...)] ...)...)) "
                       "[(layers START END)] [(type through|blind|buried|micro)] "
+                      "[(unconnected_layers keep|remove|keep_start_end|start_end_only)] "
                       "[(backdrills (top (diameter D) (stop_layer LAYER)) "
                       "(bottom (diameter D) (stop_layer LAYER)))] "
                       "[(protection (tenting ...) (covering ...) (plugging ...) "

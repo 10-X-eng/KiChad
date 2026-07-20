@@ -1290,7 +1290,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     std::map<std::string, size_t> fields;
     collectFields( aDocument, aNode, 2,
                    { "id", "at", "diameter", "drill", "layers", "type", "locked",
-                     "padstack", "protection", "backdrills" },
+                     "padstack", "protection", "backdrills", "unconnected_layers" },
                    fields, aResult, "via" );
     std::string logicalId;
     JSON        position = JSON::object();
@@ -1303,6 +1303,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     JSON        padstack = nullptr;
     JSON        protection = nullptr;
     JSON        backdrills = nullptr;
+    std::string unconnectedLayers = "keep";
 
     if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
         || !validIdentifier( logicalId ) )
@@ -1375,6 +1376,18 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     {
         diagnostic( aResult, "error", "invalid_via_locked",
                     "via locked must be true or false" );
+    }
+
+    if( fields.contains( "unconnected_layers" )
+        && ( !parseScalarForm( aDocument, fields["unconnected_layers"],
+                              unconnectedLayers )
+             || ( unconnectedLayers != "keep" && unconnectedLayers != "remove"
+                  && unconnectedLayers != "keep_start_end"
+                  && unconnectedLayers != "start_end_only" ) ) )
+    {
+        diagnostic( aResult, "error", "invalid_via_unconnected_layer_policy",
+                    "unconnected_layers must be keep, remove, keep_start_end, or "
+                    "start_end_only" );
     }
 
     if( fields.contains( "padstack" ) )
@@ -1516,6 +1529,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "padstack", std::move( padstack ) },
              { "protection", std::move( protection ) },
              { "backdrills", std::move( backdrills ) },
+             { "unconnectedLayers", unconnectedLayers },
              { "locked", locked },
              { "typed", true } };
 }

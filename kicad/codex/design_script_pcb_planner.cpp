@@ -950,6 +950,12 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
     else
         typeEnum = "VT_MICRO";
 
+    static const std::map<std::string, std::string> unconnectedLayerPolicies = {
+        { "keep", "ULR_KEEP" },
+        { "remove", "ULR_REMOVE" },
+        { "keep_start_end", "ULR_REMOVE_EXCEPT_START_AND_END" },
+        { "start_end_only", "ULR_START_END_ONLY" }
+    };
     JSON padStack = {
         { "layers", JSON::array( { startLayer, endLayer } ) },
         { "drill",
@@ -957,7 +963,9 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
             { "endLayer", endLayer },
             { "diameter", { { "xNm", drill }, { "yNm", drill } } },
             { "shape", "DS_CIRCLE" } } },
-        { "unconnectedLayerRemoval", "ULR_KEEP" }
+        { "unconnectedLayerRemoval",
+          unconnectedLayerPolicies.at(
+                  aStatement.at( "unconnectedLayers" ).get<std::string>() ) }
     };
     const JSON authoredPadstack = aStatement.value( "padstack", JSON( nullptr ) );
 

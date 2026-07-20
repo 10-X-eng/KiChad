@@ -1643,6 +1643,7 @@ lowers into KiCad 10's typed `PadStack` IPC message:
   (drill 0.4mm)
   (layers F.Cu B.Cu)
   (type through)
+  (unconnected_layers keep_start_end)
   (locked false)
   (protection
     (tenting (front open) (back tented))
@@ -1660,6 +1661,11 @@ LLM never has to infer an inverted boolean. Filling and capping use equally dire
 Treatments on a physical side are rejected unless the via span reaches that outer copper layer.
 Counterbores require diameter and depth; countersinks require diameter and included angle. Their
 diameter must exceed the primary drill.
+
+`unconnected_layers` controls annular copper without an inverted pair of booleans: `keep` preserves
+all rings, `remove` strips every unconnected ring, `keep_start_end` strips only intermediate
+unconnected rings, and `start_end_only` keeps copper exclusively on the drilled span's endpoints.
+The selected policy is carried directly in KiCad's typed padstack and survives readback.
 
 An advanced via replaces—not supplements—the simple circular `diameter` with exactly one semantic
 `padstack`. `front_inner_back` requires `F.Cu`, `inner`, and `B.Cu`. `custom` requires every named
