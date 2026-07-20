@@ -8,10 +8,10 @@ launcher_name="$(basename -- "$0")"
 
 case "$launcher_name" in
     kichad)
-        target_name="kicad.real"
+        target_name="kicad"
         ;;
     kichad-cli)
-        target_name="kicad-cli.real"
+        target_name="kicad-cli"
         ;;
     *)
         echo "Unsupported KiChad launcher name: ${launcher_name}" >&2

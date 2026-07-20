@@ -48,6 +48,12 @@ from any other KiCad version, and returns complete counts plus bounded pageable 
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
 
+Native tool failures use a versioned, model-readable error contract rather than a generic failure
+flag. Codex receives the failed stage, stable error code, safe request context, expected/observed
+details when available, whether project state may have changed, retryability, and ordered recovery
+steps. The Codex transcript displays the same error message and recovery summary so a user can see
+why a turn is still running or what blocked it.
+
 The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v12` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
 the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
@@ -99,6 +105,11 @@ sidecar declares libraries, components, nets, board intent, rules, sourcing, che
 outputs, while ordinary KiCad files remain the compiler artifacts. The format, grammar, safety rules,
 and production support criteria are documented in
 [docs/kichad-design-script.md](docs/kichad-design-script.md).
+Double-clicking a `.kicad_kds` file in the project tree opens KiChad's integrated KDS source tab
+with line numbers, s-expression highlighting, undo/redo,
+atomic save with external-change protection, compile status, SHA-256 revision display, and compiler
+diagnostics. Use **Compile** or `Ctrl+Enter` to validate and **Save** or `Ctrl+S` to write the
+sidecar; invalid work-in-progress source can still be saved without pretending it is compilable.
 The native `design.describe` operation also returns the authoritative AI-readable coverage catalog:
 every design, verification, manufacturing, interchange, editor, and auxiliary-application facet is
 marked `qualified`, `partial`, or `unrepresented` with explicit remaining gaps. The catalog is

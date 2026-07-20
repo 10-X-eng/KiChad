@@ -23,6 +23,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
  */
 
+#include <algorithm>
 #include <stack>
 #include <git/git_backend.h>
 
@@ -1124,15 +1125,21 @@ void PROJECT_TREE_PANE::onRight( wxTreeEvent& Event )
 
 void PROJECT_TREE_PANE::onOpenSelectedFileWithTextEditor( wxCommandEvent& event )
 {
+    std::vector<PROJECT_TREE_ITEM*> tree_data = GetSelectedData();
+
+    bool requiresExternalEditor = std::any_of(
+            tree_data.begin(), tree_data.end(),
+            []( const PROJECT_TREE_ITEM* aItem )
+            {
+                return aItem && aItem->GetType() != TREE_FILE_TYPE::KICHAD_DESIGN_SCRIPT;
+            } );
     wxString editorname = Pgm().GetTextEditor();
 
-    if( editorname.IsEmpty() )
+    if( requiresExternalEditor && editorname.IsEmpty() )
     {
         wxMessageBox( _( "No text editor selected in KiCad.  Please choose one." ) );
         return;
     }
-
-    std::vector<PROJECT_TREE_ITEM*> tree_data = GetSelectedData();
 
     for( PROJECT_TREE_ITEM* item_data : tree_data )
     {
@@ -1140,7 +1147,10 @@ void PROJECT_TREE_PANE::onOpenSelectedFileWithTextEditor( wxCommandEvent& event 
 
         if( !fullFileName.IsEmpty() )
         {
-            ExecuteFile( editorname, fullFileName.wc_str(), nullptr, false );
+            if( item_data->GetType() == TREE_FILE_TYPE::KICHAD_DESIGN_SCRIPT )
+                m_Parent->OpenKdsFile( fullFileName );
+            else
+                ExecuteFile( editorname, fullFileName.wc_str(), nullptr, false );
         }
     }
 }

@@ -131,6 +131,53 @@ wxString responseErrorMessage( const JSON& aResponse, const wxString& aFallback 
     return aFallback;
 }
 
+
+bool nativeToolFailureSummary( const JSON& aResult, wxString& aCode, wxString& aMessage,
+                               wxString& aDetails, wxString& aRecovery,
+                               wxString& aStateChanged )
+{
+    if( !aResult.is_object() || aResult.value( "success", true )
+        || !aResult.contains( "contentItems" ) || !aResult["contentItems"].is_array()
+        || aResult["contentItems"].empty()
+        || !aResult["contentItems"][0].contains( "text" )
+        || !aResult["contentItems"][0]["text"].is_string() )
+    {
+        return false;
+    }
+
+    JSON envelope = JSON::parse(
+            aResult["contentItems"][0]["text"].get<std::string>(), nullptr, false );
+
+    if( !envelope.is_object() || !envelope.contains( "error" )
+        || !envelope["error"].is_object() )
+    {
+        return false;
+    }
+
+    const JSON& error = envelope["error"];
+    aCode = wxString::FromUTF8( error.value( "code", "tool_failed" ) );
+    aMessage = wxString::FromUTF8( error.value( "message", "Native KiChad tool failed" ) );
+    aStateChanged = wxString::FromUTF8( error.value( "stateChanged", "unknown" ) );
+
+    if( error.contains( "details" ) )
+    {
+        std::string details = error["details"].dump();
+
+        if( details.size() > 2000 )
+            details = details.substr( 0, 2000 ) + "...";
+
+        aDetails = wxString::FromUTF8( details );
+    }
+
+    if( error.contains( "recovery" ) && error["recovery"].is_object() )
+    {
+        aRecovery = wxString::FromUTF8(
+                error["recovery"].value( "summary", "Inspect the failure before retrying." ) );
+    }
+
+    return true;
+}
+
 } // namespace
 
 
@@ -1401,9 +1448,17 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
                                 {
                                     JSON error = { { "ok", false },
                                                    { "error",
-                                                     { { "code", "tool_failed" },
+                                                     { { "contractVersion", 1 },
+                                                       { "code", "tool_failed" },
                                                        { "message",
-                                                         "Native tool result could not be serialized" } } } };
+                                                         "Native tool result could not be serialized" },
+                                                       { "stage", tool },
+                                                       { "retryable", false },
+                                                       { "stateChanged", "unknown" },
+                                                       { "recovery",
+                                                         { { "summary",
+                                                             "Do not retry unchanged; inspect the KiChad protocol log." },
+                                                           { "steps", JSON::array() } } } } } };
                                     JSON result = {
                                         { "contentItems",
                                           JSON::array( { { { "type", "inputText" },
@@ -1530,12 +1585,47 @@ void CODEX_PANEL::onToolCompleted( wxThreadEvent& aEvent )
         }
 
         m_client.SendResponse( requestId, result );
-        appendTranscript( wxString::Format( _( "[tool result: %s]\n" ),
-                                            result.value( "success", false ) ? _( "success" )
-                                                                             : _( "failed" ) ) );
-        setStatus( result.value( "success", false )
-                           ? _( "Tool result delivered; Codex is continuing..." )
-                           : _( "KiChad tool failed; Codex is handling the error..." ) );
+
+        if( result.value( "success", false ) )
+        {
+            appendTranscript( _( "[tool result: success]\n" ) );
+            setStatus( _( "Tool result delivered; Codex is continuing..." ) );
+        }
+        else
+        {
+            wxString code;
+            wxString message;
+            wxString details;
+            wxString recovery;
+            wxString stateChanged;
+
+            if( nativeToolFailureSummary( result, code, message, details, recovery,
+                                          stateChanged ) )
+            {
+                appendTranscript( wxString::Format( _( "[tool result: failed — %s: %s]\n" ),
+                                                    code, message ) );
+
+                if( !details.IsEmpty() )
+                    appendTranscript( wxString::Format( _( "[details: %s]\n" ), details ) );
+
+                if( !recovery.IsEmpty() )
+                    appendTranscript( wxString::Format( _( "[recovery: %s]\n" ), recovery ) );
+
+                if( stateChanged != wxS( "none" ) )
+                {
+                    appendTranscript( wxString::Format(
+                            _( "[project state after failure: %s]\n" ), stateChanged ) );
+                }
+
+                setStatus( wxString::Format( _( "KiChad tool failed: %s — %s" ),
+                                             code, message ) );
+            }
+            else
+            {
+                appendTranscript( _( "[tool result: failed — invalid failure details]\n" ) );
+                setStatus( _( "KiChad tool failed without valid diagnostics." ) );
+            }
+        }
     }
     catch( const JSON::exception& error )
     {

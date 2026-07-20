@@ -269,7 +269,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             if( !compiled.diagnostics.empty() )
                 message += ": " + compiled.diagnostics.front().value( "message", "invalid program" );
 
-            return failure( "compile_failed", message );
+            return failure( "compile_failed", message,
+                            { { "sourceSha256", compiled.sourceSha256 },
+                              { "diagnostics", compiled.diagnostics } } );
         }
 
         KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT planned =
@@ -473,8 +475,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             || !aArguments["expectedSha256"].is_string()
             || aArguments["expectedSha256"].get<std::string>() != compiled.sourceSha256 )
         {
+            JSON details = { { "actualSha256", compiled.sourceSha256 } };
+
+            if( aArguments.contains( "expectedSha256" )
+                && aArguments["expectedSha256"].is_string() )
+            {
+                details["expectedSha256"] = aArguments["expectedSha256"];
+            }
+            else
+            {
+                details["expectedSha256"] = nullptr;
+            }
+
             return failure( "stale_source",
-                            "design.apply requires the exact compiled source SHA-256" );
+                            "The KDS source does not match the revision supplied to design.apply",
+                            details );
         }
 
         if( !aArguments.contains( "boardPath" ) || !aArguments["boardPath"].is_string() )
@@ -2119,7 +2134,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !compiled.diagnostics.empty() )
             message += ": " + compiled.diagnostics.front().value( "message", "invalid program" );
 
-        return failure( "compile_failed", message );
+        return failure( "compile_failed", message,
+                        { { "sourceSha256", compiled.sourceSha256 },
+                          { "diagnostics", compiled.diagnostics } } );
     }
 
     if( sidecar.FileExists() )
@@ -2127,8 +2144,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !aArguments.contains( "expectedSha256" )
             || !aArguments["expectedSha256"].is_string() )
         {
-            return failure( "stale_source",
-                            "expectedSha256 is required when replacing an existing sidecar" );
+            return failure(
+                    "stale_source",
+                    "expectedSha256 is required when replacing an existing sidecar",
+                    { { "expectedSha256", nullptr },
+                      { "observed", "an existing sidecar requires a revision guard" } } );
         }
 
         std::string existing;
@@ -2140,34 +2160,19 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         picosha2::hash256_hex_string( existing, existingSha256 );
 
         if( aArguments["expectedSha256"].get<std::string>() != existingSha256 )
-            return failure( "stale_source", "sidecar changed since it was loaded" );
+        {
+            return failure(
+                    "stale_source", "sidecar changed since it was loaded",
+                    { { "expectedSha256", aArguments["expectedSha256"] },
+                      { "actualSha256", existingSha256 } } );
+        }
     }
 
-    const wxString temporaryPath =
-            sidecar.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
-    wxFile temporary;
-
-    if( !temporary.Create( temporaryPath, true )
-        || temporary.Write( source.data(), source.size() ) != source.size()
-        || !temporary.Flush() )
+    if( !KICHAD::CODEX_TOOLS::InstallDesignScriptSidecarAtomically(
+                sidecar, source, pathError ) )
     {
-        temporary.Close();
-        wxRemoveFile( temporaryPath );
-        return failure( "write_failed", "could not durably write the sidecar temporary file" );
+        return failure( "write_failed", pathError );
     }
-
-    temporary.Close();
-
-    if( !wxRenameFile( temporaryPath, sidecar.GetFullPath(), true ) )
-    {
-        wxRemoveFile( temporaryPath );
-        return failure( "write_failed", "could not atomically install the sidecar" );
-    }
-
-    std::string installed;
-
-    if( !KICHAD::CODEX_TOOLS::ReadDesignScriptSidecar( sidecar, installed, pathError ) || installed != source )
-        return failure( "write_failed", "sidecar verification failed after atomic installation" );
 
     JSON payload = { { "operation", "save" },
                      { "path", aArguments["path"] },

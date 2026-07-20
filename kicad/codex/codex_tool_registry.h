@@ -49,7 +49,7 @@ public:
                                 const wxFileName&, std::string& )>;
     // Bump whenever the model-visible tool or capability contract changes so a project cannot
     // resume a persistent thread created with a broader or incompatible surface.
-    static constexpr int SCHEMA_VERSION = 9;
+    static constexpr int SCHEMA_VERSION = 10;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
@@ -92,7 +92,10 @@ private:
     JSON handleFabricate( const JSON& aArguments, const wxString& aProjectPath,
                           bool aMutationAvailable, bool aFinalActionApproved ) const;
     JSON success( const JSON& aPayload ) const;
-    JSON failure( const std::string& aCode, const std::string& aMessage ) const;
+    JSON failure( const std::string& aCode, const std::string& aMessage,
+                  const JSON& aDetails = JSON::object() ) const;
+    JSON addFailureContext( JSON aResult, const std::string& aTool,
+                            const JSON& aArguments ) const;
     wxString projectPath() const;
 
     std::function<wxString()> m_projectPathProvider;

@@ -242,6 +242,24 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
 }
 
 
+BOOST_AUTO_TEST_CASE( ReturnsActionableFailureSteering )
+{
+    CODEX_TOOL_REGISTRY registry( []() { return wxString(); } );
+    JSON result = registry.Handle( "unknown", { { "operation", "do_something" } } );
+
+    BOOST_REQUIRE( !result.at( "success" ).get<bool>() );
+    JSON error = envelope( result )["error"];
+    BOOST_CHECK_EQUAL( error["contractVersion"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( error["code"].get<std::string>(), "unknown_tool" );
+    BOOST_CHECK_EQUAL( error["stage"].get<std::string>(), "unknown.do_something" );
+    BOOST_CHECK_EQUAL( error["stateChanged"].get<std::string>(), "none" );
+    BOOST_CHECK( !error["retryable"].get<bool>() );
+    BOOST_CHECK_EQUAL( error["context"]["tool"].get<std::string>(), "unknown" );
+    BOOST_CHECK( !error["recovery"]["summary"].get<std::string>().empty() );
+    BOOST_CHECK( !error["recovery"]["steps"].empty() );
+}
+
+
 BOOST_AUTO_TEST_CASE( RequestsInteractiveDependenciesAtPointOfUse )
 {
     TOOL_PROJECT_FIXTURE fixture;
@@ -610,12 +628,33 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
                        firstHash );
     BOOST_CHECK( !envelope( loaded )["data"].contains( "ir" ) );
 
+    JSON staleApply = registry.Handle(
+            "design", { { "operation", "apply" }, { "path", "reusable.kicad_kds" },
+                        { "boardPath", "design.kicad_pcb" },
+                        { "expectedSha256", std::string( 64, '0' ) } } );
+    BOOST_REQUIRE( !staleApply.at( "success" ).get<bool>() );
+    JSON staleApplyError = envelope( staleApply )["error"];
+    BOOST_CHECK_EQUAL( staleApplyError["code"].get<std::string>(), "stale_source" );
+    BOOST_CHECK_EQUAL( staleApplyError["stage"].get<std::string>(), "design.apply" );
+    BOOST_CHECK_EQUAL( staleApplyError["details"]["actualSha256"].get<std::string>(), firstHash );
+    BOOST_REQUIRE_EQUAL( staleApplyError["recovery"]["steps"].size(), 2 );
+    BOOST_CHECK_EQUAL( staleApplyError["recovery"]["steps"][0]["tool"].get<std::string>(),
+                       "design" );
+    BOOST_CHECK_EQUAL(
+            staleApplyError["recovery"]["steps"][1]["arguments"]["expectedSha256"]
+                    .get<std::string>(),
+            "$previous.data.sourceSha256" );
+
     const std::string updated = source + "; reusable sidecar comment\n";
     JSON noHash = registry.Handle( "design", { { "operation", "save" },
                                                 { "path", "reusable.kicad_kds" },
                                                 { "source", updated } } );
     BOOST_CHECK( !noHash.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( noHash )["error"]["code"].get<std::string>(), "stale_source" );
+    BOOST_CHECK_EQUAL( envelope( noHash )["error"]["stage"].get<std::string>(),
+                       "design.save" );
+    BOOST_CHECK( envelope( noHash )["error"]["retryable"].get<bool>() );
+    BOOST_CHECK( !envelope( noHash )["error"]["recovery"]["steps"].empty() );
 
     JSON stale = registry.Handle( "design", { { "operation", "save" },
                                                { "path", "reusable.kicad_kds" },
@@ -623,6 +662,11 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
                                                { "expectedSha256", std::string( 64, '0' ) } } );
     BOOST_CHECK( !stale.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( stale )["error"]["code"].get<std::string>(), "stale_source" );
+    BOOST_CHECK_EQUAL(
+            envelope( stale )["error"]["details"]["expectedSha256"].get<std::string>(),
+            std::string( 64, '0' ) );
+    BOOST_CHECK_EQUAL( envelope( stale )["error"]["details"]["actualSha256"].get<std::string>(),
+                       firstHash );
 
     JSON replaced = registry.Handle( "design", { { "operation", "save" },
                                                   { "path", "reusable.kicad_kds" },

@@ -100,6 +100,9 @@ bool ValidateProjectLibraryTable( const std::string& aKind, const std::string& a
                                   size_t& aRows, std::string& aError );
 bool ReadDesignScriptSidecar( const wxFileName& aFile, std::string& aSource,
                               std::string& aError );
+bool InstallDesignScriptSidecarAtomically( const wxFileName& aFile,
+                                           const std::string& aSource,
+                                           std::string& aError );
 bool ReadJsonFile( const wxFileName& aPath, nlohmann::json& aDocument, std::string& aError );
 bool WriteJsonAtomically( const wxFileName& aPath, const nlohmann::json& aDocument,
                           std::string& aError );

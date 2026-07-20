@@ -4167,6 +4167,51 @@ bool readDesignScriptSidecar( const wxFileName& aFile, std::string& aSource,
 }
 
 
+bool installDesignScriptSidecarAtomically( const wxFileName& aFile,
+                                            const std::string& aSource,
+                                            std::string& aError )
+{
+    if( aSource.empty() || aSource.size() > MAX_DESIGN_SCRIPT_BYTES )
+    {
+        aError = "KiChad Design Script sidecars must contain 1 byte to 16 MiB";
+        return false;
+    }
+
+    const wxString temporaryPath =
+            aFile.GetFullPath() + wxS( ".tmp-" ) + KIID().AsString();
+    wxFile temporary;
+
+    if( !temporary.Create( temporaryPath, true )
+        || temporary.Write( aSource.data(), aSource.size() ) != aSource.size()
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+        aError = "could not durably write the KiChad Design Script sidecar";
+        return false;
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, aFile.GetFullPath(), true ) )
+    {
+        wxRemoveFile( temporaryPath );
+        aError = "could not atomically install the KiChad Design Script sidecar";
+        return false;
+    }
+
+    std::string installed;
+
+    if( !readDesignScriptSidecar( aFile, installed, aError ) || installed != aSource )
+    {
+        aError = "KiChad Design Script sidecar verification failed after installation";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool readJsonFile( const wxFileName& aPath, nlohmann::json& aDocument, std::string& aError )
 {
     if( !aPath.FileExists() )
@@ -5688,6 +5733,13 @@ bool KICHAD::CODEX_TOOLS::ReadDesignScriptSidecar(
         const wxFileName& aFile, std::string& aSource, std::string& aError )
 {
     return readDesignScriptSidecar( aFile, aSource, aError );
+}
+
+
+bool KICHAD::CODEX_TOOLS::InstallDesignScriptSidecarAtomically(
+        const wxFileName& aFile, const std::string& aSource, std::string& aError )
+{
+    return installDesignScriptSidecarAtomically( aFile, aSource, aError );
 }
 
 

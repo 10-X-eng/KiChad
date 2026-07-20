@@ -63,18 +63,17 @@ fi
 if (( $# == 0 )); then
     cmake --install "$build_dir"
 
-    for launcher_name in kichad kichad-cli; do
-        installed_binary="$install_dir/bin/$launcher_name"
-        launcher_target="${installed_binary}.real"
+    for target_name in kicad kicad-cli; do
+        installed_binary="$install_dir/bin/$target_name"
 
         if [[ ! -x "$installed_binary" ]]; then
             echo "Installed KiChad target is missing: ${installed_binary}" >&2
             exit 1
         fi
-
-        mv -f -- "$installed_binary" "$launcher_target"
-        install -m 0755 "$launcher_template" "$installed_binary"
     done
+
+    install -m 0755 "$launcher_template" "$install_dir/bin/kichad"
+    install -m 0755 "$launcher_template" "$install_dir/bin/kichad-cli"
 
     built_version="$("$install_dir/bin/kichad-cli" version)"
 

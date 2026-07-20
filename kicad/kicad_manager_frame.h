@@ -169,6 +169,7 @@ public:
 
     void OpenJobsFile( const wxFileName& aFileName, bool aCreate = false,
                        bool aResaveProjectPreferences = true );
+    void OpenKdsFile( const wxFileName& aFileName );
 
 
     void LoadSettings( APP_SETTINGS_BASE* aCfg ) override;

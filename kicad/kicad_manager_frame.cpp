@@ -25,6 +25,7 @@
 
 #include "kicad_id.h"
 #include "codex/codex_panel.h"
+#include "codex/kds_editor_panel.h"
 #include "pcm.h"
 #include "pgm_kicad.h"
 #include "project_tree_pane.h"
@@ -1017,6 +1018,62 @@ void KICAD_MANAGER_FRAME::OpenJobsFile( const wxFileName& aFileName, bool aCreat
     {
         DisplayErrorMessage( this, _( "Error opening jobs file" ) );
     }
+}
+
+
+void KICAD_MANAGER_FRAME::OpenKdsFile( const wxFileName& aFileName )
+{
+    wxFileName requested = aFileName;
+    requested.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+    for( size_t i = 0; i < m_notebook->GetPageCount(); ++i )
+    {
+        if( KDS_EDITOR_PANEL* editor =
+                    dynamic_cast<KDS_EDITOR_PANEL*>( m_notebook->GetPage( i ) ) )
+        {
+            wxFileName openFile( editor->GetFilePath() );
+            openFile.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+            const bool sameFile =
+#ifdef __WXMSW__
+                    openFile.GetFullPath().CmpNoCase( requested.GetFullPath() ) == 0;
+#else
+                    openFile.GetFullPath() == requested.GetFullPath();
+#endif
+
+            if( sameFile )
+            {
+                m_notebook->SetSelection( i );
+                editor->SetFocus();
+                return;
+            }
+        }
+    }
+
+    KDS_EDITOR_PANEL* editor = new KDS_EDITOR_PANEL(
+            m_notebook, requested,
+            [this]()
+            {
+                const wxString path = Prj().GetProjectPath();
+
+                if( path.IsEmpty() )
+                    return false;
+
+                LOCAL_HISTORY& history = Kiway().LocalHistory();
+                history.WaitForPendingSave();
+
+                bool saved = history.RunRegisteredSaversAndCommit(
+                        path, wxS( "Before KDS save" ) );
+
+                if( !saved )
+                    saved = history.CommitFullProjectSnapshot( path, wxS( "Before KDS save" ) );
+
+                history.WaitForPendingSave();
+                return saved && !history.GetHeadHash( path ).IsEmpty();
+            } );
+    m_notebook->AddPage( editor, requested.GetFullName(), true );
+    HideTabsIfNeeded();
+    editor->SetFocus();
 }
 
 
