@@ -6765,7 +6765,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(text_box ID TEXT (box X1 Y1 X2 Y2)|"
                       "(polygon (point X Y)...) (rotation ANGLE) (layer LAYER) "
                       "(margins LEFT TOP RIGHT BOTTOM) FONT JUSTIFY "
-                      "(stroke WIDTH STYLE) (border BOOL) (knockout BOOL) (locked BOOL)); "
+                      "(stroke WIDTH STYLE) (border BOOL) (knockout BOOL) (locked BOOL) "
+                      "[(hyperlink URI)]); "
                       "(property ID (name TEXT) (value TEXT) (at X Y) (rotation ANGLE) "
                       "(layer LAYER) (visible BOOL) (keep_upright BOOL) (knockout BOOL) "
                       "FONT JUSTIFY); "
@@ -6915,7 +6916,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(protection (tenting ...) (covering ...) (plugging ...) "
                       "(filling inherit|filled|unfilled) (capping inherit|capped|uncapped) "
                       "(post_machining front|back counterbore|countersink ...))]) "
-                      "(zone NET ...) (text ...) (dimension ...) "
+                      "(zone NET ...) (text ...) (text_box ...) (dimension ...) "
                       "(keepout ...))" } },
                   { { "form",
                       "(stackup (finish NAME) (impedance_controlled BOOL) "
@@ -6942,6 +6943,16 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(text VALUE (id ID) (layer LAYER) (at X Y) (size W H) "
                       "(stroke D) (angle A) (justify HORIZONTAL VERTICAL) "
                       "(font stroke|NAME) ...)" } },
+                  { { "form",
+                      "(text_box ID TEXT ((box X1 Y1 X2 Y2)|"
+                      "(polygon (point X Y)...)) (rotation ANGLE) (layer LAYER) "
+                      "(margins LEFT TOP RIGHT BOTTOM) "
+                      "(font (face default|NAME) (size HEIGHT WIDTH) "
+                      "(line_spacing RATIO) (thickness auto|DISTANCE) "
+                      "(bold BOOL) (italic BOOL)) "
+                      "(justify HORIZONTAL VERTICAL MIRRORED_BOOL) "
+                      "(stroke WIDTH STYLE) (border BOOL) (knockout BOOL) "
+                      "(locked BOOL) [(hyperlink URI)])" } },
                   { { "form",
                       "(dimension aligned|orthogonal|radial|leader|center (id ID) "
                       "(layer LAYER) STYLE_GEOMETRY (line_width D) (arrow_length D) ...)" } },

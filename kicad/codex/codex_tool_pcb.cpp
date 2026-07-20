@@ -55,7 +55,7 @@ nlohmann::json PcbSpec()
             { { "type", "string" },
               { "enum", nlohmann::json::array(
                                 { "footprint", "trace", "via", "arc", "zone", "rule_area",
-                                  "shape", "text", "dimension" } ) },
+                                  "shape", "text", "textbox", "dimension" } ) },
               { "description", "KiCad 10 protobuf board item type." } };
     schema["properties"]["messagePath"] =
             { { "type", "string" }, { "maxLength", 512 },
@@ -532,4 +532,3 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handlePcb(
     payload["transaction"] = "committed";
     return success( payload );
 }
-

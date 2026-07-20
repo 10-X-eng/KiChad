@@ -4399,6 +4399,8 @@ kiapi::common::types::KiCadObjectType pcbObjectType( const std::string& aItemTyp
         return KOT_PCB_SHAPE;
     if( aItemType == "text" )
         return KOT_PCB_TEXT;
+    if( aItemType == "textbox" )
+        return KOT_PCB_TEXTBOX;
     if( aItemType == "dimension" )
         return KOT_PCB_DIMENSION;
 
@@ -4424,6 +4426,8 @@ std::unique_ptr<google::protobuf::Message> newPcbItem( const std::string& aItemT
         return std::make_unique<BoardGraphicShape>();
     if( aItemType == "text" )
         return std::make_unique<BoardText>();
+    if( aItemType == "textbox" )
+        return std::make_unique<BoardTextBox>();
     if( aItemType == "dimension" )
         return std::make_unique<Dimension>();
 
@@ -4649,6 +4653,8 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
         return "via";
     if( aItem.Is<BoardText>() )
         return "text";
+    if( aItem.Is<BoardTextBox>() )
+        return "textbox";
     if( aItem.Is<Dimension>() )
         return "dimension";
     if( aItem.Is<FootprintInstance>() )

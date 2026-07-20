@@ -173,6 +173,10 @@ The manufactured board contour supports stable line, rounded-rectangle, arc, cir
 Bezier geometry, including cutouts and multiple islands, through the typed board-shape API.
 Those same primitives also create arbitrary-layer board artwork with native net ownership and
 paired solder-mask expansion, including sequential inner-copper and custom user layers.
+Board text boxes use that same AI-readable, stable-ID authoring model and become editable native
+`BoardTextBox` objects with rectangle or polygon geometry, four-sided margins, border style,
+typography, justification, hyperlink, knockout, layer, and lock state. Tables remain a distinct
+capability rather than being hidden inside the text-box implementation.
 It also resolves and places an existing schematic-linked footprint on the back side while proving
 the footprint UUID, symbol path, pad UUID, and flipped pad layers are preserved. A second absent
 footprint is parsed from the declared project-local `.pretty` library, linked to its deterministic

@@ -739,6 +739,58 @@ BOOST_AUTO_TEST_CASE( LowersBoardTextIntoDeterministicProtobufJson )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersBoardTextBoxIntoCompleteNativeProtobufJson )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project board_text_box)
+  (board
+    (text_box assembly-note "Keep clear\nSee assembly guide"
+      (polygon (point 4mm 4mm) (point 28mm 4mm)
+               (point 26mm 12mm) (point 4mm 12mm))
+      (rotation 15deg)
+      (layer F.SilkS)
+      (margins 0.5mm 0.6mm 0.7mm 0.8mm)
+      (font (face "Noto Sans") (size 1.2mm 1.1mm)
+            (line_spacing 1.25) (thickness 0.18mm)
+            (bold true) (italic true))
+      (justify left top false)
+      (stroke 0.15mm dash_dot)
+      (border false)
+      (knockout true)
+      (locked true)
+      (hyperlink "https://example.com/assembly"))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemType"].get<std::string>(), "textbox" );
+    checkProtobufJson<kiapi::board::types::BoardTextBox>( plan.operations[0]["item"] );
+    const nlohmann::json& item = plan.operations[0]["item"];
+    BOOST_CHECK_EQUAL( item["layer"].get<std::string>(), "BL_F_SilkS" );
+    BOOST_CHECK( item["outline"].contains( "polygon" ) );
+    BOOST_REQUIRE_EQUAL(
+            item["outline"]["polygon"]["polygons"][0]["outline"]["nodes"].size(), 4 );
+    BOOST_CHECK_EQUAL( item["margins"]["left"]["valueNm"].get<std::string>(), "500000" );
+    BOOST_CHECK_EQUAL( item["margins"]["bottom"]["valueNm"].get<std::string>(), "800000" );
+    BOOST_CHECK_EQUAL( item["outline"]["attributes"]["stroke"]["style"], "SLS_DASHDOT" );
+    BOOST_CHECK( !item["borderEnabled"].get<bool>() );
+    BOOST_CHECK( item["knockout"].get<bool>() );
+    BOOST_CHECK_EQUAL( item["textbox"]["hyperlink"].get<std::string>(),
+                       "https://example.com/assembly" );
+    BOOST_CHECK_EQUAL( item["textbox"]["attributes"]["fontName"].get<std::string>(),
+                       "Noto Sans" );
+    BOOST_CHECK_EQUAL( item["locked"].get<std::string>(), "LS_LOCKED" );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
+                       KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                               "board_text_box", "textbox", "assembly-note" ) );
+}
+
+
 BOOST_AUTO_TEST_CASE( LowersEveryDimensionStyleIntoOneNativeProtobufType )
 {
     const std::string source = R"KDS((kichad_design

@@ -331,6 +331,7 @@ message TextBox
   //kiapi.common.types.LockedState    locked       = 5;
 
   string                            text         = 6;
+  string                            hyperlink    = 7;
 }
 
 message StrokeAttributes

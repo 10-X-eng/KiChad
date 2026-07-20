@@ -1275,7 +1275,8 @@ User text and text boxes use the same explicit font and justification vocabulary
   (font (face default) (size 0.3mm 0.3mm) (thickness 0.05mm))
   (justify center center false)
   (stroke 0.05mm solid)
-  (border true) (knockout false) (locked false))
+  (border true) (knockout false) (locked false)
+  (hyperlink "https://example.com/pin-one"))
 ```
 
 Font size is always explicit and ordered `HEIGHT WIDTH`; `thickness auto` retains KiCad's derived
@@ -1283,7 +1284,8 @@ stroke thickness. Justification is always `HORIZONTAL VERTICAL MIRRORED_BOOL`, a
 defaults that are hard for a model to infer. Text boxes accept exactly one non-zero rectangular or
 non-degenerate polygon outline and explicit four-sided margins. Generated text, text-box, and
 graphic objects all receive stable identities and are accepted and resaved by the KiCad 10 native
-footprint loader during apply.
+footprint loader during apply. An optional single-line hyperlink is preserved inside native text
+effects and is bounded to 2048 UTF-8 bytes.
 
 Footprint-wide design rules use one explicit effective-policy form. `inherit` is the only spelling
 for a native inherited value, so zero remains a real authored value rather than a hidden sentinel:
@@ -1902,6 +1904,37 @@ all style, knockout, and lock booleans to false. Named fonts are preserved exact
 installed anywhere the design is rendered. All normal KiCad copper, technical, fabrication, and
 user board layers are accepted; copper layers are checked against the declared stackup and the
 target board must have the authored layer enabled.
+
+### Board text-box form
+
+Board and footprint text boxes share one KDS representation. On a board it lowers to the native
+typed `BoardTextBox` object, including the outline that the stock API previously discarded:
+
+```scheme
+(text_box assembly_note "Keep this area clear\nSee assembly guide"
+  (box 4mm 4mm 28mm 12mm)
+  ; Or use one non-degenerate outline:
+  ; (polygon (point 4mm 4mm) (point 28mm 4mm)
+  ;          (point 26mm 12mm) (point 4mm 12mm))
+  (rotation 0deg)
+  (layer F.SilkS)
+  (margins 0.5mm 0.5mm 0.5mm 0.5mm)
+  (font (face default) (size 1.2mm 1.2mm)
+        (line_spacing 1) (thickness 0.18mm)
+        (bold false) (italic false))
+  (justify left top false)
+  (stroke 0.15mm solid)
+  (border true)
+  (knockout false)
+  (locked false)
+  (hyperlink "https://example.com/assembly"))
+```
+
+The ID, content, one rectangle or polygon, rotation, layer, margins, font, justification, border
+stroke, border state, knockout state, and lock state are explicit. Hyperlink is optional and
+bounded to one 2048-byte line. The rectangle or polygon, margins, stroke style, and border policy
+round-trip through the extended KiCad 10 protobuf instead of being reconstructed from a bounding
+box. Board tables and table cells deliberately remain a separate KDS capability.
 
 ### Dimension form
 

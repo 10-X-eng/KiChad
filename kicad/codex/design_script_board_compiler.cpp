@@ -13,6 +13,7 @@
 
 #include "design_script_board_graphic_compiler.h"
 #include "design_script_board_outline_compiler.h"
+#include "design_script_board_text_box_compiler.h"
 #include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
 #include "design_script_via_padstack_compiler.h"
@@ -3256,7 +3257,7 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
     std::set<std::string>        singletonStatements;
     static const std::set<std::string> known = {
         "stackup", "outline", "place", "route", "via",
-        "zone", "text", "dimension", "keepout", "line", "rectangle", "arc", "circle",
+        "zone", "text", "text_box", "dimension", "keepout", "line", "rectangle", "arc", "circle",
         "polygon", "bezier"
     };
 
@@ -3307,6 +3308,23 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
         else if( head == "text" )
         {
             result.statements.emplace_back( compileText( aDocument, child, result, logicalIds ) );
+        }
+        else if( head == "text_box" )
+        {
+            KICHAD::DESIGN_SCRIPT_BOARD_TEXT_BOX_COMPILER::RESULT compiled =
+                    KICHAD::DESIGN_SCRIPT_BOARD_TEXT_BOX_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : compiled.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string logicalId = compiled.statement.value( "logicalId", "" );
+
+            if( !logicalId.empty() && !logicalIds.emplace( logicalId ).second )
+                diagnostic( result, "error", "duplicate_board_id",
+                            "board logical id " + logicalId + " occurs more than once" );
+
+            if( compiled.statement.is_object() && !logicalId.empty() )
+                result.statements.push_back( std::move( compiled.statement ) );
         }
         else if( head == "dimension" )
         {

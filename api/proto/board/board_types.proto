@@ -573,12 +573,24 @@ message BoardText
 }
 
 // A board-specific textbox, existing on a board layer
+message TextBoxMargins
+{
+  kiapi.common.types.Distance left   = 1;
+  kiapi.common.types.Distance top    = 2;
+  kiapi.common.types.Distance right  = 3;
+  kiapi.common.types.Distance bottom = 4;
+}
+
 message BoardTextBox
 {
   kiapi.common.types.KIID id = 1;
   kiapi.common.types.TextBox textbox = 2;
   BoardLayer layer = 3;
   kiapi.common.types.LockedState locked = 4;
+  kiapi.common.types.GraphicShape outline = 5;
+  TextBoxMargins margins = 6;
+  optional bool border_enabled = 7;
+  bool knockout = 8;
 }
 
 // NOTE: There has been some discussion about what to do with pad attributes and properties.

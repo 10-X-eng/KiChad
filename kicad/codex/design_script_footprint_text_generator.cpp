@@ -214,6 +214,20 @@ bool renderEffects( const JSON& aText, std::string& aSource )
         aSource += ")\n";
     }
 
+    if( aText.contains( "hyperlink" ) )
+    {
+        if( !aText["hyperlink"].is_string()
+            || aText["hyperlink"].get_ref<const std::string&>().find_first_of( "\0\r\n" )
+                       != std::string::npos )
+        {
+            return false;
+        }
+
+        if( !aText["hyperlink"].get_ref<const std::string&>().empty() )
+            aSource += "\t\t\t(href "
+                       + quoteText( aText["hyperlink"].get<std::string>() ) + ")\n";
+    }
+
     aSource += "\t\t)\n";
     return true;
 }

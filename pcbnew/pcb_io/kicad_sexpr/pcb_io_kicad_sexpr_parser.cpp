@@ -834,6 +834,22 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseEDA_TEXT( EDA_TEXT* aText )
 
             break;
 
+        case T_href:
+        {
+            NeedSYMBOL();
+            wxString hyperlink = FromUTF8();
+
+            if( !EDA_TEXT::ValidateHyperlink( hyperlink ) )
+            {
+                THROW_PARSE_ERROR( wxString::Format( _( "Invalid hyperlink url '%s'" ), hyperlink ),
+                                   CurSource(), CurLine(), CurLineNumber(), CurOffset() );
+            }
+
+            aText->SetHyperlink( hyperlink );
+            NeedRIGHT();
+            break;
+        }
+
         case T_hide:
         {
             // In older files, the hide token appears bare, and indicates hide==true.
@@ -844,7 +860,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseEDA_TEXT( EDA_TEXT* aText )
         }
 
         default:
-            Expecting( "font, justify, or hide" );
+            Expecting( "font, justify, href, or hide" );
         }
     }
 

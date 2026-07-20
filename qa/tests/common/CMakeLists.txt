@@ -134,6 +134,8 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_graphic_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_graphic_proto_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_outline_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_text_box_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_text_box_proto_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_custom_pad_proto_generator.cpp

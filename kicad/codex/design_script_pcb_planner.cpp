@@ -12,6 +12,7 @@
 #include "design_script_pcb_planner.h"
 
 #include "design_script_board_graphic_proto_generator.h"
+#include "design_script_board_text_box_proto_generator.h"
 #include "design_script_custom_pad_proto_generator.h"
 
 #include <algorithm>
@@ -733,6 +734,28 @@ JSON planText( const JSON& aStatement, const std::string& aProject )
 
     return { { "action", "upsert" },
              { "itemType", "text" },
+             { "logicalId", logicalId },
+             { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
+
+JSON planTextBox( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "textbox", logicalId );
+    JSON item;
+
+    if( !KICHAD::DESIGN_SCRIPT_BOARD_TEXT_BOX_PROTO_GENERATOR::Render(
+                aStatement.at( "textBox" ), aProject, item )
+        || item.at( "id" ).at( "value" ) != itemId )
+    {
+        throw std::runtime_error( "invalid board text box IR" );
+    }
+
+    return { { "action", "upsert" },
+             { "itemType", "textbox" },
              { "logicalId", logicalId },
              { "itemId", itemId },
              { "item", std::move( item ) } };
@@ -1523,6 +1546,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             else if( kind == "text" )
             {
                 result.operations.emplace_back( planText( statement, project ) );
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "board_text_box" )
+            {
+                result.operations.emplace_back( planTextBox( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
             else if( kind == "dimension" )

@@ -58,7 +58,7 @@ components, connectivity, board intent, design rules, sourcing, verification, an
 `pcb` discovers the matching open board and instance token through KiCad 10's supported protobuf IPC
 API.  Its bounded `describe` operation exposes exact protobuf JSON fields and nested enum values, so
 the model does not infer message shapes.  It can read typed live items and create, field-mask update,
-or delete footprints, traces, vias, arcs, copper zones, rule areas, graphics, text, and all five
+or delete footprints, traces, vias, arcs, copper zones, rule areas, graphics, text, text boxes, and all five
 native dimension styles. Each mutation requires the pre-turn snapshot and is enclosed by KiCad
 `BeginCommit`/`EndCommit`; any validation, item-status,
 transport, or commit failure drops the pending commit.  IPC requests have bounded timeouts and

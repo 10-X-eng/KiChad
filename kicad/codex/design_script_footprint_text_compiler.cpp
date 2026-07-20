@@ -33,6 +33,7 @@ constexpr int64_t MAX_COORDINATE_NM = 2'000'000'000LL;
 constexpr int64_t MAX_TEXT_SIZE_NM = 100'000'000LL;
 constexpr size_t MAX_TEXT_BYTES = 64 * 1024;
 constexpr size_t MAX_TEXT_BOX_POINTS = 4096;
+constexpr size_t MAX_HYPERLINK_BYTES = 2048;
 
 
 void diagnostic( RESULT& aResult, const std::string& aCode, const std::string& aMessage )
@@ -233,6 +234,20 @@ bool userLayer( const std::string& aLayer )
 }
 
 
+bool innerCopperLayer( const std::string& aLayer )
+{
+    if( !aLayer.starts_with( "In" ) || !aLayer.ends_with( ".Cu" ) )
+        return false;
+
+    const std::string_view number( aLayer.data() + 2, aLayer.size() - 5 );
+    int index = 0;
+    const std::from_chars_result parsed =
+            std::from_chars( number.data(), number.data() + number.size(), index );
+    return parsed.ec == std::errc() && parsed.ptr == number.data() + number.size()
+           && index >= 1 && index <= 30;
+}
+
+
 bool layer( const std::string& aLayer )
 {
     static const std::set<std::string> fixed = {
@@ -241,7 +256,7 @@ bool layer( const std::string& aLayer )
         "Cmts.User", "Eco1.User", "Eco2.User", "Edge.Cuts", "Margin",
         "F.CrtYd", "B.CrtYd", "F.Fab", "B.Fab"
     };
-    return fixed.contains( aLayer ) || userLayer( aLayer );
+    return fixed.contains( aLayer ) || innerCopperLayer( aLayer ) || userLayer( aLayer );
 }
 
 
@@ -562,6 +577,7 @@ DESIGN_SCRIPT_FOOTPRINT_TEXT_COMPILER::Compile(
         result.text["margins"] = JSON::object();
         result.text["border"] = true;
         result.text["stroke"] = JSON::object();
+        result.text["hyperlink"] = "";
     }
 
     std::set<std::string> fields;
@@ -665,6 +681,20 @@ DESIGN_SCRIPT_FOOTPRINT_TEXT_COMPILER::Compile(
                             "text layer requires one supported KiCad footprint layer" );
             else
                 result.text["layer"] = value;
+        }
+        else if( head == "hyperlink" && kind == "text_box" )
+        {
+            if( value.size() > MAX_HYPERLINK_BYTES
+                || value.find( '\0' ) != std::string::npos
+                || value.find_first_of( "\r\n" ) != std::string::npos )
+            {
+                diagnostic( result, "invalid_authored_footprint_text_box_hyperlink",
+                            "text box hyperlink requires one bounded line" );
+            }
+            else
+            {
+                result.text["hyperlink"] = value;
+            }
         }
         else if( head == "locked" || head == "knockout"
                  || ( head == "keep_upright" && kind == "text" )

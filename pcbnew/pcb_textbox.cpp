@@ -90,7 +90,7 @@ void PCB_TEXTBOX::Serialize( google::protobuf::Any& aContainer ) const
     kiapi::common::PackVector2( *text.mutable_top_left(), GetPosition() );
     kiapi::common::PackVector2( *text.mutable_bottom_right(), GetEnd() );
     text.set_text( GetText().ToStdString() );
-    //text.set_hyperlink( GetHyperlink().ToStdString() );
+    text.set_hyperlink( GetHyperlink().ToStdString() );
 
     TextAttributes* attrs = text.mutable_attributes();
 
@@ -112,6 +112,18 @@ void PCB_TEXTBOX::Serialize( google::protobuf::Any& aContainer ) const
     attrs->set_keep_upright( IsKeepUpright() );
     kiapi::common::PackVector2( *attrs->mutable_size(), GetTextSize() );
 
+    google::protobuf::Any shape;
+    EDA_SHAPE::Serialize( shape );
+    shape.UnpackTo( boardText.mutable_outline() );
+
+    types::TextBoxMargins* margins = boardText.mutable_margins();
+    margins->mutable_left()->set_value_nm( GetMarginLeft() );
+    margins->mutable_top()->set_value_nm( GetMarginTop() );
+    margins->mutable_right()->set_value_nm( GetMarginRight() );
+    margins->mutable_bottom()->set_value_nm( GetMarginBottom() );
+    boardText.set_border_enabled( IsBorderEnabled() );
+    boardText.set_knockout( IsKnockout() );
+
     aContainer.PackFrom( boardText );
 }
 
@@ -130,10 +142,23 @@ bool PCB_TEXTBOX::Deserialize( const google::protobuf::Any& aContainer )
 
     const kiapi::common::types::TextBox& text = boardText.textbox();
 
-    SetPosition( kiapi::common::UnpackVector2( text.top_left() ) );
-    SetEnd( kiapi::common::UnpackVector2( text.bottom_right() ) );
+    if( boardText.has_outline() )
+    {
+        google::protobuf::Any shape;
+        shape.PackFrom( boardText.outline() );
+
+        if( !EDA_SHAPE::Deserialize( shape ) )
+            return false;
+    }
+    else
+    {
+        SetShape( SHAPE_T::RECTANGLE );
+        SetPosition( kiapi::common::UnpackVector2( text.top_left() ) );
+        SetEnd( kiapi::common::UnpackVector2( text.bottom_right() ) );
+    }
+
     SetText( wxString( text.text().c_str(), wxConvUTF8 ) );
-    //SetHyperlink( wxString::FromUTF8( text.hyperlink() );
+    SetHyperlink( wxString::FromUTF8( text.hyperlink() ) );
 
     if( text.has_attributes() )
     {
@@ -164,6 +189,25 @@ bool PCB_TEXTBOX::Deserialize( const google::protobuf::Any& aContainer )
 
         SetAttributes( attrs );
     }
+
+    if( boardText.has_margins() )
+    {
+        SetMarginLeft( boardText.margins().left().value_nm() );
+        SetMarginTop( boardText.margins().top().value_nm() );
+        SetMarginRight( boardText.margins().right().value_nm() );
+        SetMarginBottom( boardText.margins().bottom().value_nm() );
+    }
+    else
+    {
+        const int margin = GetLegacyTextMargin();
+        SetMarginLeft( margin );
+        SetMarginTop( margin );
+        SetMarginRight( margin );
+        SetMarginBottom( margin );
+    }
+
+    SetBorderEnabled( boardText.has_border_enabled() ? boardText.border_enabled() : true );
+    SetIsKnockout( boardText.knockout() );
 
     return true;
 }
