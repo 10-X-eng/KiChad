@@ -29,6 +29,7 @@ public:
     std::string Load( const wxString& aProjectPath, int aToolSchemaVersion ) const;
     bool Save( const wxString& aProjectPath, const std::string& aThreadId, int aToolSchemaVersion,
                wxString* aError = nullptr ) const;
+    bool Clear( const wxString& aProjectPath, wxString* aError = nullptr ) const;
 
 private:
     wxString storagePath() const;

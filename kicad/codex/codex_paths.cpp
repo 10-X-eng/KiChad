@@ -55,4 +55,11 @@ wxString ThreadIndex()
     return path.GetFullPath();
 }
 
+
+wxString DiagnosticLog()
+{
+    wxFileName path( ConfigRoot(), wxS( "kichad-codex.log" ) );
+    return path.GetFullPath();
+}
+
 } // namespace KICHAD::CODEX_PATHS

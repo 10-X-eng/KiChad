@@ -106,6 +106,87 @@
 #define SEP()   wxFileName::GetPathSeparator()
 
 
+namespace
+{
+
+bool sameCodexDocument( const wxString& aCurrentPath, const wxFileName& aRequested )
+{
+    if( aCurrentPath.IsEmpty() )
+        return false;
+
+    wxFileName current( aCurrentPath );
+    wxFileName requested( aRequested );
+    current.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+    requested.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+
+#ifdef __WXMSW__
+    return current.GetFullPath().CmpNoCase( requested.GetFullPath() ) == 0;
+#else
+    return current.GetFullPath() == requested.GetFullPath();
+#endif
+}
+
+
+bool openCodexApplication( KICAD_MANAGER_FRAME* aManager,
+                           CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION aApplication,
+                           const wxFileName& aDocument, wxString& aDetail )
+{
+    const FRAME_T frameType =
+            aApplication == CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION::PCB_EDITOR
+                    ? FRAME_PCB_EDITOR
+                    : FRAME_SCH;
+    const wxString applicationName =
+            aApplication == CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION::PCB_EDITOR
+                    ? _( "PCB Editor" )
+                    : _( "Schematic Editor" );
+    KIWAY_PLAYER* player = nullptr;
+
+    try
+    {
+        player = aManager->Kiway().Player( frameType, true );
+    }
+    catch( const IO_ERROR& error )
+    {
+        aDetail = error.What();
+        return false;
+    }
+
+    if( !player )
+    {
+        aDetail = wxString::Format( _( "%s could not be started" ), applicationName );
+        return false;
+    }
+
+    if( !sameCodexDocument( player->GetCurrentFileName(), aDocument ) )
+    {
+        const int control = aDocument.FileExists() ? 0 : KICTL_CREATE;
+
+        if( !player->OpenProjectFiles( { aDocument.GetFullPath() }, control ) )
+        {
+            aDetail = wxString::Format( _( "%s did not open %s" ), applicationName,
+                                        aDocument.GetFullName() );
+            return false;
+        }
+    }
+
+    if( !player->IsVisible() )
+        player->Show( true );
+
+    if( player->IsIconized() )
+        player->Iconize( false );
+
+    player->Raise();
+
+    if( wxWindow::FindFocus() != player )
+        player->SetFocus();
+
+    aDetail = aDocument.GetFullName();
+    return true;
+}
+
+} // namespace
+
+
 // Menubar and toolbar event table
 BEGIN_EVENT_TABLE( KICAD_MANAGER_FRAME, EDA_BASE_FRAME )
     // Window events
@@ -265,7 +346,21 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
                 history.WaitForPendingSave();
                 return history.GetHeadHash( path );
             },
-            [this]( const wxString& aHash ) { return RestoreCommitFromHistory( aHash ); } );
+            [this]( const wxString& aHash ) { return RestoreCommitFromHistory( aHash ); },
+            kicadSettings()->m_CodexModel, kicadSettings()->m_CodexReasoningEffort,
+            [this]( const wxString& aModel, const wxString& aReasoningEffort )
+            {
+                KICAD_SETTINGS* settings = kicadSettings();
+                settings->m_CodexModel = aModel;
+                settings->m_CodexReasoningEffort = aReasoningEffort;
+                settings->SaveToFile(
+                        Pgm().GetSettingsManager().GetPathForSettingsFile( settings ) );
+            },
+            [this]( CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION aApplication,
+                    const wxFileName& aDocument, wxString& aDetail )
+            {
+                return openCodexApplication( this, aApplication, aDocument, aDetail );
+            } );
     m_auimgr.AddPane( m_codexPanel,
                       EDA_PANE().Palette().Name( "Codex" ).Right().Layer( 1 )
                                 .Caption( _( "Codex" ) ).PaneBorder( true )

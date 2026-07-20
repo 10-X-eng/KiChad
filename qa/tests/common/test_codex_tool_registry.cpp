@@ -242,6 +242,44 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
 }
 
 
+BOOST_AUTO_TEST_CASE( RequestsInteractiveDependenciesAtPointOfUse )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); } );
+    int requests = 0;
+    JSON result = registry.HandleWithContext(
+            "pcb", { { "operation", "status" }, { "path", "design.kicad_pcb" } },
+            fixture.Root(), false, wxString(), false, std::chrono::milliseconds( 1 ),
+            [&]( const CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY& aDependency,
+                 std::string& aError )
+            {
+                ++requests;
+                BOOST_CHECK( aDependency.application
+                             == CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION::PCB_EDITOR );
+                BOOST_CHECK_EQUAL( aDependency.document.GetFullName(),
+                                   wxS( "design.kicad_pcb" ) );
+                aError = "injected application broker rejection";
+                return false;
+            } );
+    BOOST_CHECK( !result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( result )["error"]["code"].get<std::string>(),
+                       "dependency_unavailable" );
+    BOOST_CHECK_EQUAL( requests, 1 );
+
+    result = registry.HandleWithContext(
+            "pcb", { { "operation", "describe" }, { "path", "design.kicad_pcb" },
+                     { "itemType", "trace" } },
+            fixture.Root(), false, wxString(), false, std::chrono::milliseconds( 1 ),
+            [&]( const CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY&, std::string& )
+            {
+                ++requests;
+                return false;
+            } );
+    BOOST_CHECK( result.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( requests, 1 );
+}
+
+
 BOOST_AUTO_TEST_CASE( ReturnsBoundedStructuredNativeErcResults )
 {
     TOOL_PROJECT_FIXTURE fixture;

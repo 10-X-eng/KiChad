@@ -30,6 +30,8 @@
 
 wxDECLARE_EVENT( KICHAD_CODEX_TOOL_COMPLETED, wxThreadEvent );
 wxDEFINE_EVENT( KICHAD_CODEX_TOOL_COMPLETED, wxThreadEvent );
+wxDECLARE_EVENT( KICHAD_CODEX_DEPENDENCY_REQUESTED, wxThreadEvent );
+wxDEFINE_EVENT( KICHAD_CODEX_DEPENDENCY_REQUESTED, wxThreadEvent );
 
 
 namespace
@@ -132,11 +134,16 @@ wxString responseErrorMessage( const JSON& aResponse, const wxString& aFallback 
 
 
 CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider,
-                          SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler ) :
+                          SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler,
+                          wxString aPreferredModel, wxString aPreferredReasoningEffort,
+                          PREFERENCE_SAVER aPreferenceSaver,
+                          APPLICATION_OPENER aApplicationOpener ) :
         wxPanel( aParent ),
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
         m_snapshotProvider( std::move( aSnapshotProvider ) ),
         m_restoreHandler( std::move( aRestoreHandler ) ),
+        m_preferenceSaver( std::move( aPreferenceSaver ) ),
+        m_applicationOpener( std::move( aApplicationOpener ) ),
         m_toolRegistry( m_projectPathProvider,
                         [this]() { return !m_turnSnapshotHash.IsEmpty(); } ),
         m_status( nullptr ),
@@ -151,6 +158,9 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_sendButton( nullptr ),
         m_stopButton( nullptr ),
         m_revertButton( nullptr ),
+        m_newConversationButton( nullptr ),
+        m_preferredModel( std::move( aPreferredModel ) ),
+        m_preferredReasoningEffort( std::move( aPreferredReasoningEffort ) ),
         m_shuttingDown( false ),
         m_nextToolTaskId( 1 ),
         m_initialized( false ),
@@ -204,12 +214,15 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     root->Add( m_input, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP( 8 ) );
 
     wxBoxSizer* actionRow = new wxBoxSizer( wxHORIZONTAL );
+    m_newConversationButton = new wxButton( this, wxID_ANY, _( "New conversation" ) );
     m_revertButton = new wxButton( this, wxID_ANY, _( "Revert turn" ) );
     m_stopButton = new wxButton( this, wxID_ANY, _( "Stop" ) );
     m_sendButton = new wxButton( this, wxID_ANY, _( "Send" ) );
+    m_newConversationButton->Disable();
     m_revertButton->Disable();
     m_stopButton->Disable();
     m_sendButton->Disable();
+    actionRow->Add( m_newConversationButton, 0, wxRIGHT, FromDIP( 6 ) );
     actionRow->Add( m_revertButton );
     actionRow->AddStretchSpacer();
     actionRow->Add( m_stopButton, 0, wxRIGHT, FromDIP( 6 ) );
@@ -224,8 +237,12 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
     m_sendButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onSend, this );
     m_stopButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onStop, this );
     m_revertButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onRevertTurn, this );
+    m_newConversationButton->Bind( wxEVT_BUTTON, &CODEX_PANEL::onNewConversation, this );
     m_modelChoice->Bind( wxEVT_CHOICE, &CODEX_PANEL::onModelChanged, this );
+    m_reasoningChoice->Bind( wxEVT_CHOICE, &CODEX_PANEL::onReasoningChanged, this );
     Bind( KICHAD_CODEX_TOOL_COMPLETED, &CODEX_PANEL::onToolCompleted, this );
+    Bind( KICHAD_CODEX_DEPENDENCY_REQUESTED,
+          &CODEX_PANEL::onRuntimeDependencyRequested, this );
 
     m_client.SetMessageHandler( [this]( const JSON& aMessage ) { onAppServerMessage( aMessage ); } );
     m_client.SetStateHandler(
@@ -245,6 +262,19 @@ CODEX_PANEL::~CODEX_PANEL()
     m_client.SetMessageHandler( {} );
     m_client.SetStateHandler( {} );
 
+    {
+        std::lock_guard<std::mutex> dependencyLock( m_dependencyRequestMutex );
+
+        if( m_pendingDependencyRequest )
+        {
+            std::lock_guard<std::mutex> requestLock( m_pendingDependencyRequest->mutex );
+            m_pendingDependencyRequest->completed = true;
+            m_pendingDependencyRequest->success = false;
+            m_pendingDependencyRequest->detail = _( "KiChad is shutting down" );
+            m_pendingDependencyRequest->condition.notify_all();
+        }
+    }
+
     // Synchronize with the worker's final shutdown check before wxPanel destruction begins.
     {
         std::lock_guard<std::mutex> lock( m_toolEventMutex );
@@ -260,6 +290,8 @@ CODEX_PANEL::~CODEX_PANEL()
     m_toolRequestIds.clear();
     DeletePendingEvents();
     Unbind( KICHAD_CODEX_TOOL_COMPLETED, &CODEX_PANEL::onToolCompleted, this );
+    Unbind( KICHAD_CODEX_DEPENDENCY_REQUESTED,
+            &CODEX_PANEL::onRuntimeDependencyRequested, this );
 }
 
 
@@ -330,6 +362,8 @@ void CODEX_PANEL::readAccount( bool aRefreshToken )
                 }
 
                 setLoginPending( false );
+                m_newConversationButton->Enable( m_initialized && m_client.IsRunning()
+                                                  && m_turnId.empty() );
             } );
 }
 
@@ -368,7 +402,16 @@ void CODEX_PANEL::readModels()
 
                 for( size_t i = 0; i < m_models.size(); ++i )
                 {
-                    if( m_models[i].value( "isDefault", false ) )
+                    const wxString modelId =
+                            wxString::FromUTF8( m_models[i].value( "model", "" ) );
+
+                    if( !m_preferredModel.IsEmpty() && modelId == m_preferredModel )
+                    {
+                        defaultIndex = i;
+                        break;
+                    }
+
+                    if( m_preferredModel.IsEmpty() && m_models[i].value( "isDefault", false ) )
                     {
                         defaultIndex = i;
                         break;
@@ -399,6 +442,7 @@ void CODEX_PANEL::updateReasoningChoices()
     const JSON& model = m_models[selection];
     std::string defaultEffort = model.value( "defaultReasoningEffort", "" );
     int         defaultSelection = 0;
+    bool        preferredFound = false;
 
     for( const JSON& option : model.value( "supportedReasoningEfforts", JSON::array() ) )
     {
@@ -409,8 +453,16 @@ void CODEX_PANEL::updateReasoningChoices()
 
         int index = m_reasoningChoice->Append( wxString::FromUTF8( effort ) );
 
-        if( effort == defaultEffort )
+        if( !m_preferredReasoningEffort.IsEmpty()
+            && wxString::FromUTF8( effort ) == m_preferredReasoningEffort )
+        {
             defaultSelection = index;
+            preferredFound = true;
+        }
+        else if( !preferredFound && effort == defaultEffort )
+        {
+            defaultSelection = index;
+        }
     }
 
     if( m_reasoningChoice->GetCount() == 0 )
@@ -418,6 +470,13 @@ void CODEX_PANEL::updateReasoningChoices()
 
     m_reasoningChoice->SetSelection( defaultSelection );
     m_reasoningChoice->Enable( m_reasoningChoice->GetCount() > 1 );
+}
+
+
+void CODEX_PANEL::savePreferences()
+{
+    if( m_preferenceSaver )
+        m_preferenceSaver( m_preferredModel, m_preferredReasoningEffort );
 }
 
 
@@ -872,6 +931,7 @@ void CODEX_PANEL::setBusy( bool aBusy )
     // Goal control remains available while Codex is working so users can issue /goal pause or
     // /goal clear without first interrupting the current goal turn.
     m_sendButton->Enable( m_initialized && m_authenticated );
+    m_newConversationButton->Enable( !aBusy && m_initialized );
     m_stopButton->Enable( aBusy );
     m_revertButton->Enable( !aBusy && !m_turnSnapshotHash.IsEmpty() );
     m_input->Enable();
@@ -891,6 +951,69 @@ void CODEX_PANEL::setStatus( const wxString& aStatus )
 {
     m_status->SetLabel( aStatus );
     Layout();
+}
+
+
+bool CODEX_PANEL::ensureRuntimeDependency(
+        const CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY& aDependency, std::string& aError )
+{
+    if( m_shuttingDown.load() )
+    {
+        aError = "KiChad is shutting down";
+        return false;
+    }
+
+    if( !m_applicationOpener )
+    {
+        aError = "the KiCad application broker is unavailable";
+        return false;
+    }
+
+    auto request = std::make_shared<RUNTIME_DEPENDENCY_REQUEST>( aDependency );
+
+    {
+        std::lock_guard<std::mutex> lock( m_dependencyRequestMutex );
+
+        if( m_shuttingDown.load() )
+        {
+            aError = "KiChad is shutting down";
+            return false;
+        }
+
+        if( m_pendingDependencyRequest )
+        {
+            aError = "another KiCad application dependency is still being resolved";
+            return false;
+        }
+
+        m_pendingDependencyRequest = request;
+    }
+
+    wxThreadEvent* event = new wxThreadEvent( KICHAD_CODEX_DEPENDENCY_REQUESTED );
+    event->SetPayload( request );
+    wxQueueEvent( this, event );
+
+    std::unique_lock<std::mutex> requestLock( request->mutex );
+    request->condition.wait( requestLock,
+                             [&]() { return request->completed || m_shuttingDown.load(); } );
+    const bool success = request->completed && request->success;
+    const wxString detail = request->detail;
+    requestLock.unlock();
+
+    {
+        std::lock_guard<std::mutex> lock( m_dependencyRequestMutex );
+
+        if( m_pendingDependencyRequest == request )
+            m_pendingDependencyRequest.reset();
+    }
+
+    if( !success )
+    {
+        aError = detail.IsEmpty() ? "the required KiCad application could not be opened"
+                                  : std::string( detail.ToUTF8() );
+    }
+
+    return success;
 }
 
 
@@ -1250,7 +1373,15 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
                                 {
                                     JSON result = m_toolRegistry.HandleWithContext(
                                             tool, arguments, activeProject, mutationAvailable,
-                                            wxString(), finalActionApproved );
+                                            wxString(), finalActionApproved,
+                                            std::chrono::milliseconds( 15000 ),
+                                            [this]( const CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY&
+                                                            aDependency,
+                                                    std::string& aError )
+                                            {
+                                                return ensureRuntimeDependency( aDependency,
+                                                                                aError );
+                                            } );
                                     serialized = result.dump();
                                 }
                                 catch( const std::exception& )
@@ -1291,6 +1422,66 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
             appendTranscript( _( "[tool result: failed to start worker]\n" ) );
         }
     }
+}
+
+
+void CODEX_PANEL::onRuntimeDependencyRequested( wxThreadEvent& aEvent )
+{
+    const std::shared_ptr<RUNTIME_DEPENDENCY_REQUEST> request =
+            aEvent.GetPayload<std::shared_ptr<RUNTIME_DEPENDENCY_REQUEST>>();
+
+    if( !request )
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock( request->mutex );
+
+        if( request->completed )
+            return;
+    }
+
+    const wxString application =
+            request->dependency.application
+                            == CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION::PCB_EDITOR
+                    ? _( "PCB Editor" )
+                    : _( "Schematic Editor" );
+    appendTranscript( wxString::Format(
+            _( "[dependency requested: %s — %s]\n" ), application,
+            request->dependency.document.GetFullName() ) );
+    setStatus( wxString::Format( _( "Opening %s for %s..." ), application,
+                                 request->dependency.document.GetFullName() ) );
+
+    wxString detail;
+    const bool success = !m_shuttingDown.load()
+                         && m_applicationOpener
+                         && m_applicationOpener( request->dependency.application,
+                                                 request->dependency.document, detail );
+
+    if( success )
+    {
+        appendTranscript( wxString::Format(
+                _( "[dependency opened: %s — %s]\n" ), application,
+                detail.IsEmpty() ? request->dependency.document.GetFullName() : detail ) );
+        setStatus( _( "Application opened; waiting for its KiCad service..." ) );
+    }
+    else
+    {
+        if( detail.IsEmpty() )
+            detail = _( "application could not open the requested document" );
+
+        appendTranscript( wxString::Format(
+                _( "[dependency launch failed: %s — %s]\n" ), application, detail ) );
+        setStatus( wxString::Format( _( "Could not open required %s." ), application ) );
+    }
+
+    {
+        std::lock_guard<std::mutex> lock( request->mutex );
+        request->success = success;
+        request->detail = detail;
+        request->completed = true;
+    }
+
+    request->condition.notify_all();
 }
 
 
@@ -1373,6 +1564,7 @@ void CODEX_PANEL::onAppServerState( bool aRunning, const wxString& aDetail )
         m_loginButton->Disable();
         m_deviceLoginButton->Disable();
         m_cancelLoginButton->Disable();
+        m_newConversationButton->Disable();
         m_sendButton->Disable();
         m_stopButton->Disable();
     }
@@ -1570,7 +1762,82 @@ void CODEX_PANEL::onRevertTurn( wxCommandEvent& aEvent )
 }
 
 
+void CODEX_PANEL::onNewConversation( wxCommandEvent& aEvent )
+{
+    selectProjectThread();
+
+    if( !m_turnId.empty() )
+    {
+        appendTranscript( _( "\n[Stop the active turn before starting a new conversation.]\n" ) );
+        return;
+    }
+
+    wxString clearError;
+
+    if( !m_threadStore.Clear( m_threadProjectPath, &clearError ) )
+    {
+        appendTranscript( wxString::Format( _( "\n[Could not start a new conversation: %s]\n" ),
+                                            clearError ) );
+        return;
+    }
+
+    const std::string previousThreadId = m_threadId;
+    m_threadId.clear();
+    m_turnId.clear();
+    m_turnSnapshotHash.clear();
+    m_threadLoaded = false;
+    m_reasoningSummaryOpen = false;
+    m_agentResponseOpen = false;
+    m_transcript->Clear();
+    appendTranscript( _( "[New conversation started. The previous context has been cleared.]\n" ) );
+    setStatus( _( "New Codex conversation ready." ) );
+    setBusy( false );
+
+    if( !previousThreadId.empty() )
+    {
+        m_client.SendRequest(
+                "thread/archive", { { "threadId", previousThreadId } },
+                [this]( const JSON& aResponse )
+                {
+                    if( !aResponse.contains( "result" ) )
+                    {
+                        appendTranscript( wxS( "[" )
+                                          + responseErrorMessage(
+                                                    aResponse,
+                                                    _( "The previous conversation could not be "
+                                                       "archived." ) )
+                                          + wxS( "]\n" ) );
+                    }
+                } );
+    }
+}
+
+
 void CODEX_PANEL::onModelChanged( wxCommandEvent& aEvent )
 {
+    const int selection = m_modelChoice->GetSelection();
+
+    if( selection >= 0 && static_cast<size_t>( selection ) < m_models.size() )
+        m_preferredModel = wxString::FromUTF8( m_models[selection].value( "model", "" ) );
+
     updateReasoningChoices();
+
+    const int reasoningSelection = m_reasoningChoice->GetSelection();
+
+    if( reasoningSelection >= 0 )
+        m_preferredReasoningEffort = m_reasoningChoice->GetString( reasoningSelection );
+
+    savePreferences();
+}
+
+
+void CODEX_PANEL::onReasoningChanged( wxCommandEvent& aEvent )
+{
+    const int selection = m_reasoningChoice->GetSelection();
+
+    if( selection < 0 )
+        return;
+
+    m_preferredReasoningEffort = m_reasoningChoice->GetString( selection );
+    savePreferences();
 }

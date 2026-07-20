@@ -140,6 +140,70 @@ bool CODEX_THREAD_STORE::Save( const wxString& aProjectPath, const std::string& 
 }
 
 
+bool CODEX_THREAD_STORE::Clear( const wxString& aProjectPath, wxString* aError ) const
+{
+    const wxString path = storagePath();
+
+    if( !wxFileName::FileExists( path ) )
+        return true;
+
+    wxFFile existing( path, wxS( "rb" ) );
+    wxString contents;
+
+    if( !existing.IsOpened() || !existing.ReadAll( &contents, wxConvUTF8 ) )
+    {
+        if( aError )
+            *aError = _( "Could not read the KiChad Codex conversation index." );
+
+        return false;
+    }
+
+    existing.Close();
+    nlohmann::json document = nlohmann::json::parse( std::string( contents.ToUTF8() ), nullptr,
+                                                     false );
+
+    if( !document.is_object() || !document.contains( "projects" )
+        || !document["projects"].is_object() )
+    {
+        if( aError )
+            *aError = _( "The KiChad Codex conversation index is invalid." );
+
+        return false;
+    }
+
+    document["projects"].erase( projectKey( aProjectPath ) );
+    const wxString temporaryPath = path + wxS( ".tmp" );
+    wxFFile temporary( temporaryPath, wxS( "wb" ) );
+
+    if( !temporary.IsOpened()
+        || !temporary.Write( wxString::FromUTF8( document.dump( 2 ) ), wxConvUTF8 )
+        || !temporary.Flush() )
+    {
+        temporary.Close();
+        wxRemoveFile( temporaryPath );
+
+        if( aError )
+            *aError = _( "Could not update the KiChad Codex conversation index." );
+
+        return false;
+    }
+
+    temporary.Close();
+
+    if( !wxRenameFile( temporaryPath, path, true ) )
+    {
+        wxRemoveFile( temporaryPath );
+
+        if( aError )
+            *aError = _( "Could not atomically update the KiChad Codex conversation index." );
+
+        return false;
+    }
+
+    return true;
+}
+
+
 wxString CODEX_THREAD_STORE::storagePath() const
 {
     return m_storagePath.IsEmpty() ? KICHAD::CODEX_PATHS::ThreadIndex() : m_storagePath;

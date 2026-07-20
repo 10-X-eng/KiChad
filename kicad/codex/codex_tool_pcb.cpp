@@ -96,7 +96,8 @@ nlohmann::json PcbSpec()
 
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handlePcb(
         const JSON& aArguments, const wxString& aProjectPath, bool aMutationAvailable,
-        const wxString& aIpcSocketDirectory ) const
+        const wxString& aIpcSocketDirectory, std::chrono::milliseconds aIpcTimeout,
+        const RUNTIME_DEPENDENCY_RESOLVER& aDependencyResolver ) const
 {
     if( !aArguments.is_object() || !aArguments.contains( "operation" )
         || !aArguments["operation"].is_string() || !aArguments.contains( "path" )
@@ -184,10 +185,17 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handlePcb(
         return success( payload );
     }
 
+    std::string ipcError;
+
+    if( aDependencyResolver
+        && !aDependencyResolver( { RUNTIME_APPLICATION::PCB_EDITOR, resolved }, ipcError ) )
+    {
+        return failure( "dependency_unavailable", ipcError );
+    }
+
     KICHAD_IPC_CLIENT client( "org.kichad.codex-" + std::to_string( wxGetProcessId() ),
-                              aIpcSocketDirectory );
+                              aIpcSocketDirectory, aIpcTimeout );
     KICHAD_IPC_TARGET target;
-    std::string       ipcError;
     bool editorOpen = client.FindOpenPcb( aProjectPath, resolved.GetFullPath(), target, ipcError );
     payload["editorOpen"] = editorOpen;
 

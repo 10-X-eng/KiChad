@@ -21,6 +21,7 @@ namespace KICHAD::CODEX_PATHS
 wxString ConfigRoot();
 wxString AppServerHome();
 wxString ThreadIndex();
+wxString DiagnosticLog();
 
 } // namespace KICHAD::CODEX_PATHS
 

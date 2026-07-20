@@ -13,8 +13,10 @@
 #define KICHAD_CODEX_PANEL_H
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -41,18 +43,41 @@ class CODEX_PANEL : public wxPanel
 public:
     using SNAPSHOT_PROVIDER = std::function<wxString( const wxString& )>;
     using RESTORE_HANDLER = std::function<bool( const wxString& )>;
+    using PREFERENCE_SAVER = std::function<void( const wxString&, const wxString& )>;
+    using APPLICATION_OPENER =
+            std::function<bool( CODEX_TOOL_REGISTRY::RUNTIME_APPLICATION,
+                                const wxFileName&, wxString& )>;
 
     explicit CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectPathProvider,
-                          SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler );
+                          SNAPSHOT_PROVIDER aSnapshotProvider, RESTORE_HANDLER aRestoreHandler,
+                          wxString aPreferredModel, wxString aPreferredReasoningEffort,
+                          PREFERENCE_SAVER aPreferenceSaver,
+                          APPLICATION_OPENER aApplicationOpener );
     ~CODEX_PANEL() override;
 
 private:
     using JSON = nlohmann::json;
 
+    struct RUNTIME_DEPENDENCY_REQUEST
+    {
+        explicit RUNTIME_DEPENDENCY_REQUEST(
+                const CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY& aDependency ) :
+                dependency( aDependency )
+        {}
+
+        CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY dependency;
+        std::mutex                              mutex;
+        std::condition_variable                 condition;
+        bool                                    completed = false;
+        bool                                    success = false;
+        wxString                                detail;
+    };
+
     void initializeAppServer();
     void readAccount( bool aRefreshToken = false );
     void readModels();
     void updateReasoningChoices();
+    void savePreferences();
     void ensureThreadLoaded( const wxString& aDisplayedMessage,
                              std::function<void()> aReadyHandler );
     void startThread( std::function<void()> aReadyHandler );
@@ -67,6 +92,8 @@ private:
     void appendGoal( const JSON& aGoal );
     void beginTurnDisplay();
     void finishReasoningDisplay();
+    bool ensureRuntimeDependency( const CODEX_TOOL_REGISTRY::RUNTIME_DEPENDENCY& aDependency,
+                                  std::string& aError );
     void selectProjectThread();
     void appendTranscript( const wxString& aText );
     void setBusy( bool aBusy );
@@ -76,6 +103,7 @@ private:
 
     void onAppServerMessage( const JSON& aMessage );
     void onAppServerState( bool aRunning, const wxString& aDetail );
+    void onRuntimeDependencyRequested( wxThreadEvent& aEvent );
     void onToolCompleted( wxThreadEvent& aEvent );
     void onLogin( wxCommandEvent& aEvent );
     void onDeviceLogin( wxCommandEvent& aEvent );
@@ -83,11 +111,15 @@ private:
     void onSend( wxCommandEvent& aEvent );
     void onStop( wxCommandEvent& aEvent );
     void onRevertTurn( wxCommandEvent& aEvent );
+    void onNewConversation( wxCommandEvent& aEvent );
     void onModelChanged( wxCommandEvent& aEvent );
+    void onReasoningChanged( wxCommandEvent& aEvent );
 
     std::function<wxString()> m_projectPathProvider;
     SNAPSHOT_PROVIDER         m_snapshotProvider;
     RESTORE_HANDLER           m_restoreHandler;
+    PREFERENCE_SAVER          m_preferenceSaver;
+    APPLICATION_OPENER        m_applicationOpener;
     CODEX_TOOL_REGISTRY       m_toolRegistry;
     CODEX_THREAD_STORE        m_threadStore;
     CODEX_APP_SERVER_CLIENT   m_client;
@@ -103,15 +135,20 @@ private:
     wxButton*                 m_sendButton;
     wxButton*                 m_stopButton;
     wxButton*                 m_revertButton;
+    wxButton*                 m_newConversationButton;
     std::vector<JSON>         m_models;
     std::string               m_threadId;
     std::string               m_loginId;
     wxString                  m_threadProjectPath;
     std::string               m_turnId;
     wxString                  m_turnSnapshotHash;
+    wxString                  m_preferredModel;
+    wxString                  m_preferredReasoningEffort;
     std::map<int, std::thread> m_toolWorkers;
     std::map<int, JSON>       m_toolRequestIds;
     std::mutex                m_toolEventMutex;
+    std::mutex                m_dependencyRequestMutex;
+    std::shared_ptr<RUNTIME_DEPENDENCY_REQUEST> m_pendingDependencyRequest;
     std::atomic<bool>         m_shuttingDown;
     int                       m_nextToolTaskId;
     bool                      m_initialized;

@@ -11,6 +11,7 @@
 
 #include "codex_app_server_client.h"
 #include "codex_paths.h"
+#include "codex_protocol_log.h"
 
 #include <vector>
 
@@ -92,6 +93,11 @@ bool CODEX_APP_SERVER_CLIENT::Start()
         return false;
     }
 
+    KICHAD::CODEX_PROTOCOL_LOG::Event(
+            "app_server_starting",
+            { { "executable", std::string( executable.ToUTF8() ) },
+              { "codexHome", std::string( codexHome.ToUTF8() ) } } );
+
     // Keep the owned inference process isolated from arbitrary MCP servers and broad Codex tools
     // in the user's global configuration.  KiChad supplies its complete tool surface through
     // app-server dynamic tools on this same stdio connection.
@@ -150,6 +156,9 @@ bool CODEX_APP_SERVER_CLIENT::Start()
 
     if( m_pid == 0 )
     {
+        KICHAD::CODEX_PROTOCOL_LOG::Event(
+                "app_server_start_failed",
+                { { "executable", std::string( executable.ToUTF8() ) } } );
         delete m_process;
         m_process = nullptr;
         setState( false, wxString::Format( _( "Could not start Codex executable '%s'." ),
@@ -161,6 +170,7 @@ bool CODEX_APP_SERVER_CLIENT::Start()
     m_stderrBuffer.clear();
     m_pendingRequests.clear();
     m_pollTimer.Start( POLL_INTERVAL_MS );
+    KICHAD::CODEX_PROTOCOL_LOG::Event( "app_server_started", { { "pid", m_pid } } );
     setState( true, _( "Connecting to Codex..." ) );
     return true;
 }
@@ -173,6 +183,8 @@ void CODEX_APP_SERVER_CLIENT::Stop()
 
     if( !m_process )
         return;
+
+    KICHAD::CODEX_PROTOCOL_LOG::Event( "app_server_stopping", { { "pid", m_pid } } );
 
     CODEX_PROCESS* process = static_cast<CODEX_PROCESS*>( m_process );
     process->SelfDeleteOnTerminate();
@@ -232,7 +244,14 @@ bool CODEX_APP_SERVER_CLIENT::SendError( const JSON& aId, int aCode, const std::
 bool CODEX_APP_SERVER_CLIENT::writeMessage( const JSON& aMessage )
 {
     if( !IsRunning() || !m_process->GetOutputStream() )
+    {
+        KICHAD::CODEX_PROTOCOL_LOG::Event( "protocol_write_failed",
+                                           { { "reason", "app-server input unavailable" },
+                                             { "message", aMessage } } );
         return false;
+    }
+
+    KICHAD::CODEX_PROTOCOL_LOG::Protocol( "outbound", aMessage );
 
     const std::string serialized = aMessage.dump() + "\n";
     wxOutputStream*   stream = m_process->GetOutputStream();
@@ -241,6 +260,8 @@ bool CODEX_APP_SERVER_CLIENT::writeMessage( const JSON& aMessage )
 
     if( !stream->IsOk() )
     {
+        KICHAD::CODEX_PROTOCOL_LOG::Event( "protocol_write_failed",
+                                           { { "reason", "stream write failed" } } );
         setState( false, _( "Lost the Codex app-server input stream." ) );
         return false;
     }
@@ -279,7 +300,10 @@ void CODEX_APP_SERVER_CLIENT::consumeStream( wxInputStream* aStream, std::string
         if( aParseJson )
             dispatchLine( line );
         else
+        {
+            KICHAD::CODEX_PROTOCOL_LOG::Text( "app_server_stderr", line );
             wxLogTrace( wxS( "KICHAD_CODEX" ), wxS( "app-server: %s" ), wxString::FromUTF8( line ) );
+        }
     }
 }
 
@@ -290,6 +314,7 @@ void CODEX_APP_SERVER_CLIENT::dispatchLine( const std::string& aLine )
 
     if( message.is_discarded() )
     {
+        KICHAD::CODEX_PROTOCOL_LOG::Text( "protocol_malformed", aLine );
         setState( false, _( "Codex app-server returned malformed JSON." ) );
         wxLogTrace( wxS( "KICHAD_CODEX" ), wxS( "Malformed app-server JSON: %s" ),
                     wxString::FromUTF8( aLine ) );
@@ -298,6 +323,8 @@ void CODEX_APP_SERVER_CLIENT::dispatchLine( const std::string& aLine )
 
     try
     {
+        KICHAD::CODEX_PROTOCOL_LOG::Protocol( "inbound", message );
+
         if( message.contains( "id" ) && !message.contains( "method" )
             && message["id"].is_number_integer() )
         {
@@ -319,6 +346,9 @@ void CODEX_APP_SERVER_CLIENT::dispatchLine( const std::string& aLine )
     }
     catch( const std::exception& error )
     {
+        KICHAD::CODEX_PROTOCOL_LOG::Event( "protocol_dispatch_failed",
+                                           { { "error", error.what() },
+                                             { "message", message } } );
         setState( IsRunning(), _( "Codex app-server returned an invalid protocol message." ) );
         wxLogTrace( wxS( "KICHAD_CODEX" ), wxS( "Invalid app-server message: %s (%s)" ),
                     wxString::FromUTF8( aLine ), wxString::FromUTF8( error.what() ) );
@@ -357,6 +387,10 @@ void CODEX_APP_SERVER_CLIENT::onProcessTerminated( wxProcessEvent& aEvent )
     m_pid = 0;
     m_pendingRequests.clear();
     delete finished;
+
+    KICHAD::CODEX_PROTOCOL_LOG::Event(
+            "app_server_exited",
+            { { "pid", aEvent.GetPid() }, { "exitStatus", aEvent.GetExitCode() } } );
 
     setState( false, wxString::Format( _( "Codex app-server exited with status %d." ),
                                       aEvent.GetExitCode() ) );

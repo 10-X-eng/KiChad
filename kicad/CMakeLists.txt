@@ -24,6 +24,7 @@ set( KICAD_SRCS
     codex/board_render_artifact_validator.cpp
     codex/board_ps_artifact_validator.cpp
     codex/codex_app_server_client.cpp
+    codex/codex_protocol_log.cpp
     codex/codex_tool_design.cpp
     codex/codex_tool_fabricate.cpp
     codex/codex_tool_inspect.cpp

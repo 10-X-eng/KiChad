@@ -12,6 +12,7 @@
 #ifndef KICHAD_CODEX_TOOL_REGISTRY_H
 #define KICHAD_CODEX_TOOL_REGISTRY_H
 
+#include <chrono>
 #include <functional>
 #include <string>
 
@@ -25,6 +26,22 @@ class CODEX_TOOL_REGISTRY
 {
 public:
     using JSON = nlohmann::json;
+
+    enum class RUNTIME_APPLICATION
+    {
+        PCB_EDITOR,
+        SCHEMATIC_EDITOR
+    };
+
+    struct RUNTIME_DEPENDENCY
+    {
+        RUNTIME_APPLICATION application;
+        wxFileName          document;
+    };
+
+    using RUNTIME_DEPENDENCY_RESOLVER =
+            std::function<bool( const RUNTIME_DEPENDENCY&, std::string& )>;
+
     using NATIVE_CHECK_RUNNER = std::function<bool( const std::string&, const wxFileName&,
                                                      std::string&, std::string& )>;
     using NATIVE_FABRICATION_RUNNER =
@@ -53,16 +70,23 @@ public:
     JSON HandleWithContext( const std::string& aTool, const JSON& aArguments,
                             const wxString& aProjectPath, bool aMutationAvailable,
                             const wxString& aIpcSocketDirectory = wxString(),
-                            bool aFinalActionApproved = false ) const;
+                            bool aFinalActionApproved = false,
+                            std::chrono::milliseconds aIpcTimeout =
+                                    std::chrono::milliseconds( 2000 ),
+                            RUNTIME_DEPENDENCY_RESOLVER aDependencyResolver = {} ) const;
 
 private:
     JSON handleProject( const JSON& aArguments, const wxString& aProjectPath,
                         bool aMutationAvailable ) const;
     JSON handleInspect( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON handleDesign( const JSON& aArguments, const wxString& aProjectPath,
-                       bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
+                       bool aMutationAvailable, const wxString& aIpcSocketDirectory,
+                       std::chrono::milliseconds aIpcTimeout,
+                       const RUNTIME_DEPENDENCY_RESOLVER& aDependencyResolver ) const;
     JSON handlePcb( const JSON& aArguments, const wxString& aProjectPath,
-                    bool aMutationAvailable, const wxString& aIpcSocketDirectory ) const;
+                    bool aMutationAvailable, const wxString& aIpcSocketDirectory,
+                    std::chrono::milliseconds aIpcTimeout,
+                    const RUNTIME_DEPENDENCY_RESOLVER& aDependencyResolver ) const;
     JSON handleVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON handleSourcingVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON handleFabricate( const JSON& aArguments, const wxString& aProjectPath,

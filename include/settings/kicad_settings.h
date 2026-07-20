@@ -51,6 +51,9 @@ public:
     int m_LeftWinWidth;
     bool m_ShowHistoryPanel;
 
+    wxString m_CodexModel;
+    wxString m_CodexReasoningEffort;
+
 
     std::vector<wxString> m_OpenProjects;
 

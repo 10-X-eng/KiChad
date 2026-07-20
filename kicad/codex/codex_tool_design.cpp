@@ -144,7 +144,8 @@ nlohmann::json DesignSpec()
 
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         const JSON& aArguments, const wxString& aProjectPath, bool aMutationAvailable,
-        const wxString& aIpcSocketDirectory ) const
+        const wxString& aIpcSocketDirectory, std::chrono::milliseconds aIpcTimeout,
+        const RUNTIME_DEPENDENCY_RESOLVER& aDependencyResolver ) const
 {
     if( !aArguments.is_object() || !aArguments.contains( "operation" )
         || !aArguments["operation"].is_string() )
@@ -1076,7 +1077,14 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             managedFootprintLibraryUpdates.emplace_back( std::move( update ) );
         }
 
-        KICHAD_IPC_CLIENT client( "org.kichad.codex.design", aIpcSocketDirectory );
+        if( aDependencyResolver
+            && !aDependencyResolver( { RUNTIME_APPLICATION::PCB_EDITOR, board }, pathError ) )
+        {
+            return failure( "dependency_unavailable", pathError );
+        }
+
+        KICHAD_IPC_CLIENT client( "org.kichad.codex.design", aIpcSocketDirectory,
+                                  aIpcTimeout );
         KICHAD_IPC_TARGET target;
 
         if( !client.FindOpenPcb( aProjectPath, board.GetFullPath(), target, pathError ) )

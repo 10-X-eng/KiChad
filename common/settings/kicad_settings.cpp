@@ -44,6 +44,10 @@ KICAD_SETTINGS::KICAD_SETTINGS() :
     m_params.emplace_back( new PARAM<int>( "appearance.left_frame_width", &m_LeftWinWidth, 200 ) );
     m_params.emplace_back( new PARAM<bool>( "aui.show_history_panel", &m_ShowHistoryPanel, false ) );
 
+    m_params.emplace_back( new PARAM<wxString>( "codex.model", &m_CodexModel, "" ) );
+    m_params.emplace_back( new PARAM<wxString>( "codex.reasoning_effort",
+                                                &m_CodexReasoningEffort, "" ) );
+
     m_params.emplace_back( new PARAM_LIST<wxString>( "system.open_projects", &m_OpenProjects, {} ) );
 
     m_params.emplace_back( new PARAM<wxString>( "system.last_design_block_lib_dir", &m_lastDesignBlockLibDir, "" ) );

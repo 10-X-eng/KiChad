@@ -63,7 +63,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::Handle( const std::string& aTool,
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
         const std::string& aTool, const JSON& aArguments, const wxString& aProjectPath,
         bool aMutationAvailable, const wxString& aIpcSocketDirectory,
-        bool aFinalActionApproved ) const
+        bool aFinalActionApproved, std::chrono::milliseconds aIpcTimeout,
+        RUNTIME_DEPENDENCY_RESOLVER aDependencyResolver ) const
 {
     try
     {
@@ -75,10 +76,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::HandleWithContext(
 
         if( aTool == "design" )
             return handleDesign( aArguments, aProjectPath, aMutationAvailable,
-                                 aIpcSocketDirectory );
+                                 aIpcSocketDirectory, aIpcTimeout, aDependencyResolver );
 
         if( aTool == "pcb" )
-            return handlePcb( aArguments, aProjectPath, aMutationAvailable, aIpcSocketDirectory );
+            return handlePcb( aArguments, aProjectPath, aMutationAvailable,
+                              aIpcSocketDirectory, aIpcTimeout, aDependencyResolver );
 
         if( aTool == "verify" )
             return handleVerify( aArguments, aProjectPath );
