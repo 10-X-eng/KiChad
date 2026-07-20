@@ -13,6 +13,8 @@
 
 #include <build_version.h>
 
+#include <algorithm>
+
 #include <wx/button.h>
 #include <wx/choice.h>
 #include <wx/filename.h>
@@ -153,7 +155,9 @@ CODEX_PANEL::CODEX_PANEL( wxWindow* aParent, std::function<wxString()> aProjectP
         m_nextToolTaskId( 1 ),
         m_initialized( false ),
         m_authenticated( false ),
-        m_threadLoaded( false )
+        m_threadLoaded( false ),
+        m_reasoningSummaryOpen( false ),
+        m_agentResponseOpen( false )
 {
     wxBoxSizer* root = new wxBoxSizer( wxVERTICAL );
 
@@ -602,7 +606,7 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
     if( reasoningSelection >= 0 && m_reasoningChoice->IsEnabled() )
         params["effort"] = std::string( m_reasoningChoice->GetString( reasoningSelection ).ToUTF8() );
 
-    appendTranscript( _( "\nCodex: " ) );
+    beginTurnDisplay();
     m_client.SendRequest(
             "turn/start", params,
             [this]( const JSON& aResponse )
@@ -618,6 +622,25 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
                     setBusy( false );
                 }
             } );
+}
+
+
+void CODEX_PANEL::beginTurnDisplay()
+{
+    m_reasoningSummaryOpen = false;
+    m_agentResponseOpen = false;
+    appendTranscript( _( "\n[Starting Codex turn...]\n" ) );
+    setStatus( _( "Starting Codex turn..." ) );
+}
+
+
+void CODEX_PANEL::finishReasoningDisplay()
+{
+    if( !m_reasoningSummaryOpen )
+        return;
+
+    appendTranscript( wxS( "\n" ) );
+    m_reasoningSummaryOpen = false;
 }
 
 
@@ -684,7 +707,7 @@ void CODEX_PANEL::setGoal( const wxString& aObjective, bool aActivate )
                     appendGoal( goal );
 
                     if( goal.value( "status", "" ) == "active" && m_turnId.empty() )
-                        appendTranscript( _( "\nCodex: " ) );
+                        setStatus( _( "Goal active; starting Codex..." ) );
                     else
                         setBusy( !m_turnId.empty() );
                 }
@@ -711,7 +734,7 @@ void CODEX_PANEL::setGoalStatus( const std::string& aStatus )
                     appendGoal( aResponse["result"].value( "goal", JSON() ) );
 
                     if( aStatus == "active" && m_turnId.empty() )
-                        appendTranscript( _( "\nCodex: " ) );
+                        setStatus( _( "Goal active; starting Codex..." ) );
                     else
                         setBusy( !m_turnId.empty() );
                 }
@@ -944,35 +967,211 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
     }
     else if( method == "item/agentMessage/delta" )
     {
+        finishReasoningDisplay();
+
+        if( !m_agentResponseOpen )
+        {
+            appendTranscript( _( "\nCodex: " ) );
+            m_agentResponseOpen = true;
+        }
+
         appendTranscript( wxString::FromUTF8( aMessage["params"].value( "delta", "" ) ) );
+        setStatus( _( "Codex is responding..." ) );
+    }
+    else if( method == "item/reasoning/summaryPartAdded" )
+    {
+        finishReasoningDisplay();
+        setStatus( _( "Codex is thinking..." ) );
+    }
+    else if( method == "item/reasoning/summaryTextDelta" )
+    {
+        if( !m_reasoningSummaryOpen )
+        {
+            appendTranscript( _( "\nThinking: " ) );
+            m_reasoningSummaryOpen = true;
+        }
+
+        appendTranscript( wxString::FromUTF8( aMessage["params"].value( "delta", "" ) ) );
+        setStatus( _( "Codex is thinking..." ) );
+    }
+    else if( method == "item/reasoning/textDelta" )
+    {
+        // Raw hidden reasoning is intentionally not rendered.  The app-server's supported
+        // reasoning summaries arrive through item/reasoning/summaryTextDelta above.
+        setStatus( _( "Codex is thinking..." ) );
     }
     else if( method == "item/started" )
     {
         const JSON& item = aMessage["params"]["item"];
+        const std::string type = item.value( "type", "" );
 
-        if( item.value( "type", "" ) == "dynamicToolCall" )
+        if( type == "reasoning" )
         {
-            appendTranscript( wxString::Format( _( "\n[tool: %s]\n" ),
-                                                wxString::FromUTF8( item.value( "tool", "" ) ) ) );
+            setStatus( _( "Codex is thinking..." ) );
+        }
+        else if( type == "dynamicToolCall" )
+        {
+            finishReasoningDisplay();
+            const wxString tool = wxString::FromUTF8( item.value( "tool", "" ) );
+            appendTranscript( wxString::Format( _( "\n[tool: %s — started]\n" ),
+                                                tool ) );
+            setStatus( wxString::Format( _( "Running KiChad tool: %s..." ), tool ) );
+        }
+        else if( type == "webSearch" )
+        {
+            finishReasoningDisplay();
+            const wxString query = wxString::FromUTF8( item.value( "query", "" ) );
+            appendTranscript( query.IsEmpty()
+                                      ? _( "\n[Web research started.]\n" )
+                                      : wxString::Format( _( "\n[Web research: %s]\n" ), query ) );
+            setStatus( _( "Codex is researching the web..." ) );
+        }
+        else if( type == "imageView" )
+        {
+            finishReasoningDisplay();
+            appendTranscript( wxString::Format( _( "\n[Viewing image: %s]\n" ),
+                                                wxString::FromUTF8( item.value( "path", "" ) ) ) );
+            setStatus( _( "Codex is inspecting an image..." ) );
+        }
+        else if( type == "contextCompaction" )
+        {
+            finishReasoningDisplay();
+            appendTranscript( _( "\n[Codex is compacting conversation context...]\n" ) );
+            setStatus( _( "Codex is compacting context..." ) );
+        }
+    }
+    else if( method == "item/completed" )
+    {
+        const JSON& item = aMessage["params"]["item"];
+        const std::string type = item.value( "type", "" );
+
+        if( type == "reasoning" )
+        {
+            finishReasoningDisplay();
+            setStatus( _( "Codex finished thinking; continuing..." ) );
+        }
+        else if( type == "dynamicToolCall" )
+        {
+            const wxString tool = wxString::FromUTF8( item.value( "tool", "" ) );
+            const wxString status = wxString::FromUTF8( item.value( "status", "" ) );
+            const long long durationMs = item.contains( "durationMs" )
+                                                         && item["durationMs"].is_number_integer()
+                                                 ? item["durationMs"].get<long long>()
+                                                 : 0LL;
+            const wxString duration = durationMs > 0
+                                              ? wxString::Format( _( ", %lld ms" ), durationMs )
+                                              : wxString();
+            appendTranscript( wxString::Format( _( "[tool: %s — %s%s]\n" ), tool, status,
+                                                duration ) );
+            setStatus( status == wxS( "failed" )
+                               ? wxString::Format( _( "KiChad tool failed: %s" ), tool )
+                               : _( "Tool finished; Codex is continuing..." ) );
+        }
+        else if( type == "webSearch" )
+        {
+            appendTranscript( _( "[Web research completed.]\n" ) );
+            setStatus( _( "Research finished; Codex is continuing..." ) );
+        }
+        else if( type == "imageView" )
+        {
+            appendTranscript( _( "[Image inspection completed.]\n" ) );
+            setStatus( _( "Image inspected; Codex is continuing..." ) );
+        }
+        else if( type == "agentMessage" )
+        {
+            if( m_agentResponseOpen )
+                appendTranscript( wxS( "\n" ) );
+
+            m_agentResponseOpen = false;
+        }
+    }
+    else if( method == "thread/status/changed" )
+    {
+        const JSON& status = aMessage["params"].value( "status", JSON::object() );
+        const std::string type = status.value( "type", "" );
+
+        if( type == "systemError" )
+        {
+            appendTranscript( _( "\n[Codex thread entered a system-error state.]\n" ) );
+            setStatus( _( "Codex thread error" ) );
+        }
+        else if( type == "active" )
+        {
+            const JSON& flags = status.value( "activeFlags", JSON::array() );
+
+            if( flags.is_array()
+                && std::find( flags.begin(), flags.end(), "waitingOnUserInput" ) != flags.end() )
+            {
+                setStatus( _( "Codex is waiting for your input." ) );
+            }
+            else if( flags.is_array()
+                     && std::find( flags.begin(), flags.end(), "waitingOnApproval" )
+                                != flags.end() )
+            {
+                setStatus( _( "Codex is waiting for approval." ) );
+            }
         }
     }
     else if( method == "turn/started" )
     {
         m_turnId = aMessage["params"]["turn"].value( "id", "" );
+        m_reasoningSummaryOpen = false;
+        m_agentResponseOpen = false;
+        appendTranscript( _( "[Codex turn started.]\n" ) );
+        setStatus( _( "Codex is working..." ) );
         setBusy( true );
     }
     else if( method == "turn/completed" )
     {
-        appendTranscript( wxS( "\n" ) );
+        finishReasoningDisplay();
+
+        if( m_agentResponseOpen )
+            appendTranscript( wxS( "\n" ) );
+
+        const JSON& turn = aMessage["params"].value( "turn", JSON::object() );
+        const std::string status = turn.value( "status", "" );
+        const long long durationMs = turn.contains( "durationMs" )
+                                             && turn["durationMs"].is_number_integer()
+                                     ? turn["durationMs"].get<long long>()
+                                     : 0LL;
+        const wxString duration = durationMs > 0
+                                          ? wxString::Format( _( " in %.1f seconds" ),
+                                                              durationMs / 1000.0 )
+                                          : wxString();
+
+        if( status == "completed" )
+        {
+            appendTranscript( wxString::Format( _( "[Turn completed%s.]\n" ), duration ) );
+            setStatus( _( "Codex is ready." ) );
+        }
+        else if( status == "interrupted" )
+        {
+            appendTranscript( wxString::Format( _( "[Turn interrupted%s.]\n" ), duration ) );
+            setStatus( _( "Codex turn interrupted." ) );
+        }
+        else
+        {
+            const wxString error = responseErrorMessage( turn, _( "Unknown Codex turn error." ) );
+            appendTranscript( wxString::Format( _( "[Turn failed%s: %s]\n" ), duration,
+                                                error ) );
+            setStatus( wxString::Format( _( "Codex turn failed: %s" ), error ) );
+        }
+
+        m_agentResponseOpen = false;
         m_turnId.clear();
         setBusy( false );
     }
     else if( method == "error" )
     {
+        finishReasoningDisplay();
         const JSON& params = aMessage.value( "params", JSON::object() );
-        appendTranscript( wxString::Format( _( "\n[Codex error: %s]\n" ),
-                                            responseErrorMessage(
-                                                    params, _( "Unknown Codex error." ) ) ) );
+        const wxString error = responseErrorMessage( params, _( "Unknown Codex error." ) );
+        const bool willRetry = params.value( "willRetry", false );
+        appendTranscript( wxString::Format( willRetry ? _( "\n[Codex error; retrying: %s]\n" )
+                                                        : _( "\n[Codex error: %s]\n" ),
+                                            error ) );
+        setStatus( willRetry ? wxString::Format( _( "Codex error; retrying: %s" ), error )
+                             : wxString::Format( _( "Codex error: %s" ), error ) );
     }
     else if( method == "item/tool/call" && aMessage.contains( "id" ) )
     {
@@ -1130,6 +1329,9 @@ void CODEX_PANEL::onToolCompleted( wxThreadEvent& aEvent )
         appendTranscript( wxString::Format( _( "[tool result: %s]\n" ),
                                             result.value( "success", false ) ? _( "success" )
                                                                              : _( "failed" ) ) );
+        setStatus( result.value( "success", false )
+                           ? _( "Tool result delivered; Codex is continuing..." )
+                           : _( "KiChad tool failed; Codex is handling the error..." ) );
     }
     catch( const JSON::exception& error )
     {
@@ -1157,6 +1359,15 @@ void CODEX_PANEL::onAppServerState( bool aRunning, const wxString& aDetail )
 
     if( !aRunning )
     {
+        finishReasoningDisplay();
+
+        if( m_agentResponseOpen )
+            appendTranscript( wxS( "\n" ) );
+
+        appendTranscript( wxString::Format( _( "\n[Codex service unavailable: %s]\n" ),
+                                            aDetail ) );
+        m_agentResponseOpen = false;
+        m_turnId.clear();
         m_initialized = false;
         m_authenticated = false;
         m_loginButton->Disable();

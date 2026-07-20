@@ -65,6 +65,8 @@ private:
     void setGoalStatus( const std::string& aStatus );
     void clearGoal();
     void appendGoal( const JSON& aGoal );
+    void beginTurnDisplay();
+    void finishReasoningDisplay();
     void selectProjectThread();
     void appendTranscript( const wxString& aText );
     void setBusy( bool aBusy );
@@ -115,6 +117,8 @@ private:
     bool                      m_initialized;
     bool                      m_authenticated;
     bool                      m_threadLoaded;
+    bool                      m_reasoningSummaryOpen;
+    bool                      m_agentResponseOpen;
 };
 
 #endif // KICHAD_CODEX_PANEL_H
