@@ -48,7 +48,7 @@ from any other KiCad version, and returns complete counts plus bounded pageable 
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
 
-The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v11` release
+The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v12` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
 the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
 Gerber, drill, IPC-D-356 electrical-test, placement, and BOM intent plus an explicit physical
@@ -73,7 +73,9 @@ PostScript outputs, while `board_ps` emits one validated A4 PostScript drawing p
 board layer. `schematic_bom` emits KiCad's fixed five-column native CSV and `legacy_bom_xml` emits
 the Eeschema `export version="E"` interchange document; both are parsed and matched exactly to the
 compiled KDS component reference, value, footprint, and population intent. Each page set is
-identity-checked and structurally validated. IPC-2581 is fixed to
+identity-checked and structurally validated. `board_render` creates a lossless transparent native
+3D top-view PNG whose complete chunk CRCs, zlib scanlines, exact RGBA dimensions, and nonblank image
+content are validated. IPC-2581 is fixed to
 millimetres and precision 6, then parsed and
 structurally checked against the planned board and KDS references. ODB++ is fixed to an ODB 8.1,
 millimetre, precision-4 ZIP whose complete bounded archive and manufacturing structure are checked

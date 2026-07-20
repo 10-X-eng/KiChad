@@ -89,12 +89,12 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v11` profile requires explicit stackup intent, ERC, DRC,
+sidecar. The fixed `kichad-production-10.0.4-v12` profile requires explicit stackup intent, ERC, DRC,
 sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
 outputs; STEP, STEPZ, BREP, GLB, STL, U3D, XAO, interactive 3D PDF, fabrication PDF, IPC-2581C XML,
 ODB++, front/back assembly SVG/DXF, GenCAD, VRML, and typed board statistics are optional
-declarations, as are native schematic BOM CSV and legacy BOM XML. PCB PostScript emits an exact A4
-drawing set for every enabled physical layer.
+declarations, as are native schematic BOM CSV, legacy BOM XML, and a lossless native 3D board-render
+PNG. PCB PostScript emits an exact A4 drawing set for every enabled physical layer.
 Root-schematic PDF, SVG, DXF, and PostScript release drawings use the same guarded schematic snapshot
 as ERC. A native Eeschema netlist can also be declared and is matched against the
 exact compiled KDS component and ref/pin connectivity sets. Both BOM formats are parsed with

@@ -10,6 +10,7 @@
  */
 
 #include "codex_tool_internal.h"
+#include "board_render_artifact_validator.h"
 #include "board_ps_artifact_validator.h"
 #include "design_script_compiler.h"
 #include "design_script_pcb_planner.h"
@@ -1611,6 +1612,14 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
             arguments = { "sch", "export", "python-bom", "--output", output.string(),
                           aSchematic.GetFullPath().ToStdString() };
         }
+        else if( kind == "board_render" )
+        {
+            arguments = { "pcb", "render", "--output", output.string(),
+                          "--width", "1024", "--height", "1024", "--side", "top",
+                          "--background", "transparent", "--quality", "basic",
+                          "--preset", "follow_plot_settings", "--zoom", "1",
+                          aBoard.GetFullPath().ToStdString() };
+        }
         else if( kind == "assembly_svg" )
         {
             arguments = { "pcb", "export", "svg", "--output", output.string(),
@@ -1686,7 +1695,8 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
         "schematic_bom", "legacy_bom_xml",
         "step", "stepz", "brep", "glb", "stl", "u3d", "xao", "3d_pdf", "pdf",
-        "board_ps", "schematic_pdf", "schematic_svg", "schematic_dxf", "schematic_ps",
+        "board_ps", "board_render", "schematic_pdf", "schematic_svg", "schematic_dxf",
+        "schematic_ps",
         "assembly_svg", "assembly_dxf", "gencad", "vrml", "board_stats"
     };
     static const std::set<std::string> PRODUCTION_OUTPUTS = {
@@ -1921,6 +1931,10 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
             job["directory"] = true;
             job["layers"] = layers;
         }
+        else if( std::string_view( kind ) == "board_render" )
+        {
+            job["relativePath"] = "documentation/" + aFileStem + "-board-render.png";
+        }
         else if( std::string_view( kind ) == "schematic_pdf" )
         {
             job["relativePath"] = "documentation/schematic/" + aFileStem + ".pdf";
@@ -1964,7 +1978,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v11" },
+    return { { "profile", "kichad-production-10.0.4-v12" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -3514,6 +3528,16 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
                 return false;
             }
         }
+        else if( path == "documentation/" + fileStem + "-board-render.png" )
+        {
+            kind = "board_render";
+
+            if( !KICHAD::BOARD_RENDER_ARTIFACT_VALIDATOR::ValidateFile(
+                        iterator->path(), fileStem, aError ) )
+            {
+                return false;
+            }
+        }
         else if( path.starts_with( "assembly/drawings-svg/" ) && extension == ".svg" )
         {
             kind = "assembly_svg";
@@ -3831,6 +3855,8 @@ bool validateFabricationArtifacts( const wxFileName& aStaging, const JSON& aPlan
             aError = "schematic BOM export did not produce exactly one native CSV artifact";
         else if( kind == "legacy_bom_xml" && counts["legacy_bom_xml"] != 1 )
             aError = "legacy BOM export did not produce exactly one XML interchange artifact";
+        else if( kind == "board_render" && counts["board_render"] != 1 )
+            aError = "board render did not produce exactly one validated PNG image";
         else if( kind == "step" && counts["step"] != 1 )
             aError = "STEP export did not produce exactly one model artifact";
         else if( kind == "brep" && counts["brep"] != 1 )

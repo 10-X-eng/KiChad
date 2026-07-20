@@ -270,9 +270,11 @@ nlohmann::json DesignScriptCapabilities()
                                 "STL, U3D, XAO, interactive 3D PDF, and fabrication PDF artifacts." ),
                     capability( "manufacturing.documentation", "manufacturing", "qualified",
                                 { "output board_ps", "output schematic_pdf", "output schematic_svg",
-                                  "output schematic_dxf", "output schematic_ps" },
+                                  "output schematic_dxf", "output schematic_ps",
+                                  "output board_render" },
                                 "Validated native PCB layer PostScript plus schematic release "
-                                "drawings in PDF, SVG, DXF, and PostScript." ),
+                                "drawings in PDF, SVG, DXF, and PostScript, plus a lossless native "
+                                "3D board render." ),
                     capability( "manufacturing.schematic_bom", "manufacturing", "qualified",
                                 { "output schematic_bom", "output legacy_bom_xml" },
                                 "Exact ungrouped native schematic BOM CSV and legacy Eeschema XML "
@@ -298,7 +300,7 @@ nlohmann::json DesignScriptCapabilities()
                     capability( "interchange.exporters", "interchange", "partial", { "output" },
                                 "Production Gerber/drill/IPC/ODB/BOM/placement/STEP/STEPZ/BREP/GLB/"
                                 "STL/U3D/XAO/3D-PDF/PDF plus PCB PostScript and schematic "
-                                "PDF/SVG/DXF/PostScript, native schematic BOM CSV, legacy BOM XML, "
+                                "PDF/SVG/DXF/PostScript/PNG, native schematic BOM CSV, legacy BOM XML, "
                                 "assembly SVG/DXF, GenCAD, VRML, JSON board statistics, and an exact "
                                 "KiCad connectivity netlist.",
                                 { "Remaining graphics/mechanical containers, legacy, and configurable "

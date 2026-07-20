@@ -36,6 +36,7 @@ set( QA_COMMON_SRCS
     test_backup_settings.cpp
     test_base_set.cpp
     test_bitmap_base.cpp
+    test_board_render_artifact_validator.cpp
     test_board_ps_artifact_validator.cpp
     test_clipboard.cpp
     test_collector.cpp
@@ -131,6 +132,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_resolver.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/board_render_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/board_ps_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/legacy_bom_artifact_validator.cpp

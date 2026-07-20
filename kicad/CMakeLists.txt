@@ -21,6 +21,7 @@ include_directories(
     )
 
 set( KICAD_SRCS
+    codex/board_render_artifact_validator.cpp
     codex/board_ps_artifact_validator.cpp
     codex/codex_app_server_client.cpp
     codex/codex_tool_design.cpp

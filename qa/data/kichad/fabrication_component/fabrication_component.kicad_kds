@@ -101,6 +101,7 @@
   (output 3d_pdf)
   (output pdf)
   (output board_ps)
+  (output board_render)
   (output schematic_pdf)
   (output schematic_svg)
   (output schematic_dxf)

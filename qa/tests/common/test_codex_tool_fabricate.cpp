@@ -78,6 +78,30 @@ void appendLittleEndian64( std::string& aOutput, uint64_t aValue )
 }
 
 
+void appendBigEndian32( std::string& aOutput, uint32_t aValue )
+{
+    aOutput.push_back( static_cast<char>( aValue >> 24 ) );
+    aOutput.push_back( static_cast<char>( aValue >> 16 ) );
+    aOutput.push_back( static_cast<char>( aValue >> 8 ) );
+    aOutput.push_back( static_cast<char>( aValue ) );
+}
+
+
+void appendPngChunk( std::string& aOutput, const char* aType,
+                     const std::string& aData )
+{
+    appendBigEndian32( aOutput, static_cast<uint32_t>( aData.size() ) );
+    const size_t crcBegin = aOutput.size();
+    aOutput.append( aType, 4 );
+    aOutput += aData;
+    uLong crc = crc32( 0L, Z_NULL, 0 );
+    crc = crc32( crc,
+                 reinterpret_cast<const Bytef*>( aOutput.data() + crcBegin ),
+                 static_cast<uInt>( 4 + aData.size() ) );
+    appendBigEndian32( aOutput, static_cast<uint32_t>( crc ) );
+}
+
+
 void appendU3dBlock( std::string& aOutput, uint32_t aType, std::string aData )
 {
     appendLittleEndian32( aOutput, aType );
@@ -346,6 +370,53 @@ std::string mockGlb( const std::string& aStem )
 }
 
 
+const std::string& mockBoardRenderPng()
+{
+    static const std::string png = []()
+    {
+        constexpr size_t WIDTH = 1008;
+        constexpr size_t HEIGHT = 1008;
+        constexpr size_t ROW_BYTES = 1 + WIDTH * 4;
+        std::string raw( ROW_BYTES * HEIGHT, '\0' );
+
+        for( size_t y = 500; y < 504; ++y )
+        {
+            for( size_t x = 500; x < 504; ++x )
+            {
+                const size_t pixel = y * ROW_BYTES + 1 + x * 4;
+                raw[pixel] = static_cast<char>( 0x22 );
+                raw[pixel + 1] = static_cast<char>( 0x88 );
+                raw[pixel + 2] = static_cast<char>( 0x44 );
+                raw[pixel + 3] = static_cast<char>( 0xFF );
+            }
+        }
+
+        uLongf compressedBytes = compressBound( static_cast<uLong>( raw.size() ) );
+        std::string compressed( compressedBytes, '\0' );
+
+        if( compress2( reinterpret_cast<Bytef*>( compressed.data() ), &compressedBytes,
+                       reinterpret_cast<const Bytef*>( raw.data() ),
+                       static_cast<uLong>( raw.size() ), Z_BEST_SPEED ) != Z_OK )
+        {
+            return std::string();
+        }
+
+        compressed.resize( compressedBytes );
+        std::string output( "\x89PNG\r\n\x1A\n", 8 );
+        std::string header;
+        appendBigEndian32( header, WIDTH );
+        appendBigEndian32( header, HEIGHT );
+        header.append( "\x08\x06\x00\x00\x00", 5 );
+        appendPngChunk( output, "IHDR", header );
+        appendPngChunk( output, "IDAT", compressed );
+        appendPngChunk( output, "IEND", {} );
+        return output;
+    }();
+
+    return png;
+}
+
+
 std::string mockCsvField( const std::string& aValue )
 {
     std::string output = "\"";
@@ -590,6 +661,7 @@ std::string productionKds( const std::string& aVerifiedOn )
   (output 3d_pdf)
   (output pdf)
   (output board_ps)
+  (output board_render)
   (output schematic_pdf)
   (output schematic_svg)
   (output schematic_dxf)
@@ -1037,6 +1109,15 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 }
             }
         }
+        else if( kind == "board_render" )
+        {
+            if( mockBoardRenderPng().empty()
+                || !write( output, mockBoardRenderPng() ) )
+            {
+                aError = "could not write fake board render output";
+                return false;
+            }
+        }
         else if( kind == "schematic_pdf" )
         {
             if( !write( output,
@@ -1255,10 +1336,10 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v11" );
+                       "kichad-production-10.0.4-v12" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
-    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 29 );
+    BOOST_REQUIRE_EQUAL( data["jobs"].size(), 30 );
     BOOST_CHECK_EQUAL( data["expectedSchematicPdfTitle"].get<std::string>(),
                        "design.pdf" );
     BOOST_CHECK_EQUAL( data["expectedBomReferences"].size(), 1 );
@@ -1807,7 +1888,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE_MESSAGE( exported.at( "success" ).get<bool>(), exported.dump() );
     JSON data = envelope( exported )["data"];
     BOOST_CHECK_EQUAL( data["releaseStatus"].get<std::string>(), "clean" );
-    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 39 );
+    BOOST_CHECK_GE( data["artifactCount"].get<int>(), 40 );
 
     wxFileName manifestPath( project.GetFullPath() + wxFILE_SEP_PATH
                              + wxS( "fabrication/manifest.json" ) );
@@ -1864,6 +1945,9 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     wxFileName boardPsPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/documentation/board_ps/fabrication_component-F_Cu.ps" ) );
+    wxFileName boardRenderPath(
+            project.GetFullPath() + wxFILE_SEP_PATH
+            + wxS( "fabrication/documentation/fabrication_component-board-render.png" ) );
     wxFileName schematicBomPath(
             project.GetFullPath() + wxFILE_SEP_PATH
             + wxS( "fabrication/interchange/fabrication_component-schematic-bom.csv" ) );
@@ -1889,6 +1973,7 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_REQUIRE( schematicDxfPath.FileExists() );
     BOOST_REQUIRE( schematicPsPath.FileExists() );
     BOOST_REQUIRE( boardPsPath.FileExists() );
+    BOOST_REQUIRE( boardRenderPath.FileExists() );
     BOOST_REQUIRE( schematicBomPath.FileExists() );
     BOOST_REQUIRE( legacyBomPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
