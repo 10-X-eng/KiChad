@@ -11,6 +11,8 @@
 
 #include "design_script_via_padstack_compiler.h"
 
+#include "design_script_footprint_custom_pad_compiler.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -27,6 +29,7 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_VIA_PADSTACK_COMPILER::RESULT;
+using CUSTOM_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER;
 
 
 void diagnostic( RESULT& aResult, const std::string& aCode, const std::string& aMessage )
@@ -204,7 +207,7 @@ JSON compileLayer( const DOCUMENT& aDocument, size_t aNode, const std::string& a
         { "offset", { { "xNm", 0 }, { "yNm", 0 } } },
         { "trapezoidDelta", { { "xNm", 0 }, { "yNm", 0 } } },
         { "roundrectRadiusNm", nullptr }, { "chamferRatioPpm", nullptr },
-        { "chamferCorners", JSON::array() }
+        { "chamferCorners", JSON::array() }, { "custom", nullptr }
     };
     std::set<std::string> fields;
 
@@ -242,6 +245,17 @@ JSON compileLayer( const DOCUMENT& aDocument, size_t aNode, const std::string& a
             continue;
         }
 
+        if( head == "custom" )
+        {
+            CUSTOM_COMPILER::RESULT custom = CUSTOM_COMPILER::CompileLayer( aDocument, child );
+
+            for( JSON& entry : custom.diagnostics )
+                aResult.diagnostics.push_back( std::move( entry ) );
+
+            layer["custom"] = std::move( custom.custom );
+            continue;
+        }
+
         std::string value;
 
         if( !oneValue( aDocument, child, value ) )
@@ -254,7 +268,8 @@ JSON compileLayer( const DOCUMENT& aDocument, size_t aNode, const std::string& a
         if( head == "shape" )
         {
             static const std::set<std::string> shapes = {
-                "circle", "rect", "oval", "trapezoid", "roundrect", "chamfered_rect"
+                "circle", "rect", "oval", "trapezoid", "roundrect", "chamfered_rect",
+                "custom"
             };
 
             if( !shapes.contains( value ) )
@@ -335,6 +350,18 @@ JSON compileLayer( const DOCUMENT& aDocument, size_t aNode, const std::string& a
         {
             diagnostic( aResult, "unexpected_authored_via_padstack_chamfer",
                         "chamfer fields only apply to chamfered via layers" );
+        }
+
+        if( shape == "custom" )
+        {
+            if( !layer["custom"].is_object() )
+                diagnostic( aResult, "incomplete_authored_via_padstack_custom_layer",
+                            "custom via layer requires one complete custom geometry form" );
+        }
+        else if( !layer["custom"].is_null() )
+        {
+            diagnostic( aResult, "unexpected_authored_via_padstack_custom_layer",
+                        "custom geometry only applies to custom via layers" );
         }
 
         const int64_t deltaX = layer["trapezoidDelta"]["xNm"].get<int64_t>();

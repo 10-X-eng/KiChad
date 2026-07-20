@@ -1673,7 +1673,11 @@ copper layer in the via's drilled span, so no unspecified layer silently inherit
   (layers F.Cu B.Cu)
   (type through)
   (padstack custom
-    (layer F.Cu (shape circle) (size 0.7mm 0.7mm))
+    (layer F.Cu (shape custom) (size 0.5mm 0.5mm)
+      (custom
+        (anchor circle)
+        (line spoke (start -0.3mm 0mm) (end 0.3mm 0mm) (width 0.12mm))
+        (circle hub (center 0mm 0mm) (radius 0.25mm) (fill true))))
     (layer In1.Cu (shape oval) (size 0.8mm 0.6mm))
     (layer In2.Cu (shape rect) (size 0.7mm 0.7mm) (offset 0.05mm 0mm))
     (layer B.Cu
@@ -1684,6 +1688,11 @@ copper layer in the via's drilled span, so no unspecified layer silently inherit
     (top (diameter 0.5mm) (stop_layer In1.Cu))
     (bottom (diameter 0.55mm) (stop_layer In2.Cu))))
 ```
+
+Via-layer `custom` geometry is exactly the same named line, rectangle, arc, circle, polygon, and
+Bezier representation used by footprint pads. KiChad deterministically lowers those primitives to
+typed `BoardGraphicShape` entries inside the official `PadStackLayer` IPC message; no native syntax
+or opaque geometry payload enters KDS.
 
 Per-layer shapes are `circle`, `rect`, `oval`, `trapezoid`, `roundrect`, and `chamfered_rect`, with
 the same one-representation geometry used by footprint pads. Every copper shape must exceed the

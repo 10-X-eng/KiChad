@@ -49,7 +49,18 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
         (post_machining front counterbore (diameter 0.6mm) (depth 0.15mm))))
     (via SIGNAL (id via-b) (at 6mm 4mm) (drill 0.3mm)
       (padstack custom
-        (layer F.Cu (shape circle) (size 0.7mm 0.7mm))
+        (layer F.Cu (shape custom) (size 0.5mm 0.5mm)
+          (custom (anchor circle)
+            (line spoke (start -0.3mm 0mm) (end 0.3mm 0mm) (width 0.12mm))
+            (rectangle tab (start -0.2mm -0.1mm) (end 0.2mm 0.1mm)
+              (radius 0.02mm) (fill true))
+            (arc hook (start -0.2mm 0mm) (mid 0mm -0.2mm) (end 0.2mm 0mm)
+              (width 0.05mm))
+            (circle hub (center 0mm 0mm) (radius 0.25mm) (fill true))
+            (polygon arrow (point 0mm -0.2mm) (point 0.25mm 0mm)
+              (point 0mm 0.2mm) (fill true))
+            (bezier wave (start -0.2mm 0mm) (control1 -0.1mm -0.15mm)
+              (control2 0.1mm 0.15mm) (end 0.2mm 0mm) (width 0.04mm))))
         (layer B.Cu (shape chamfered_rect) (size 0.8mm 0.7mm)
           (offset 0.05mm 0mm) (roundrect_radius 0.05mm)
           (chamfer_ratio 0.2) (chamfer top_left bottom_right))))))
@@ -110,6 +121,16 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     const nlohmann::json& customStack = first.operations[4]["item"]["padStack"];
     BOOST_CHECK_EQUAL( customStack["type"], "PST_CUSTOM" );
     BOOST_REQUIRE_EQUAL( customStack["copperLayers"].size(), 2 );
+    BOOST_CHECK_EQUAL( customStack["copperLayers"][0]["shape"], "PSS_CUSTOM" );
+    BOOST_CHECK_EQUAL( customStack["copperLayers"][0]["customAnchorShape"], "PSS_CIRCLE" );
+    const nlohmann::json& customShapes = customStack["copperLayers"][0]["customShapes"];
+    BOOST_REQUIRE_EQUAL( customShapes.size(), 6 );
+    BOOST_CHECK( customShapes[0]["shape"].contains( "segment" ) );
+    BOOST_CHECK( customShapes[1]["shape"].contains( "rectangle" ) );
+    BOOST_CHECK( customShapes[2]["shape"].contains( "arc" ) );
+    BOOST_CHECK( customShapes[3]["shape"].contains( "circle" ) );
+    BOOST_CHECK( customShapes[4]["shape"].contains( "polygon" ) );
+    BOOST_CHECK( customShapes[5]["shape"].contains( "bezier" ) );
     BOOST_CHECK_EQUAL( customStack["copperLayers"][1]["shape"], "PSS_CHAMFEREDRECT" );
     BOOST_CHECK_CLOSE( customStack["copperLayers"][1]["cornerRoundingRatio"].get<double>(),
                        0.0714285714, 0.0001 );

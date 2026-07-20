@@ -11,6 +11,8 @@
 
 #include "design_script_pcb_planner.h"
 
+#include "design_script_custom_pad_proto_generator.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -18,6 +20,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -964,7 +967,7 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
             { "circle", "PSS_CIRCLE" }, { "rect", "PSS_RECTANGLE" },
             { "oval", "PSS_OVAL" }, { "trapezoid", "PSS_TRAPEZOID" },
             { "roundrect", "PSS_ROUNDRECT" },
-            { "chamfered_rect", "PSS_CHAMFEREDRECT" }
+            { "chamfered_rect", "PSS_CHAMFEREDRECT" }, { "custom", "PSS_CUSTOM" }
         };
         padStack["type"] = authoredPadstack.at( "mode" ) == "front_inner_back"
                                    ? "PST_FRONT_INNER_BACK" : "PST_CUSTOM";
@@ -1014,6 +1017,23 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
                 }
 
                 layer["chamferedCorners"] = std::move( corners );
+            }
+
+            if( shape == "custom" )
+            {
+                const JSON& custom = source.at( "custom" );
+                layer["customAnchorShape"] = custom.at( "anchor" ) == "circle"
+                                                     ? "PSS_CIRCLE" : "PSS_RECTANGLE";
+                JSON customShapes;
+
+                if( !KICHAD::DESIGN_SCRIPT_CUSTOM_PAD_PROTO_GENERATOR::Render(
+                            custom, aProject, logicalId,
+                            layer.at( "layer" ).get<std::string>(), customShapes ) )
+                {
+                    throw std::runtime_error( "invalid custom via padstack IR" );
+                }
+
+                layer["customShapes"] = std::move( customShapes );
             }
 
             padStack["copperLayers"].push_back( std::move( layer ) );
@@ -1505,7 +1525,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             }
         }
     }
-    catch( const JSON::exception& error )
+    catch( const std::exception& error )
     {
         diagnostic( result, "error", "invalid_board_ir", error.what() );
         result.operations = JSON::array();
