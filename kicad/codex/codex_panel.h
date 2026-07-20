@@ -53,9 +53,18 @@ private:
     void readAccount( bool aRefreshToken = false );
     void readModels();
     void updateReasoningChoices();
-    void startThreadAndTurn( const std::string& aMessage );
-    void resumeThreadAndTurn( const std::string& aMessage );
+    void ensureThreadLoaded( const wxString& aDisplayedMessage,
+                             std::function<void()> aReadyHandler );
+    void startThread( std::function<void()> aReadyHandler );
+    void resumeThread( const wxString& aDisplayedMessage,
+                       std::function<void()> aReadyHandler );
     void startTurn( const std::string& aMessage );
+    bool handleGoalCommand( const wxString& aMessage );
+    void showGoal();
+    void setGoal( const wxString& aObjective, bool aActivate );
+    void setGoalStatus( const std::string& aStatus );
+    void clearGoal();
+    void appendGoal( const JSON& aGoal );
     void selectProjectThread();
     void appendTranscript( const wxString& aText );
     void setBusy( bool aBusy );

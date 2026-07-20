@@ -248,8 +248,37 @@ send_message "$(jq -cn --arg cwd "$repo_root" '{
 expect_result 4 thread/start
 
 thread_id="$(jq -er '.result.thread.id' <<<"$last_response")"
-send_message "$(jq -cn --arg cwd "$repo_root" --arg thread_id "$thread_id" '{
+send_message "$(jq -cn --arg thread_id "$thread_id" '{
     id: 5,
+    method: "thread/goal/set",
+    params: {
+        threadId: $thread_id,
+        objective: "Verify KiChad goal protocol"
+    }
+}')"
+expect_result 5 thread/goal/set
+jq -e '.result.goal.objective == "Verify KiChad goal protocol"
+       and .result.goal.status == "active"' <<<"$last_response" >/dev/null
+
+send_message "$(jq -cn --arg thread_id "$thread_id" '{
+    id: 6,
+    method: "thread/goal/get",
+    params: { threadId: $thread_id }
+}')"
+expect_result 6 thread/goal/get
+jq -e '.result.goal.objective == "Verify KiChad goal protocol"' \
+    <<<"$last_response" >/dev/null
+
+send_message "$(jq -cn --arg thread_id "$thread_id" '{
+    id: 7,
+    method: "thread/goal/clear",
+    params: { threadId: $thread_id }
+}')"
+expect_result 7 thread/goal/clear
+jq -e '.result.cleared == true' <<<"$last_response" >/dev/null
+
+send_message "$(jq -cn --arg cwd "$repo_root" --arg thread_id "$thread_id" '{
+    id: 8,
     method: "thread/resume",
     params: {
         threadId: $thread_id,
@@ -281,7 +310,7 @@ send_message "$(jq -cn --arg cwd "$repo_root" --arg thread_id "$thread_id" '{
         }
     }
 }')"
-expect_error 5 "no rollout found" "thread/resume live-web configuration"
+expect_result 8 "thread/resume live-web configuration"
 
 exec {smoke_write_fd}>&-
 smoke_write_open=false

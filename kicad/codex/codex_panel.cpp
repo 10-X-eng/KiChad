@@ -43,10 +43,10 @@ JSON agentConfig()
         // integration.  Dotted keys are app-server config overrides, not nested JSON paths.
         { "features.apps", false },
         { "features.browser_use", false },
-        { "features.code_mode", false },
+        { "features.code_mode", true },
         { "features.computer_use", false },
         { "features.enable_mcp_apps", false },
-        { "features.goals", false },
+        { "features.goals", true },
         { "features.hooks", false },
         { "features.image_generation", false },
         { "features.multi_agent", false },
@@ -58,9 +58,9 @@ JSON agentConfig()
         { "features.unified_exec", false },
         { "features.workspace_dependencies", false },
         { "include_apps_instructions", false },
-        { "include_collaboration_mode_instructions", false },
-        { "include_environment_context", false },
-        { "include_permissions_instructions", false },
+        { "include_collaboration_mode_instructions", true },
+        { "include_environment_context", true },
+        { "include_permissions_instructions", true },
         { "mcp_servers", JSON::object() },
         { "orchestrator.mcp.enabled", false },
         { "orchestrator.skills.enabled", false },
@@ -100,11 +100,11 @@ const char* agentInstructions()
 const char* agentDeveloperInstructions()
 {
     return "Operate only through the supplied native KiChad dynamic tools for electronics "
-           "design and Codex live web search for component research. Do not use or propose "
-           "shell, general filesystem, coding, patching, planning, goal-management, plugin, "
-           "app, skill, MCP, browser-automation, computer-control, collaboration, multi-agent, "
-           "or other generic Codex workflow tools. KDS changes must go through the native "
-           "design tool, never through generic file editing.";
+           "design and Codex live web search for component research. Built-in goals, planning, "
+           "and read-only image inspection are available for normal Codex workflows. Do not use "
+           "or propose shell execution, general filesystem mutation, plugins, apps, skills, MCP, "
+           "browser automation, computer control, or multi-agent delegation. KDS changes must go "
+           "through the native design tool, never through generic file editing.";
 }
 
 
@@ -417,7 +417,19 @@ void CODEX_PANEL::updateReasoningChoices()
 }
 
 
-void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
+void CODEX_PANEL::ensureThreadLoaded( const wxString& aDisplayedMessage,
+                                     std::function<void()> aReadyHandler )
+{
+    if( m_threadId.empty() )
+        startThread( std::move( aReadyHandler ) );
+    else if( !m_threadLoaded )
+        resumeThread( aDisplayedMessage, std::move( aReadyHandler ) );
+    else
+        aReadyHandler();
+}
+
+
+void CODEX_PANEL::startThread( std::function<void()> aReadyHandler )
 {
     wxString cwd = projectPath();
 
@@ -435,7 +447,6 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
         { "serviceName", "KiChad" },
         { "baseInstructions", agentInstructions() },
         { "developerInstructions", agentDeveloperInstructions() },
-        { "environments", JSON::array() },
         { "config", agentConfig() }
     };
 
@@ -448,7 +459,7 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
 
     m_client.SendRequest(
             "thread/start", params,
-            [this, aMessage]( const JSON& aResponse )
+            [this, aReadyHandler = std::move( aReadyHandler )]( const JSON& aResponse )
             {
                 if( !aResponse.contains( "result" ) )
                 {
@@ -480,12 +491,13 @@ void CODEX_PANEL::startThreadAndTurn( const std::string& aMessage )
                     appendTranscript( wxString::Format( _( "\n[Conversation persistence: %s]\n" ),
                                                         saveError ) );
 
-                startTurn( aMessage );
+                aReadyHandler();
             } );
 }
 
 
-void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
+void CODEX_PANEL::resumeThread( const wxString& aDisplayedMessage,
+                               std::function<void()> aReadyHandler )
 {
     wxString cwd = projectPath();
     JSON params = {
@@ -501,7 +513,8 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
 
     m_client.SendRequest(
             "thread/resume", params,
-            [this, aMessage]( const JSON& aResponse )
+            [this, aDisplayedMessage,
+             aReadyHandler = std::move( aReadyHandler )]( const JSON& aResponse )
             {
                 if( !aResponse.contains( "result" ) )
                 {
@@ -563,10 +576,10 @@ void CODEX_PANEL::resumeThreadAndTurn( const std::string& aMessage )
                     // onSend displayed this prompt before the asynchronous resume.  Re-add it
                     // after replacing the transcript with the persisted history.
                     appendTranscript( wxString::Format(
-                            _( "\nYou: %s\n" ), wxString::FromUTF8( aMessage ) ) );
+                            _( "\nYou: %s\n" ), aDisplayedMessage ) );
                 }
 
-                startTurn( aMessage );
+                aReadyHandler();
             } );
 }
 
@@ -576,8 +589,7 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
     JSON params = {
         { "threadId", m_threadId },
         { "input", JSON::array( { { { "type", "text" }, { "text", aMessage },
-                                     { "text_elements", JSON::array() } } } ) },
-        { "environments", JSON::array() }
+                                     { "text_elements", JSON::array() } } } ) }
     };
 
     int modelSelection = m_modelChoice->GetSelection();
@@ -609,6 +621,222 @@ void CODEX_PANEL::startTurn( const std::string& aMessage )
 }
 
 
+void CODEX_PANEL::appendGoal( const JSON& aGoal )
+{
+    if( !aGoal.is_object() )
+    {
+        appendTranscript( _( "[No active goal.]\n" ) );
+        return;
+    }
+
+    const wxString objective = wxString::FromUTF8( aGoal.value( "objective", "" ) );
+    const wxString status = wxString::FromUTF8( aGoal.value( "status", "" ) );
+    const long long tokensUsed = aGoal.value( "tokensUsed", 0LL );
+    const long long timeUsedSeconds = aGoal.value( "timeUsedSeconds", 0LL );
+    wxString usage = wxString::Format( _( "%lld tokens, %lld seconds" ), tokensUsed,
+                                       timeUsedSeconds );
+
+    if( aGoal.contains( "tokenBudget" ) && aGoal["tokenBudget"].is_number_integer() )
+    {
+        usage = wxString::Format( _( "%lld / %lld tokens, %lld seconds" ), tokensUsed,
+                                  aGoal["tokenBudget"].get<long long>(), timeUsedSeconds );
+    }
+
+    appendTranscript( wxString::Format( _( "[Goal — %s: %s (%s)]\n" ), status, objective,
+                                        usage ) );
+}
+
+
+void CODEX_PANEL::showGoal()
+{
+    m_client.SendRequest(
+            "thread/goal/get", { { "threadId", m_threadId } },
+            [this]( const JSON& aResponse )
+            {
+                if( aResponse.contains( "result" ) )
+                    appendGoal( aResponse["result"].value( "goal", JSON() ) );
+                else
+                    appendTranscript( wxS( "[" )
+                                      + responseErrorMessage( aResponse,
+                                                              _( "Could not read the goal." ) )
+                                      + wxS( "]\n" ) );
+
+                setBusy( !m_turnId.empty() );
+            } );
+}
+
+
+void CODEX_PANEL::setGoal( const wxString& aObjective, bool aActivate )
+{
+    JSON params = { { "threadId", m_threadId },
+                    { "objective", std::string( aObjective.ToUTF8() ) } };
+
+    if( aActivate )
+        params["status"] = "active";
+
+    m_client.SendRequest(
+            "thread/goal/set", params,
+            [this]( const JSON& aResponse )
+            {
+                if( aResponse.contains( "result" ) )
+                {
+                    const JSON& goal = aResponse["result"].value( "goal", JSON() );
+                    appendGoal( goal );
+
+                    if( goal.value( "status", "" ) == "active" && m_turnId.empty() )
+                        appendTranscript( _( "\nCodex: " ) );
+                    else
+                        setBusy( !m_turnId.empty() );
+                }
+                else
+                {
+                    appendTranscript( wxS( "[" )
+                                      + responseErrorMessage( aResponse,
+                                                              _( "Could not set the goal." ) )
+                                      + wxS( "]\n" ) );
+                    setBusy( !m_turnId.empty() );
+                }
+            } );
+}
+
+
+void CODEX_PANEL::setGoalStatus( const std::string& aStatus )
+{
+    m_client.SendRequest(
+            "thread/goal/set", { { "threadId", m_threadId }, { "status", aStatus } },
+            [this, aStatus]( const JSON& aResponse )
+            {
+                if( aResponse.contains( "result" ) )
+                {
+                    appendGoal( aResponse["result"].value( "goal", JSON() ) );
+
+                    if( aStatus == "active" && m_turnId.empty() )
+                        appendTranscript( _( "\nCodex: " ) );
+                    else
+                        setBusy( !m_turnId.empty() );
+                }
+                else
+                {
+                    appendTranscript( wxS( "[" )
+                                      + responseErrorMessage(
+                                                aResponse, _( "Could not update the goal." ) )
+                                      + wxS( "]\n" ) );
+                    setBusy( !m_turnId.empty() );
+                }
+            } );
+}
+
+
+void CODEX_PANEL::clearGoal()
+{
+    m_client.SendRequest(
+            "thread/goal/clear", { { "threadId", m_threadId } },
+            [this]( const JSON& aResponse )
+            {
+                if( aResponse.contains( "result" ) )
+                    appendTranscript( aResponse["result"].value( "cleared", false )
+                                              ? _( "[Goal cleared.]\n" )
+                                              : _( "[No active goal.]\n" ) );
+                else
+                    appendTranscript( wxS( "[" )
+                                      + responseErrorMessage( aResponse,
+                                                              _( "Could not clear the goal." ) )
+                                      + wxS( "]\n" ) );
+
+                setBusy( !m_turnId.empty() );
+            } );
+}
+
+
+bool CODEX_PANEL::handleGoalCommand( const wxString& aMessage )
+{
+    if( aMessage != wxS( "/goal" ) && !aMessage.StartsWith( wxS( "/goal " ) ) )
+        return false;
+
+    wxString arguments = aMessage.Mid( 5 );
+    arguments.Trim( true ).Trim( false );
+    wxString command = arguments.BeforeFirst( ' ' ).Lower();
+    wxString objective = arguments.AfterFirst( ' ' );
+    objective.Trim( true ).Trim( false );
+
+    enum class ACTION
+    {
+        SHOW,
+        SET,
+        EDIT,
+        PAUSE,
+        RESUME,
+        CLEAR
+    };
+
+    ACTION action = ACTION::SHOW;
+
+    if( arguments.IsEmpty() )
+        action = ACTION::SHOW;
+    else if( command == wxS( "clear" ) )
+        action = ACTION::CLEAR;
+    else if( command == wxS( "pause" ) )
+        action = ACTION::PAUSE;
+    else if( command == wxS( "resume" ) )
+        action = ACTION::RESUME;
+    else if( command == wxS( "edit" ) )
+    {
+        if( objective.IsEmpty() )
+        {
+            appendTranscript( _( "[Usage: /goal edit <objective>]\n" ) );
+            return true;
+        }
+
+        action = ACTION::EDIT;
+    }
+    else
+    {
+        objective = arguments;
+        action = ACTION::SET;
+    }
+
+    if( m_threadId.empty() && action != ACTION::SET )
+    {
+        appendTranscript( _( "[No active goal.]\n" ) );
+        return true;
+    }
+
+    setBusy( true );
+    ensureThreadLoaded(
+            aMessage,
+            [this, action, objective]()
+            {
+                switch( action )
+                {
+                case ACTION::SHOW:
+                    showGoal();
+                    break;
+
+                case ACTION::SET:
+                    setGoal( objective, true );
+                    break;
+
+                case ACTION::EDIT:
+                    setGoal( objective, false );
+                    break;
+
+                case ACTION::PAUSE:
+                    setGoalStatus( "paused" );
+                    break;
+
+                case ACTION::RESUME:
+                    setGoalStatus( "active" );
+                    break;
+
+                case ACTION::CLEAR:
+                    clearGoal();
+                    break;
+                }
+            } );
+    return true;
+}
+
+
 void CODEX_PANEL::appendTranscript( const wxString& aText )
 {
     m_transcript->AppendText( aText );
@@ -618,10 +846,12 @@ void CODEX_PANEL::appendTranscript( const wxString& aText )
 
 void CODEX_PANEL::setBusy( bool aBusy )
 {
-    m_sendButton->Enable( !aBusy && m_initialized && m_authenticated );
+    // Goal control remains available while Codex is working so users can issue /goal pause or
+    // /goal clear without first interrupting the current goal turn.
+    m_sendButton->Enable( m_initialized && m_authenticated );
     m_stopButton->Enable( aBusy );
     m_revertButton->Enable( !aBusy && !m_turnSnapshotHash.IsEmpty() );
-    m_input->Enable( !aBusy );
+    m_input->Enable();
 }
 
 
@@ -729,6 +959,7 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
     else if( method == "turn/started" )
     {
         m_turnId = aMessage["params"]["turn"].value( "id", "" );
+        setBusy( true );
     }
     else if( method == "turn/completed" )
     {
@@ -1064,6 +1295,16 @@ void CODEX_PANEL::onSend( wxCommandEvent& aEvent )
     m_input->Clear();
     appendTranscript( wxString::Format( _( "\nYou: %s\n" ), message ) );
 
+    if( handleGoalCommand( message ) )
+        return;
+
+    if( !m_turnId.empty() )
+    {
+        appendTranscript( _( "[Codex is still working. Use /goal pause, /goal clear, or Stop "
+                             "before starting another request.]\n" ) );
+        return;
+    }
+
     m_turnSnapshotHash.clear();
 
     if( m_snapshotProvider )
@@ -1083,13 +1324,7 @@ void CODEX_PANEL::onSend( wxCommandEvent& aEvent )
     setBusy( true );
 
     std::string utf8Message( message.ToUTF8() );
-
-    if( m_threadId.empty() )
-        startThreadAndTurn( utf8Message );
-    else if( !m_threadLoaded )
-        resumeThreadAndTurn( utf8Message );
-    else
-        startTurn( utf8Message );
+    ensureThreadLoaded( message, [this, utf8Message]() { startTurn( utf8Message ); } );
 }
 
 
