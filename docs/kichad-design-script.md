@@ -1102,6 +1102,14 @@ artifacts:
     (size 0.8mm 0.8mm)
     (layers F.Cu F.Mask F.Paste)
     (roundrect_radius 0.2mm)
+    (teardrop
+      (enabled true)
+      (target_length 0.5 1mm)
+      (target_width 1 2mm)
+      (edges curved)
+      (track_width_limit 0.9)
+      (allow_two_segments true)
+      (prefer_zone_connections true))
     (pin_function INPUT)
     (pin_type signal)
     (solder_mask_margin 0.02mm)
@@ -1168,6 +1176,12 @@ pin function/type metadata, and local solder-mask, solder-paste, clearance, zone
 spoke, and thermal-gap overrides. Every override uses `inherit` when the footprint should retain the
 board or zone policy; implicit sentinel values are not exposed to the model. Jumper and net-tie
 groups name existing electrical pad numbers and are checked for duplicate membership.
+
+Electrically connectable pads use the same complete `teardrop` form as vias. The preferred length
+and width ratios, absolute maxima, straight or curved edges, track-width filter, two-segment policy,
+and zone-connection preference are all explicit. This single KDS representation lowers both to
+current KiCad 10 footprint syntax and to the native typed Pad IPC message, preserving the same state
+through managed-library import, live editing, and save/reload.
 
 Plated through-hole pads can replace the single-shape stack with one explicit semantic `padstack`.
 The `front_inner_back` mode requires both `inner` and `B.Cu`; the front shape is the pad's ordinary
@@ -1424,9 +1438,8 @@ instances, snapshots the exact prior whole library, atomically swaps a staging d
 and asks `kicad-cli fp upgrade --force` to parse and resave every file in an isolated directory.
 Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
 the operation and restore the prior library, project tables, schematics, and settings in reverse
-order. Footprint authoring remains intentionally partial: per-layer custom primitive geometry,
-secondary/tertiary drilling, embedded assets, and
-complete package-data-to-KLC geometry generation remain explicit capability gaps. Plugging,
+order. Footprint authoring remains intentionally partial: embedded assets and complete
+package-data-to-KLC geometry generation remain explicit capability gaps. Plugging,
 filling, capping, and covering are KiCad via—not footprint-pad—file semantics and are tracked under
 the board-via capability.
 

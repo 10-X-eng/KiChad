@@ -15,6 +15,7 @@
 #include "design_script_footprint_custom_pad_generator.h"
 #include "design_script_footprint_hole_treatment_generator.h"
 #include "design_script_footprint_padstack_generator.h"
+#include "design_script_teardrop_generator.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -31,6 +32,7 @@ using BACKDRILL_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_BACKDRILL_GENERATOR;
 using CUSTOM_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_GENERATOR;
 using HOLE_TREATMENT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_HOLE_TREATMENT_GENERATOR;
 using PADSTACK_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PADSTACK_GENERATOR;
+using TEARDROP_GENERATOR = KICHAD::DESIGN_SCRIPT_TEARDROP_GENERATOR;
 
 
 std::string quoteText( const std::string& aText )
@@ -439,6 +441,19 @@ bool DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR::Render( const JSON& aPad,
             return false;
     }
     else if( !aPad.contains( "padstack" ) || !aPad["padstack"].is_null() )
+    {
+        return false;
+    }
+
+    if( aPad.contains( "teardrop" ) && aPad["teardrop"].is_object() )
+    {
+        if( type == "np_thru_hole"
+            || !TEARDROP_GENERATOR::Render( aPad["teardrop"], aSource ) )
+        {
+            return false;
+        }
+    }
+    else if( !aPad.contains( "teardrop" ) || !aPad["teardrop"].is_null() )
     {
         return false;
     }

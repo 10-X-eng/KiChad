@@ -60,6 +60,14 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
       (number 1) (type smd) (shape roundrect) (at -0.8mm 0mm)
       (rotation 0deg) (size 0.8mm 0.8mm)
       (layers F.Cu F.Mask F.Paste) (roundrect_radius 0.2mm)
+      (teardrop
+        (enabled true)
+        (target_length 0.5 1mm)
+        (target_width 1 2mm)
+        (edges curved)
+        (track_width_limit 0.9)
+        (allow_two_segments true)
+        (prefer_zone_connections true))
       (solder_mask_margin 0.02mm) (solder_paste_margin inherit)
       (solder_paste_margin_ratio -0.1) (clearance inherit)
       (zone_connection thermal) (thermal_spoke_width 0.2mm)
@@ -99,6 +107,7 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
     const auto& sensor = compiled.ir["authoredFootprints"][0];
     BOOST_CHECK_EQUAL( sensor["library"], "Product" );
     BOOST_CHECK_EQUAL( sensor["pads"][0]["roundrectRadiusNm"], 200000 );
+    BOOST_CHECK_EQUAL( sensor["pads"][0]["teardrop"]["enabled"], true );
     BOOST_CHECK_EQUAL( sensor["pads"][0]["solderPasteMarginPpm"], -100000 );
     BOOST_CHECK_EQUAL( sensor["models"][0]["opacityPpm"], 750000 );
     BOOST_CHECK_EQUAL( sensor["models"][0]["rotationTenths"]["z"], 900 );
@@ -123,6 +132,11 @@ BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprint
     BOOST_CHECK_NE( smd.find( "(layers \"F.Cu\" \"F.Mask\" \"F.Paste\")" ),
                     std::string::npos );
     BOOST_CHECK_NE( smd.find( "(roundrect_rratio 0.25)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(teardrops (best_length_ratio 0.5) (max_length 1) "
+                              "(best_width_ratio 1) (max_width 2) (curved_edges yes) "
+                              "(filter_ratio 0.9) (enabled yes) (allow_two_segments yes) "
+                              "(prefer_zone_connections yes))" ),
+                    std::string::npos );
     BOOST_CHECK_NE( smd.find( "(rect_delta 0.8 0)" ), std::string::npos );
     BOOST_CHECK_NE( smd.find( "(solder_paste_margin_ratio -0.1)" ), std::string::npos );
     BOOST_CHECK_NE( smd.find( "(thermal_bridge_angle 45)" ), std::string::npos );

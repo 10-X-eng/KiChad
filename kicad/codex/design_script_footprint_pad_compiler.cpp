@@ -14,6 +14,7 @@
 #include "design_script_footprint_custom_pad_compiler.h"
 #include "design_script_footprint_hole_treatment_compiler.h"
 #include "design_script_footprint_padstack_compiler.h"
+#include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
 
 #include <algorithm>
@@ -36,6 +37,7 @@ using CUSTOM_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER;
 using HOLE_TREATMENT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_HOLE_TREATMENT_COMPILER;
 using PADSTACK_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PADSTACK_COMPILER;
 using BACKDRILL_COMPILER = KICHAD::DESIGN_SCRIPT_VIA_BACKDRILL_COMPILER;
+using TEARDROP_COMPILER = KICHAD::DESIGN_SCRIPT_TEARDROP_COMPILER;
 
 constexpr int64_t MAX_COORDINATE_NM = 2'000'000'000LL;
 constexpr int64_t MAX_PAD_DIMENSION_NM = 1'000'000'000LL;
@@ -401,7 +403,7 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
         { "trapezoidDelta", { { "xNm", 0 }, { "yNm", 0 } } },
         { "roundrectRadiusNm", nullptr }, { "chamferRatioPpm", nullptr },
         { "chamferCorners", JSON::array() }, { "custom", nullptr }, { "padstack", nullptr },
-        { "backdrills", nullptr }, { "holeTreatment", nullptr },
+        { "backdrills", nullptr }, { "holeTreatment", nullptr }, { "teardrop", nullptr },
         { "property", "none" },
         { "pinFunction", "" }, { "pinType", "" }, { "dieLengthNm", 0 },
         { "solderMaskMarginNm", nullptr }, { "solderPasteMarginNm", nullptr },
@@ -508,6 +510,17 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
                 result.diagnostics.push_back( std::move( entry ) );
 
             result.pad["backdrills"] = std::move( backdrills.backdrills );
+            continue;
+        }
+
+        if( head == "teardrop" )
+        {
+            TEARDROP_COMPILER::RESULT teardrop = TEARDROP_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : teardrop.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.pad["teardrop"] = std::move( teardrop.teardrop );
             continue;
         }
 
@@ -806,6 +819,10 @@ DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
         diagnostic( result, "invalid_authored_footprint_pad_drill_semantics",
                     drilled ? "through-hole pads require a drill"
                             : "smd and connect pads cannot declare a drill" );
+
+    if( result.pad["teardrop"].is_object() && type == "np_thru_hole" )
+        diagnostic( result, "invalid_authored_footprint_pad_teardrop_type",
+                    "teardrops require an electrically connectable copper pad" );
 
     if( drilled && result.pad["drill"].is_object() && result.pad.contains( "size" )
         && ( result.pad["drill"]["xNm"].get<int64_t>()

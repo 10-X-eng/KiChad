@@ -175,6 +175,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_text_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_resolver.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_teardrop_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_teardrop_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_via_backdrill_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_via_padstack_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_via_protection_compiler.cpp
