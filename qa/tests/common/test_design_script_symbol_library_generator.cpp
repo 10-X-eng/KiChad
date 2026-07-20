@@ -40,7 +40,9 @@ BOOST_AUTO_TEST_CASE( LowersOneAiNativeRepresentationToCurrentDeterministicLibra
         (stroke 0.254mm default) (fill background)))
     (unit 1
       (pin 1 (name IN) (electrical input) (shape line)
-        (at -5.08mm 0mm) (orientation right) (length 2.54mm))
+        (at -5.08mm 0mm) (orientation right) (length 2.54mm)
+        (alternate GPIO bidirectional line)
+        (alternate CLOCK input clock))
       (pin 2 (name OUT) (electrical output) (shape inverted)
         (at 5.08mm 0mm) (orientation left) (length 2.54mm))))
   (component U1 (symbol "Product:SENSOR") (value "SENSOR") (footprint none)
@@ -67,6 +69,10 @@ BOOST_AUTO_TEST_CASE( LowersOneAiNativeRepresentationToCurrentDeterministicLibra
     BOOST_CHECK_NE( source.find( "(symbol \"SENSOR_1_1\"" ), std::string::npos );
     BOOST_CHECK_NE( source.find( "(pin input line" ), std::string::npos );
     BOOST_CHECK_NE( source.find( "(pin output inverted" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(alternate \"GPIO\" bidirectional line)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( source.find( "(alternate \"CLOCK\" input clock)" ),
+                    std::string::npos );
     BOOST_CHECK_EQUAL( first.counts["libraries"], 1 );
     BOOST_CHECK_EQUAL( first.counts["symbols"], 1 );
     BOOST_CHECK_EQUAL( first.counts["pins"], 2 );
@@ -103,13 +109,17 @@ BOOST_AUTO_TEST_CASE( RejectsImplicitOwnershipAmbiguousPinsAndUnknownNativePasst
     (native_sexpr "(pin passive line)")
     (unit 1
       (pin 1 (at 0mm 0mm))
-      (pin 1 (at 2.54mm 0mm))))
+      (pin 1 (at 2.54mm 0mm)
+        (alternate GPIO bidirectional line)
+        (alternate GPIO output line))))
 ))KDS";
     compiled = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( duplicatePins );
     BOOST_CHECK( !compiled.ok );
     const std::string diagnostics = compiled.diagnostics.dump();
     BOOST_CHECK_NE( diagnostics.find( "unknown_authored_symbol_field" ), std::string::npos );
     BOOST_CHECK_NE( diagnostics.find( "duplicate_authored_symbol_pin_number" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "duplicate_authored_symbol_pin_alternate" ),
                     std::string::npos );
 
     const std::string emptyManaged = R"KDS((kichad_design
@@ -120,6 +130,90 @@ BOOST_AUTO_TEST_CASE( RejectsImplicitOwnershipAmbiguousPinsAndUnknownNativePasst
     BOOST_CHECK( !compiled.ok );
     BOOST_CHECK_NE( compiled.diagnostics.dump().find( "empty_managed_symbol_library" ),
                     std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( LowersPowerAndDerivedSymbolSemanticsWithoutDuplicatingUnits )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project power_symbols)
+  (library symbol Power (table project)
+    (uri "${KIPRJMOD}/Power.kicad_sym") (managed true))
+  (sheet root (parent none) (file "power_symbols.kicad_sch") (title "Power"))
+  (symbol Power:POWER_BASE
+    (reference "#PWR") (value VCC) (power global)
+    (unit common
+      (polyline mark (point 0mm 0mm) (point 0mm -1mm) (point 1mm -1mm)))
+    (unit 1
+      (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm)
+        (orientation down) (length 0mm))))
+  (symbol Power:VCC (extends POWER_BASE) (value VCC)
+    (description "Positive supply") (property "Voltage" "3.3V"))
+  (component #PWR01 (symbol "Power:VCC") (value "VCC") (footprint none)
+    (unit 1 (sheet root) (at 20mm 20mm) (rotation 0deg) (mirror none)))
+))KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump( 2 ) );
+    KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT generated =
+            KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( generated.ok, generated.diagnostics.dump( 2 ) );
+    const std::string source = generated.sources["Power"].get<std::string>();
+    BOOST_CHECK_NE( source.find( "(symbol \"POWER_BASE\"" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(power global)" ), std::string::npos );
+    const size_t derived = source.find( "(symbol \"VCC\"" );
+    BOOST_REQUIRE_NE( derived, std::string::npos );
+    BOOST_CHECK_NE( source.find( "(extends \"POWER_BASE\")", derived ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(property \"Voltage\" \"3.3V\"", derived ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( source.find( "(symbol \"VCC_", derived ), std::string::npos );
+
+    KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolved =
+            KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( compiled.ir, generated.sources );
+    BOOST_REQUIRE_MESSAGE( resolved.ok, resolved.diagnostics.dump( 2 ) );
+    BOOST_CHECK_EQUAL( resolved.symbols["Power:VCC"]["inheritanceDepth"], 1 );
+    BOOST_REQUIRE_EQUAL( resolved.symbols["Power:VCC"]["units"]["1"].size(), 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsMalformedPowerAndDerivedSymbolOverrides )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project bad_semantics)
+  (library symbol Power (table project)
+    (uri "${KIPRJMOD}/Power.kicad_sym") (managed true))
+  (symbol Power:BASE
+    (reference PWR) (power local)
+    (unit 1 (pin 1 (electrical passive) (at 0mm 0mm))))
+  (symbol Power:CHILD (extends BASE) (power global)
+    (hide_pin_names true) (unit 1 (pin 1 (at 0mm 0mm))))
+))KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_CHECK( !compiled.ok );
+    const std::string diagnostics = compiled.diagnostics.dump();
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_power_symbol" ), std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "derived_authored_symbol_has_units" ), std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "derived_authored_symbol_power" ), std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "unsupported_derived_authored_symbol_field" ),
+                    std::string::npos );
+
+    const std::string recursive = R"KDS((kichad_design
+  (version 1) (project recursive_semantics)
+  (library symbol Product (table project)
+    (uri "${KIPRJMOD}/Product.kicad_sym") (managed true))
+  (symbol Product:A (extends B) (value A))
+  (symbol Product:B (extends A) (value B))
+))KDS";
+    compiled = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( recursive );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump( 2 ) );
+    KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT generated =
+            KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( compiled.ir );
+    BOOST_CHECK( !generated.ok );
+    BOOST_CHECK_NE( generated.diagnostics.dump().find(
+                            "recursive_authored_symbol_inheritance" ), std::string::npos );
 }
 
 

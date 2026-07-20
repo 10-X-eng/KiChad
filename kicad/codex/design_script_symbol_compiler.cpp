@@ -203,8 +203,9 @@ JSON compilePin( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
                  { "electrical", "passive" }, { "shape", "line" },
                  { "orientation", "right" }, { "lengthNm", 2'540'000 },
                  { "hidden", false }, { "nameSizeNm", 1'270'000 },
-                 { "numberSizeNm", 1'270'000 } };
+                 { "numberSizeNm", 1'270'000 }, { "alternates", JSON::array() } };
     std::set<std::string> fields;
+    std::set<std::string> alternateNames;
     static const std::set<std::string> electricalTypes = {
         "input", "output", "bidirectional", "tri_state", "passive", "free",
         "unspecified", "power_in", "power_out", "open_collector", "open_emitter",
@@ -220,6 +221,42 @@ JSON compilePin( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     {
         const size_t child = node.children[index];
         const std::string head = aDocument.ListHead( child );
+
+        if( head == "alternate" )
+        {
+            const DOCUMENT::NODE& alternate = aDocument.Nodes().at( child );
+            std::string alternateName;
+            std::string alternateElectrical;
+            std::string alternateShape;
+
+            if( alternate.children.size() != 4
+                || !scalar( aDocument, alternate.children[1], alternateName )
+                || !scalar( aDocument, alternate.children[2], alternateElectrical )
+                || !scalar( aDocument, alternate.children[3], alternateShape )
+                || alternateName.empty() || alternateName.size() > 256
+                || alternateName.find( '\0' ) != std::string::npos
+                || !electricalTypes.contains( alternateElectrical )
+                || !shapes.contains( alternateShape ) )
+            {
+                diagnostic( aResult, "invalid_authored_symbol_pin_alternate",
+                            "pin " + number
+                                    + " alternate requires a unique name, electrical type, and shape" );
+            }
+            else if( !alternateNames.emplace( alternateName ).second )
+            {
+                diagnostic( aResult, "duplicate_authored_symbol_pin_alternate",
+                            "pin " + number + " alternate " + alternateName
+                                    + " occurs more than once" );
+            }
+            else
+            {
+                pin["alternates"].push_back( { { "name", alternateName },
+                                                { "electrical", alternateElectrical },
+                                                { "shape", alternateShape } } );
+            }
+
+            continue;
+        }
 
         if( !fields.emplace( head ).second )
         {
@@ -315,7 +352,7 @@ JSON compilePin( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
         {
             diagnostic( aResult, "unknown_authored_symbol_pin_field",
                         "pin supports name, electrical, shape, at, orientation, length, hidden, "
-                        "name_size, and number_size" );
+                        "name_size, number_size, and alternate" );
         }
     }
 
@@ -480,7 +517,8 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
         { "excludeFromSim", false }, { "inBom", true }, { "onBoard", true },
         { "inPosFiles", true }, { "hidePinNames", false }, { "hidePinNumbers", false },
         { "pinNamesOffsetNm", 0 }, { "properties", JSON::array() },
-        { "units", JSON::array() }
+        { "units", JSON::array() }, { "power", "normal" }, { "extends", "" },
+        { "declaredFields", JSON::array() }
     };
     std::set<std::string> fields;
     std::set<std::string> propertyNames;
@@ -612,6 +650,22 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
             else
                 result.symbol["pinNamesOffsetNm"] = parsed;
         }
+        else if( head == "power" )
+        {
+            if( value != "normal" && value != "global" && value != "local" )
+                diagnostic( result, "invalid_authored_symbol_power",
+                            "symbol power must be normal, global, or local" );
+            else
+                result.symbol["power"] = value;
+        }
+        else if( head == "extends" )
+        {
+            if( !identifier( value ) || value == name )
+                diagnostic( result, "invalid_authored_symbol_parent",
+                            "symbol extends requires a different symbol name in the same library" );
+            else
+                result.symbol["extends"] = value;
+        }
         else
         {
             diagnostic( result, "unknown_authored_symbol_field",
@@ -621,17 +675,65 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
     }
 
     bool hasNumberedUnit = false;
+    bool hasPowerInput = false;
 
     for( const JSON& unit : result.symbol["units"] )
     {
         if( unit.is_object() && unit.value( "number", 0 ) > 0 )
             hasNumberedUnit = true;
+
+        if( unit.is_object() && unit.contains( "items" ) && unit["items"].is_array() )
+        {
+            for( const JSON& item : unit["items"] )
+            {
+                hasPowerInput = hasPowerInput
+                                || ( item.value( "kind", "" ) == "pin"
+                                     && item.value( "electrical", "" ) == "power_in" );
+            }
+        }
     }
 
-    if( !hasNumberedUnit )
+    for( const std::string& field : fields )
+        result.symbol["declaredFields"].push_back( field );
+
+    const bool derived = !result.symbol["extends"].get_ref<const std::string&>().empty();
+
+    if( derived && !result.symbol["units"].empty() )
+    {
+        diagnostic( result, "derived_authored_symbol_has_units",
+                    "derived symbol " + id + " inherits units and cannot declare its own" );
+    }
+    else if( !derived && !hasNumberedUnit )
     {
         diagnostic( result, "missing_authored_symbol_unit",
                     "authored symbol " + id + " requires at least one numbered unit" );
+    }
+
+    if( derived && result.symbol["power"] != "normal" )
+        diagnostic( result, "derived_authored_symbol_power",
+                    "derived symbol " + id + " inherits power semantics" );
+
+    if( derived )
+    {
+        static const std::set<std::string> derivedFields = {
+            "reference", "value", "footprint", "datasheet", "description", "keywords", "extends"
+        };
+
+        for( const std::string& field : fields )
+        {
+            if( !derivedFields.contains( field ) )
+                diagnostic( result, "unsupported_derived_authored_symbol_field",
+                            "derived symbol " + id + " cannot override " + field );
+        }
+    }
+
+    if( result.symbol["power"] != "normal"
+        && ( result.symbol["reference"].get_ref<const std::string&>().empty()
+             || result.symbol["reference"].get_ref<const std::string&>().front() != '#'
+             || !hasPowerInput ) )
+    {
+        diagnostic( result, "invalid_authored_power_symbol",
+                    "global/local power symbols require a # reference and a power_in pin" );
     }
 
     result.ok = result.diagnostics.empty();

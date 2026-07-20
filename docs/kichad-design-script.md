@@ -979,7 +979,8 @@ replacing an editor-managed library implicitly would be destructive:
       (margins 0.1mm 0.1mm 0.1mm 0.1mm)))
   (unit 1
     (pin 1 (name IN) (electrical input) (shape line)
-      (at -5.08mm 0mm) (orientation right) (length 2.54mm))
+      (at -5.08mm 0mm) (orientation right) (length 2.54mm)
+      (alternate GPIO bidirectional line))
     (pin 2 (name OUT) (electrical output) (shape inverted)
       (at 5.08mm 0mm) (orientation left) (length 2.54mm))))
 ```
@@ -1000,6 +1001,26 @@ expose positive box size, left/top/right/bottom margins, and the complete stroke
 Hidden symbol text is intentionally not accepted because KiCad converts it into a field rather
 than preserving it as text. The same lowering covers KiCad's complete electrical pin-type and
 pin-shape enumerations.
+Pins may carry any number of uniquely named `(alternate NAME ELECTRICAL_TYPE SHAPE)` functions;
+these lower to KiCad's native alternate pin assignments without changing the physical pin number.
+
+A root symbol may declare `(power global)` or `(power local)`; `normal` is the default. Power
+symbols require a `#` reference and at least one `power_in` pin, preventing a visually plausible
+symbol from silently losing KiCad's native power-net semantics. A derived alias uses one
+same-library parent and declares no units of its own:
+
+```scheme
+(symbol ProductSymbols:VCC_BASE
+  (reference "#PWR") (value VCC) (power global)
+  (unit 1
+    (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm) (length 0mm))))
+(symbol ProductSymbols:VCC
+  (extends VCC_BASE) (value VCC) (description "Positive supply"))
+```
+
+Derived symbols can override field values and custom properties while inheriting units, graphics,
+pins, and power behavior. Missing parents, cross-library names, self-reference, and recursive
+inheritance chains are compile/generation errors before filesystem mutation.
 Coordinates are explicitly dimensioned, bounded to ±2 m, and lowered
 to exact decimal millimetres without floating-point formatting drift. Pin orientations use the
 cardinal words `right`, `down`, `left`, and `up`.

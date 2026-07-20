@@ -6671,7 +6671,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                   { { "form",
                       "(symbol LIBRARY:NAME (reference PREFIX) (value TEXT) "
                       "(footprint TEXT) (datasheet TEXT) (description TEXT) "
-                      "(keywords TEXT) (property NAME VALUE) "
+                      "(keywords TEXT) (property NAME VALUE) [(power normal|global|local)] "
+                      "[(extends SAME_LIBRARY_PARENT)] "
                       "(exclude_from_sim BOOL) (in_bom BOOL) (on_board BOOL) "
                       "(in_pos_files BOOL) (hide_pin_names BOOL) "
                       "(hide_pin_numbers BOOL) (pin_names_offset DISTANCE) "
@@ -6691,7 +6692,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(margins LEFT TOP RIGHT BOTTOM)] [TEXT_FIELDS] [STROKE] [FILL]) | "
                       "(pin NUMBER (name TEXT) (electrical TYPE) (shape SHAPE) "
                       "(at X Y) (orientation right|down|left|up) (length DISTANCE) "
-                      "(hidden BOOL) (name_size DISTANCE) (number_size DISTANCE)) ...))" } },
+                      "(hidden BOOL) (name_size DISTANCE) (number_size DISTANCE) "
+                      "(alternate NAME ELECTRICAL_TYPE SHAPE)... ) ...))" } },
                   { { "form",
                       "(component REF (symbol LIB:ID) (value VALUE) "
                       "(footprint LIB:ID|none) "

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -141,7 +142,8 @@ bool renderPin( const JSON& aItem, std::string& aSource )
         || !aItem.contains( "lengthNm" ) || !aItem["lengthNm"].is_number_integer()
         || !aItem.contains( "hidden" ) || !aItem["hidden"].is_boolean()
         || !aItem.contains( "nameSizeNm" ) || !aItem["nameSizeNm"].is_number_integer()
-        || !aItem.contains( "numberSizeNm" ) || !aItem["numberSizeNm"].is_number_integer() )
+        || !aItem.contains( "numberSizeNm" ) || !aItem["numberSizeNm"].is_number_integer()
+        || !aItem.contains( "alternates" ) || !aItem["alternates"].is_array() )
     {
         return false;
     }
@@ -181,8 +183,24 @@ bool renderPin( const JSON& aItem, std::string& aSource )
                + millimetres( aItem["numberSizeNm"].get<int64_t>() ) + ")\n"
                "\t\t\t\t\t\t)\n"
                "\t\t\t\t\t)\n"
-               "\t\t\t\t)\n"
-               "\t\t\t)\n";
+               "\t\t\t\t)\n";
+
+    for( const JSON& alternate : aItem["alternates"] )
+    {
+        if( !alternate.is_object() || !alternate.contains( "name" )
+            || !alternate["name"].is_string() || !alternate.contains( "electrical" )
+            || !alternate["electrical"].is_string() || !alternate.contains( "shape" )
+            || !alternate["shape"].is_string() )
+        {
+            return false;
+        }
+
+        aSource += "\t\t\t\t(alternate " + quoted( alternate["name"].get<std::string>() )
+                   + " " + alternate["electrical"].get<std::string>() + " "
+                   + alternate["shape"].get<std::string>() + ")\n";
+    }
+
+    aSource += "\t\t\t)\n";
     return true;
 }
 
@@ -198,7 +216,9 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         { "inPosFiles", JSON::value_t::boolean }, { "hidePinNames", JSON::value_t::boolean },
         { "hidePinNumbers", JSON::value_t::boolean },
         { "pinNamesOffsetNm", JSON::value_t::number_integer },
-        { "properties", JSON::value_t::array }, { "units", JSON::value_t::array }
+        { "properties", JSON::value_t::array }, { "units", JSON::value_t::array },
+        { "power", JSON::value_t::string }, { "extends", JSON::value_t::string },
+        { "declaredFields", JSON::value_t::array }
     };
 
     if( !aSymbol.is_object() )
@@ -212,6 +232,65 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
 
     const std::string name = aSymbol["name"].get<std::string>();
     aSource += "\t(symbol " + quoted( name ) + "\n";
+    const std::string parent = aSymbol["extends"].get<std::string>();
+
+    if( !parent.empty() )
+    {
+        std::set<std::string> declared;
+
+        for( const JSON& field : aSymbol["declaredFields"] )
+        {
+            if( !field.is_string() )
+                return false;
+
+            declared.insert( field.get<std::string>() );
+        }
+
+        aSource += "\t\t(extends " + quoted( parent ) + ")\n";
+
+        if( declared.contains( "reference" ) )
+            aSource += property( "Reference", aSymbol["reference"].get<std::string>(), false,
+                                 0, -2'540'000 );
+
+        if( declared.contains( "value" ) )
+            aSource += property( "Value", aSymbol["value"].get<std::string>(), false,
+                                 0, 2'540'000 );
+
+        if( declared.contains( "footprint" ) )
+            aSource += property( "Footprint", aSymbol["footprint"].get<std::string>(), true );
+
+        if( declared.contains( "datasheet" ) )
+            aSource += property( "Datasheet", aSymbol["datasheet"].get<std::string>(), true );
+
+        if( declared.contains( "description" ) )
+            aSource += property( "Description", aSymbol["description"].get<std::string>(), true );
+
+        if( declared.contains( "keywords" ) )
+            aSource += property( "ki_keywords", aSymbol["keywords"].get<std::string>(), true );
+
+        for( const JSON& custom : aSymbol["properties"] )
+        {
+            if( !custom.is_object() || !custom.contains( "name" )
+                || !custom["name"].is_string() || !custom.contains( "value" )
+                || !custom["value"].is_string() )
+            {
+                return false;
+            }
+
+            aSource += property( custom["name"].get<std::string>(),
+                                 custom["value"].get<std::string>(), true );
+        }
+
+        aSource += "\t\t(embedded_fonts no)\n\t)\n";
+        return true;
+    }
+
+    const std::string power = aSymbol["power"].get<std::string>();
+
+    if( power == "global" || power == "local" )
+        aSource += "\t\t(power " + power + ")\n";
+    else if( power != "normal" )
+        return false;
 
     if( aSymbol["hidePinNumbers"].get<bool>() )
         aSource += "\t\t(pin_numbers\n\t\t\t(hide yes)\n\t\t)\n";
@@ -302,6 +381,74 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
     return true;
 }
 
+
+bool validateInheritance( const std::string& aNickname,
+                          const std::vector<const JSON*>& aSymbols, RESULT& aResult )
+{
+    std::map<std::string, std::string> parents;
+
+    for( const JSON* symbol : aSymbols )
+    {
+        const std::string name = symbol->value( "name", "" );
+        const std::string parent = symbol->value( "extends", "" );
+
+        if( name.empty() || !parents.emplace( name, parent ).second )
+        {
+            diagnostic( aResult, "duplicate_authored_symbol_name",
+                        "managed library " + aNickname + " has a duplicate symbol name" );
+            return false;
+        }
+    }
+
+    bool valid = true;
+
+    for( const auto& [name, parent] : parents )
+    {
+        if( !parent.empty() && !parents.contains( parent ) )
+        {
+            diagnostic( aResult, "unresolved_authored_symbol_parent",
+                        "authored symbol " + aNickname + ":" + name
+                                + " extends missing same-library symbol " + parent );
+            valid = false;
+        }
+    }
+
+    std::map<std::string, int> state;
+    std::function<bool( const std::string& )> visit = [&]( const std::string& aName )
+    {
+        if( state[aName] == 1 )
+            return false;
+
+        if( state[aName] == 2 )
+            return true;
+
+        state[aName] = 1;
+        const std::string& parent = parents.at( aName );
+
+        if( !parent.empty() && parents.contains( parent ) && !visit( parent ) )
+            return false;
+
+        state[aName] = 2;
+        return true;
+    };
+
+    for( const auto& entry : parents )
+    {
+        const std::string& name = entry.first;
+
+        if( !visit( name ) )
+        {
+            diagnostic( aResult, "recursive_authored_symbol_inheritance",
+                        "managed library " + aNickname
+                                + " contains a recursive derived-symbol chain at " + name );
+            valid = false;
+            break;
+        }
+    }
+
+    return valid;
+}
+
 } // namespace
 
 
@@ -364,6 +511,9 @@ DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( const JSON& aCompilerIr )
         {
             return aLeft->value( "name", "" ) < aRight->value( "name", "" );
         } );
+
+        if( !validateInheritance( nickname, symbols, result ) )
+            continue;
 
         std::string source = "(kicad_symbol_lib\n"
                              "\t(version 20251024)\n"

@@ -115,8 +115,15 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
         (fill color (color 70 80 90 0.25))
         (justify right bottom) (hyperlink "#2")))
     (unit 1
-      (pin 1 (at 0mm 3.81mm) (orientation up) (length 1.27mm))
-      (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm)))))
+      (pin 1 (at 0mm 3.81mm) (orientation up) (length 1.27mm)
+        (alternate SENSE input line) (alternate DRIVE output inverted))
+      (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm))))
+  (symbol Product:POWER_BASE
+    (reference "#PWR") (value VCC) (power global)
+    (unit 1
+      (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm) (length 0mm))))
+  (symbol Product:VCC (extends POWER_BASE) (value VCC)
+    (description "Positive supply")))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
