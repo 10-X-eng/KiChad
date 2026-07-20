@@ -109,6 +109,7 @@ set( KICAD_SRCS
     codex/codex_tool_registry.cpp
     codex/codex_tool_support.cpp
     codex/kds_editor_panel.cpp
+    codex/kds_editor_text.cpp
     codex/lossless_sexpr_document.cpp
     dialogs/dialog_destination.cpp
     dialogs/dialog_destination_base.cpp

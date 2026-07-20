@@ -87,6 +87,7 @@ set( QA_COMMON_SRCS
     test_markup_parser.cpp
     test_kicad_string.cpp
     test_kicad_stroke_font.cpp
+    test_kds_editor_text.cpp
     test_outline_font.cpp
     test_dxf_plotter.cpp
     test_gerber_plotter.cpp
@@ -204,6 +205,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/three_d_pdf_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/u3d_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/kicad_ipc_transaction.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/kds_editor_text.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/project_settings_ipc.cpp
 
     libeval/test_numeric_evaluator.cpp

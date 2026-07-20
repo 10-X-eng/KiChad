@@ -106,10 +106,15 @@ outputs, while ordinary KiCad files remain the compiler artifacts. The format, g
 and production support criteria are documented in
 [docs/kichad-design-script.md](docs/kichad-design-script.md).
 Double-clicking a `.kicad_kds` file in the project tree opens KiChad's integrated KDS source tab
-with line numbers, s-expression highlighting, undo/redo,
-atomic save with external-change protection, compile status, SHA-256 revision display, and compiler
-diagnostics. Use **Compile** or `Ctrl+Enter` to validate and **Save** or `Ctrl+S` to write the
-sidecar; invalid work-in-progress source can still be saved without pretending it is compilable.
+with line numbers, s-expression highlighting, brace matching, undo/redo, automatic background
+validation, atomic save with external-change protection, compile status, and SHA-256 revision
+display. Diagnostics appear directly above the source, are deduplicated, mark the affected line,
+and provide a **Go to issue** action when a source location is available. Use **Compile** or
+`Ctrl+Enter` to validate immediately and **Save** or `Ctrl+S` to write the sidecar; invalid
+work-in-progress source can still be saved without pretending it is compilable. The editor passes
+Scintilla's exact logical UTF-8 byte span to the compiler, excluding its terminal C byte. If a file
+really contains embedded NUL bytes, KiChad offers a snapshot-protected repair that replaces them
+with spaces rather than silently corrupting or truncating the source.
 The native `design.describe` operation also returns the authoritative AI-readable coverage catalog:
 every design, verification, manufacturing, interchange, editor, and auxiliary-application facet is
 marked `qualified`, `partial`, or `unrepresented` with explicit remaining gaps. The catalog is

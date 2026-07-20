@@ -63,11 +63,108 @@ constexpr size_t MAX_PROJECT_FIELD_TEMPLATES = 1024;
 
 
 void diagnostic( KICHAD::DESIGN_SCRIPT_COMPILER::RESULT& aResult, const std::string& aSeverity,
-                 const std::string& aCode, const std::string& aMessage )
+                 const std::string& aCode, const std::string& aMessage,
+                 const JSON& aDetails = JSON::object() )
 {
-    aResult.diagnostics.push_back( { { "severity", aSeverity },
-                                     { "code", aCode },
-                                     { "message", aMessage } } );
+    JSON entry = { { "severity", aSeverity }, { "code", aCode }, { "message", aMessage } };
+
+    for( const auto& [key, value] : aDetails.items() )
+        entry[key] = value;
+
+    aResult.diagnostics.push_back( std::move( entry ) );
+}
+
+
+JSON sourceLocation( const std::string& aSource, size_t aByteOffset )
+{
+    size_t line = 1;
+    size_t column = 1;
+
+    for( size_t i = 0; i < std::min( aByteOffset, aSource.size() ); ++i )
+    {
+        if( aSource[i] == '\n' )
+        {
+            ++line;
+            column = 1;
+        }
+        else
+        {
+            const unsigned char byte = static_cast<unsigned char>( aSource[i] );
+
+            if( ( byte & 0xC0 ) != 0x80 )
+                ++column;
+        }
+    }
+
+    return { { "byteOffset", aByteOffset }, { "line", line }, { "column", column } };
+}
+
+
+size_t firstInvalidUtf8Byte( const std::string& aSource )
+{
+    const auto continuation = [&]( size_t aIndex )
+    {
+        return aIndex < aSource.size()
+               && ( static_cast<unsigned char>( aSource[aIndex] ) & 0xC0 ) == 0x80;
+    };
+
+    for( size_t i = 0; i < aSource.size(); )
+    {
+        const unsigned char first = static_cast<unsigned char>( aSource[i] );
+
+        if( first <= 0x7F )
+        {
+            ++i;
+            continue;
+        }
+
+        if( first >= 0xC2 && first <= 0xDF )
+        {
+            if( !continuation( i + 1 ) )
+                return i;
+
+            i += 2;
+            continue;
+        }
+
+        if( first >= 0xE0 && first <= 0xEF )
+        {
+            if( i + 2 >= aSource.size() || !continuation( i + 1 )
+                || !continuation( i + 2 ) )
+            {
+                return i;
+            }
+
+            const unsigned char second = static_cast<unsigned char>( aSource[i + 1] );
+
+            if( ( first == 0xE0 && second < 0xA0 ) || ( first == 0xED && second > 0x9F ) )
+                return i;
+
+            i += 3;
+            continue;
+        }
+
+        if( first >= 0xF0 && first <= 0xF4 )
+        {
+            if( i + 3 >= aSource.size() || !continuation( i + 1 )
+                || !continuation( i + 2 ) || !continuation( i + 3 ) )
+            {
+                return i;
+            }
+
+            const unsigned char second = static_cast<unsigned char>( aSource[i + 1] );
+
+            if( ( first == 0xF0 && second < 0x90 ) || ( first == 0xF4 && second > 0x8F ) )
+                return i;
+
+            i += 4;
+            continue;
+        }
+
+        return i;
+    }
+
+    return std::string::npos;
 }
 
 
@@ -7044,10 +7141,23 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     picosha2::hash256_hex_string( aSource, result.sourceSha256 );
 
-    if( aSource.find( '\0' ) != std::string::npos )
+    const size_t nulOffset = aSource.find( '\0' );
+
+    if( nulOffset != std::string::npos )
     {
         diagnostic( result, "error", "invalid_encoding",
-                    "KiChad Design Script source must not contain embedded NUL bytes" );
+                    "KiChad Design Script source must not contain embedded NUL bytes",
+                    sourceLocation( aSource, nulOffset ) );
+        return result;
+    }
+
+    const size_t invalidUtf8Offset = firstInvalidUtf8Byte( aSource );
+
+    if( invalidUtf8Offset != std::string::npos )
+    {
+        diagnostic( result, "error", "invalid_encoding",
+                    "KiChad Design Script source must be valid UTF-8",
+                    sourceLocation( aSource, invalidUtf8Offset ) );
         return result;
     }
 
@@ -7057,8 +7167,15 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( reencoded.length() != aSource.size()
         || std::memcmp( reencoded.data(), aSource.data(), aSource.size() ) != 0 )
     {
+        const size_t commonBytes = std::min( reencoded.length(), aSource.size() );
+        size_t mismatch = 0;
+
+        while( mismatch < commonBytes && reencoded.data()[mismatch] == aSource[mismatch] )
+            ++mismatch;
+
         diagnostic( result, "error", "invalid_encoding",
-                    "KiChad Design Script source must be valid UTF-8" );
+                    "KiChad could not preserve the Design Script UTF-8 source",
+                    sourceLocation( aSource, mismatch ) );
         return result;
     }
 

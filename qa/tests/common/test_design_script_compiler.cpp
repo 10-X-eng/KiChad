@@ -2206,12 +2206,19 @@ BOOST_AUTO_TEST_CASE( BoundsMalformedAndHostilePrograms )
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( embeddedNul );
     BOOST_CHECK( !nul.ok );
     BOOST_CHECK_EQUAL( nul.diagnostics[0]["code"].get<std::string>(), "invalid_encoding" );
+    BOOST_CHECK_EQUAL( nul.diagnostics[0]["byteOffset"].get<size_t>(), 14 );
+    BOOST_CHECK_EQUAL( nul.diagnostics[0]["line"].get<size_t>(), 1 );
+    BOOST_CHECK_EQUAL( nul.diagnostics[0]["column"].get<size_t>(), 15 );
 
     const std::string invalidUtf8 = "(kichad_design (version 1) (project \"\xC3\x28\"))";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT utf8 =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( invalidUtf8 );
     BOOST_CHECK( !utf8.ok );
     BOOST_CHECK_EQUAL( utf8.diagnostics[0]["code"].get<std::string>(), "invalid_encoding" );
+    BOOST_CHECK_EQUAL( utf8.diagnostics[0]["byteOffset"].get<size_t>(), invalidUtf8.find( '\xC3' ) );
+    BOOST_CHECK_EQUAL( utf8.diagnostics[0]["line"].get<size_t>(), 1 );
+    BOOST_CHECK_EQUAL( utf8.diagnostics[0]["column"].get<size_t>(),
+                       invalidUtf8.find( '\xC3' ) + 1 );
 }
 
 
