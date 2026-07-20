@@ -150,7 +150,7 @@ the active rules. It also generates the complete native project symbol and footp
 same KDS declarations, validates them
 with KiCad's parser, repeats them byte-for-byte, and covers exact rollback. It also compiles a
 deterministic KDS-owned symbol library from AI-native metadata, properties, common/numbered units,
-body styles, all native vector/text graphics, and typed pins; the generated current KiCad 10 format is atomically
+body styles, fully laid-out mandatory/custom fields, all native vector/text graphics, and typed pins; the generated current KiCad 10 format is atomically
 installed, native-loader validated, journaled, and restored exactly after an injected rejection. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout
 rule area with exact prohibited-item policy, creates native multiline board text with deterministic

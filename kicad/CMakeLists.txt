@@ -38,6 +38,8 @@ set( KICAD_SRCS
     codex/design_script_schematic_planner.cpp
     codex/design_script_schematic_reconciler.cpp
     codex/design_script_symbol_compiler.cpp
+    codex/design_script_symbol_field_compiler.cpp
+    codex/design_script_symbol_field_generator.cpp
     codex/design_script_symbol_graphics_compiler.cpp
     codex/design_script_symbol_graphics_generator.cpp
     codex/design_script_symbol_library_generator.cpp

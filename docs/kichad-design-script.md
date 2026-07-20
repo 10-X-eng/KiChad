@@ -959,12 +959,16 @@ replacing an editor-managed library implicitly would be destructive:
   (managed true))
 
 (symbol ProductSymbols:SENSOR
-  (reference U)
-  (value SENSOR)
+  (reference U (at 0mm -2.54mm) (visible true) (justify center bottom))
+  (value SENSOR (at 0mm 2.54mm) (visible true) (justify center top))
   (datasheet "https://example.com/SENSOR.pdf")
   (description "Two-pin sensor")
   (keywords "sensor precision")
-  (property "Manufacturer" "Example Semiconductor")
+  (property "Manufacturer" "Example Semiconductor"
+    (at 0mm 3.81mm) (visible true) (show_name true) (autoplace false)
+    (private false) (rotation 0deg) (size 1.27mm 1.27mm)
+    (font stroke) (line_spacing 1) (thickness auto) (color default)
+    (justify center top) (bold false) (italic false) (hyperlink none))
   (pin_names_offset 0.254mm)
   (unit common
     (rectangle body (from -2.54mm -1.27mm) (to 2.54mm 1.27mm)
@@ -1003,6 +1007,15 @@ than preserving it as text. The same lowering covers KiCad's complete electrical
 pin-shape enumerations.
 Pins may carry any number of uniquely named `(alternate NAME ELECTRICAL_TYPE SHAPE)` functions;
 these lower to KiCad's native alternate pin assignments without changing the physical pin number.
+
+Mandatory `reference`, `value`, `footprint`, `datasheet`, `description`, and `keywords` forms and
+every custom `property` use the same inline field-layout vocabulary shown above. Layout includes an
+absolute bounded position, exact 0.1-degree rotation, visibility, name display, editor-autoplace
+permission, privacy, width/height, stroke or named font, line spacing, automatic or explicit
+thickness, default or RGBA color, horizontal/vertical justification, bold/italic state, and an
+absolute/internal hyperlink. Omitted settings use deterministic KiCad editor defaults; they are
+never inferred from graphic bounds. Derived aliases can apply the same layout to their overridden
+fields. Hidden fields remain native fields—unlike hidden symbol text, KiCad preserves them exactly.
 
 A root symbol may declare `(power global)` or `(power local)`; `normal` is the default. Power
 symbols require a `#` reference and at least one `power_in` pin, preventing a visually plausible
@@ -1558,8 +1571,8 @@ complete per-unit component field rendering are executable through lossless reco
 KiCad's native schematic loader. Global installed symbol content, library
 content publishing, footprint/model authoring, and the incomplete schematic facets named by the
 capability catalog remain non-executable until their own lossless backends and rollback tests land.
-AI-native symbol authoring is executable for metadata, properties, common/numbered units, body
-styles, all native vector/text graphics, and fully typed pins; the capability catalog keeps its remaining authoring
+AI-native symbol authoring is executable for metadata, completely laid-out fields, properties,
+common/numbered units, body styles, all native vector/text graphics, and fully typed pins; the capability catalog keeps its remaining authoring
 facets partial until their dedicated backends land. Nested
 sheet hierarchy is executable through the same transaction. Native backend
 execution is enabled incrementally, and apply refuses unsupported execution before mutation.

@@ -11,6 +11,7 @@
 
 #include "design_script_symbol_library_generator.h"
 
+#include "design_script_symbol_field_generator.h"
 #include "design_script_symbol_graphics_generator.h"
 #include "design_script_symbol_text_generator.h"
 #include "lossless_sexpr_document.h"
@@ -31,6 +32,7 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT;
+using FIELD_GENERATOR = KICHAD::DESIGN_SCRIPT_SYMBOL_FIELD_GENERATOR;
 using GRAPHICS_GENERATOR = KICHAD::DESIGN_SCRIPT_SYMBOL_GRAPHICS_GENERATOR;
 using TEXT_GENERATOR = KICHAD::DESIGN_SCRIPT_SYMBOL_TEXT_GENERATOR;
 
@@ -120,6 +122,33 @@ std::string property( const std::string& aName, const std::string& aValue, bool 
               "\t\t\t)\n"
               "\t\t)\n";
     return result;
+}
+
+
+bool renderField( const JSON& aSymbol, const std::string& aRole,
+                  const std::string& aNativeName, const std::string& aValue,
+                  bool aHidden, int64_t aX, int64_t aY, std::string& aSource )
+{
+    if( !aSymbol.contains( "fieldLayouts" ) || !aSymbol["fieldLayouts"].is_object() )
+        return false;
+
+    if( aSymbol["fieldLayouts"].contains( aRole ) )
+        return FIELD_GENERATOR::Render( aNativeName, aValue,
+                                        aSymbol["fieldLayouts"][aRole], aSource );
+
+    aSource += property( aNativeName, aValue, aHidden, aX, aY );
+    return true;
+}
+
+
+bool renderCustomField( const JSON& aField, std::string& aSource )
+{
+    return aField.is_object() && aField.contains( "name" ) && aField["name"].is_string()
+           && aField.contains( "value" ) && aField["value"].is_string()
+           && aField.contains( "layout" )
+           && FIELD_GENERATOR::Render( aField["name"].get<std::string>(),
+                                       aField["value"].get<std::string>(),
+                                       aField["layout"], aSource );
 }
 
 
@@ -220,7 +249,7 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         { "power", JSON::value_t::string }, { "extends", JSON::value_t::string },
         { "declaredFields", JSON::value_t::array },
         { "duplicatePinNumbersAreJumpers", JSON::value_t::boolean },
-        { "jumperGroups", JSON::value_t::array }
+        { "jumperGroups", JSON::value_t::array }, { "fieldLayouts", JSON::value_t::object }
     };
 
     if( !aSymbol.is_object() )
@@ -250,37 +279,41 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
 
         aSource += "\t\t(extends " + quoted( parent ) + ")\n";
 
-        if( declared.contains( "reference" ) )
-            aSource += property( "Reference", aSymbol["reference"].get<std::string>(), false,
-                                 0, -2'540'000 );
+        if( declared.contains( "reference" )
+            && !renderField( aSymbol, "reference", "Reference",
+                             aSymbol["reference"].get<std::string>(), false,
+                             0, -2'540'000, aSource ) )
+            return false;
 
-        if( declared.contains( "value" ) )
-            aSource += property( "Value", aSymbol["value"].get<std::string>(), false,
-                                 0, 2'540'000 );
+        if( declared.contains( "value" )
+            && !renderField( aSymbol, "value", "Value", aSymbol["value"].get<std::string>(),
+                             false, 0, 2'540'000, aSource ) )
+            return false;
 
-        if( declared.contains( "footprint" ) )
-            aSource += property( "Footprint", aSymbol["footprint"].get<std::string>(), true );
+        if( declared.contains( "footprint" )
+            && !renderField( aSymbol, "footprint", "Footprint",
+                             aSymbol["footprint"].get<std::string>(), true, 0, 0, aSource ) )
+            return false;
 
-        if( declared.contains( "datasheet" ) )
-            aSource += property( "Datasheet", aSymbol["datasheet"].get<std::string>(), true );
+        if( declared.contains( "datasheet" )
+            && !renderField( aSymbol, "datasheet", "Datasheet",
+                             aSymbol["datasheet"].get<std::string>(), true, 0, 0, aSource ) )
+            return false;
 
-        if( declared.contains( "description" ) )
-            aSource += property( "Description", aSymbol["description"].get<std::string>(), true );
+        if( declared.contains( "description" )
+            && !renderField( aSymbol, "description", "Description",
+                             aSymbol["description"].get<std::string>(), true, 0, 0, aSource ) )
+            return false;
 
-        if( declared.contains( "keywords" ) )
-            aSource += property( "ki_keywords", aSymbol["keywords"].get<std::string>(), true );
+        if( declared.contains( "keywords" )
+            && !renderField( aSymbol, "keywords", "ki_keywords",
+                             aSymbol["keywords"].get<std::string>(), true, 0, 0, aSource ) )
+            return false;
 
         for( const JSON& custom : aSymbol["properties"] )
         {
-            if( !custom.is_object() || !custom.contains( "name" )
-                || !custom["name"].is_string() || !custom.contains( "value" )
-                || !custom["value"].is_string() )
-            {
+            if( !renderCustomField( custom, aSource ) )
                 return false;
-            }
-
-            aSource += property( custom["name"].get<std::string>(),
-                                 custom["value"].get<std::string>(), true );
         }
 
         aSource += "\t\t(embedded_fonts no)\n\t)\n";
@@ -337,27 +370,30 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         aSource += "\t\t)\n";
     }
 
-    aSource += property( "Reference", aSymbol["reference"].get<std::string>(), false,
-                         0, -2'540'000 );
-    aSource += property( "Value", aSymbol["value"].get<std::string>(), false,
-                         0, 2'540'000 );
-    aSource += property( "Footprint", aSymbol["footprint"].get<std::string>(), true );
-    aSource += property( "Datasheet", aSymbol["datasheet"].get<std::string>(), true );
-    aSource += property( "Description", aSymbol["description"].get<std::string>(), true );
+    if( !renderField( aSymbol, "reference", "Reference",
+                      aSymbol["reference"].get<std::string>(), false,
+                      0, -2'540'000, aSource )
+        || !renderField( aSymbol, "value", "Value", aSymbol["value"].get<std::string>(),
+                         false, 0, 2'540'000, aSource )
+        || !renderField( aSymbol, "footprint", "Footprint",
+                         aSymbol["footprint"].get<std::string>(), true, 0, 0, aSource )
+        || !renderField( aSymbol, "datasheet", "Datasheet",
+                         aSymbol["datasheet"].get<std::string>(), true, 0, 0, aSource )
+        || !renderField( aSymbol, "description", "Description",
+                         aSymbol["description"].get<std::string>(), true, 0, 0, aSource ) )
+    {
+        return false;
+    }
 
-    if( !aSymbol["keywords"].get_ref<const std::string&>().empty() )
-        aSource += property( "ki_keywords", aSymbol["keywords"].get<std::string>(), true );
+    if( !aSymbol["keywords"].get_ref<const std::string&>().empty()
+        && !renderField( aSymbol, "keywords", "ki_keywords",
+                         aSymbol["keywords"].get<std::string>(), true, 0, 0, aSource ) )
+        return false;
 
     for( const JSON& custom : aSymbol["properties"] )
     {
-        if( !custom.is_object() || !custom.contains( "name" ) || !custom["name"].is_string()
-            || !custom.contains( "value" ) || !custom["value"].is_string() )
-        {
+        if( !renderCustomField( custom, aSource ) )
             return false;
-        }
-
-        aSource += property( custom["name"].get<std::string>(),
-                             custom["value"].get<std::string>(), true );
     }
 
     std::vector<const JSON*> units;

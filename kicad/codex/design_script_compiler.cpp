@@ -6669,9 +6669,15 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(library symbol|footprint|model ID (table project) "
                       "(uri ${KIPRJMOD}/PATH) [(managed true)])" } },
                   { { "form",
-                      "(symbol LIBRARY:NAME (reference PREFIX) (value TEXT) "
-                      "(footprint TEXT) (datasheet TEXT) (description TEXT) "
-                      "(keywords TEXT) (property NAME VALUE) [(power normal|global|local)] "
+                      "(symbol LIBRARY:NAME (reference PREFIX [FIELD_LAYOUT]) "
+                      "(value TEXT [FIELD_LAYOUT]) (footprint TEXT [FIELD_LAYOUT]) "
+                      "(datasheet TEXT [FIELD_LAYOUT]) (description TEXT [FIELD_LAYOUT]) "
+                      "(keywords TEXT [FIELD_LAYOUT]) (property NAME VALUE [FIELD_LAYOUT]) "
+                      "FIELD_LAYOUT=(at X Y) (rotation ANGLE) (visible BOOL) "
+                      "(show_name BOOL) (autoplace BOOL) (private BOOL) (size W H) "
+                      "(font stroke|NAME) (line_spacing NUMBER) (thickness auto|DISTANCE) "
+                      "(color default|R G B A) (justify H V) (bold BOOL) (italic BOOL) "
+                      "(hyperlink none|URI) [(power normal|global|local)] "
                       "[(extends SAME_LIBRARY_PARENT)] "
                       "(exclude_from_sim BOOL) (in_bom BOOL) (on_board BOOL) "
                       "(in_pos_files BOOL) (hide_pin_names BOOL) "

@@ -96,7 +96,14 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
   (library symbol Product (table project)
     (uri "${KIPRJMOD}/libraries/Product.kicad_sym") (managed true))
   (symbol Product:R
-    (reference R) (value R) (description "Resistor")
+    (reference R (at -1mm -2mm) (rotation 12.5deg) (visible true)
+      (show_name true) (autoplace false) (private true) (size 1mm 2mm)
+      (font "DejaVu Sans") (line_spacing 1.25) (thickness 0.15mm)
+      (color 10 20 30 0.75) (justify left top) (bold true) (italic true)
+      (hyperlink "https://example.test/reference"))
+    (value R) (description "Resistor")
+    (property "Manufacturer" "Example" (at 3mm 4mm) (visible true)
+      (show_name true) (justify right bottom) (hyperlink "#2"))
     (unit common
       (rectangle body (from -1.016mm -2.54mm) (to 1.016mm 2.54mm)
         (stroke 0.254mm default) (fill none))
@@ -124,7 +131,8 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
     (unit 1
       (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm) (length 0mm))
       (pin 2 (name VCC_AUX) (electrical power_in) (at 2.54mm 0mm) (length 0mm))))
-  (symbol Product:VCC (extends POWER_BASE) (value VCC)
+  (symbol Product:VCC (extends POWER_BASE)
+    (value VCC (at 1mm 2mm) (rotation 90deg) (visible true) (justify right bottom))
     (description "Positive supply")))
 )KDS";
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =

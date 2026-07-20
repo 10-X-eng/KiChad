@@ -11,6 +11,7 @@
 
 #include "design_script_symbol_compiler.h"
 
+#include "design_script_symbol_field_compiler.h"
 #include "design_script_symbol_graphics_compiler.h"
 #include "design_script_symbol_text_compiler.h"
 
@@ -29,10 +30,10 @@ namespace
 using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT;
+using FIELD_COMPILER = KICHAD::DESIGN_SCRIPT_SYMBOL_FIELD_COMPILER;
 using GRAPHICS_COMPILER = KICHAD::DESIGN_SCRIPT_SYMBOL_GRAPHICS_COMPILER;
 using TEXT_COMPILER = KICHAD::DESIGN_SCRIPT_SYMBOL_TEXT_COMPILER;
 
-constexpr size_t MAX_TEXT_BYTES = 4096;
 constexpr size_t MAX_SYMBOL_PROPERTIES = 256;
 constexpr size_t MAX_SYMBOL_UNITS = 256;
 constexpr size_t MAX_UNIT_ITEMS = 4096;
@@ -519,7 +520,7 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
         { "pinNamesOffsetNm", 0 }, { "properties", JSON::array() },
         { "units", JSON::array() }, { "power", "normal" }, { "extends", "" },
         { "declaredFields", JSON::array() }, { "duplicatePinNumbersAreJumpers", false },
-        { "jumperGroups", JSON::array() }
+        { "jumperGroups", JSON::array() }, { "fieldLayouts", JSON::object() }
     };
     std::set<std::string> fields;
     std::set<std::string> propertyNames;
@@ -583,18 +584,61 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
             continue;
         }
 
+        static const std::set<std::string> authoredFieldHeads = {
+            "reference", "value", "footprint", "datasheet", "description", "keywords"
+        };
+
+        if( authoredFieldHeads.contains( head ) )
+        {
+            if( !fields.emplace( head ).second )
+            {
+                diagnostic( result, "duplicate_authored_symbol_field",
+                            "symbol " + id + " field " + head + " occurs more than once" );
+                continue;
+            }
+
+            FIELD_COMPILER::RESULT compiledField = FIELD_COMPILER::Compile( aDocument, child );
+
+            for( const JSON& entry : compiledField.diagnostics )
+                result.diagnostics.push_back( entry );
+
+            if( !compiledField.field.is_object() || !compiledField.field.contains( "value" )
+                || !compiledField.field["value"].is_string()
+                || !compiledField.field.contains( "layout" ) )
+            {
+                continue;
+            }
+
+            const std::string value = compiledField.field["value"].get<std::string>();
+
+            if( head == "reference"
+                && ( value.empty() || value.size() > 16
+                     || value.find_first_of( "\r\n\0" ) != std::string::npos ) )
+            {
+                diagnostic( result, "invalid_authored_symbol_reference",
+                            "symbol reference must contain 1 through 16 safe bytes" );
+                continue;
+            }
+
+            result.symbol[head] = value;
+            result.symbol["fieldLayouts"][head] = std::move( compiledField.field["layout"] );
+            continue;
+        }
+
         if( head == "property" )
         {
-            const DOCUMENT::NODE& property = aDocument.Nodes().at( child );
-            std::string propertyName;
-            std::string value;
+            FIELD_COMPILER::RESULT compiledField = FIELD_COMPILER::Compile( aDocument, child );
+
+            for( const JSON& entry : compiledField.diagnostics )
+                result.diagnostics.push_back( entry );
+
+            const std::string propertyName = compiledField.field.value( "name", "" );
 
             if( result.symbol["properties"].size() >= MAX_SYMBOL_PROPERTIES
-                || property.children.size() != 3
-                || !scalar( aDocument, property.children[1], propertyName )
-                || !scalar( aDocument, property.children[2], value )
-                || propertyName.empty() || propertyName.size() > 128
-                || value.size() > MAX_TEXT_BYTES )
+                || !compiledField.field.is_object() || propertyName.empty()
+                || !compiledField.field.contains( "value" )
+                || !compiledField.field["value"].is_string()
+                || !compiledField.field.contains( "layout" ) )
             {
                 diagnostic( result, "invalid_authored_symbol_property",
                             "symbol property requires a 1..128-byte name and value up to 4096 bytes" );
@@ -620,8 +664,7 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
                 continue;
             }
 
-            result.symbol["properties"].push_back(
-                    { { "name", propertyName }, { "value", value } } );
+            result.symbol["properties"].push_back( std::move( compiledField.field ) );
             continue;
         }
 
@@ -641,25 +684,7 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
             continue;
         }
 
-        if( head == "reference" )
-        {
-            if( value.empty() || value.size() > 16
-                || value.find_first_of( "\r\n\0" ) != std::string::npos )
-                diagnostic( result, "invalid_authored_symbol_reference",
-                            "symbol reference must contain 1 through 16 safe bytes" );
-            else
-                result.symbol["reference"] = value;
-        }
-        else if( head == "value" || head == "footprint" || head == "datasheet"
-                 || head == "description" || head == "keywords" )
-        {
-            if( value.size() > MAX_TEXT_BYTES || value.find( '\0' ) != std::string::npos )
-                diagnostic( result, "invalid_authored_symbol_text",
-                            "symbol text fields may contain at most 4096 UTF-8 bytes" );
-            else
-                result.symbol[head] = value;
-        }
-        else if( head == "exclude_from_sim" || head == "in_bom" || head == "on_board"
+        if( head == "exclude_from_sim" || head == "in_bom" || head == "on_board"
                  || head == "in_pos_files" || head == "hide_pin_names"
                  || head == "hide_pin_numbers" )
         {
