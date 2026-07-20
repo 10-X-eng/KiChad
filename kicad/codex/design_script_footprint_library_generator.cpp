@@ -15,6 +15,8 @@
 #include "design_script_footprint_group_generator.h"
 #include "design_script_footprint_pad_generator.h"
 #include "design_script_pcb_planner.h"
+#include "design_script_footprint_property_generator.h"
+#include "design_script_footprint_settings_generator.h"
 #include "design_script_footprint_text_generator.h"
 #include "design_script_footprint_variant_generator.h"
 #include "design_script_footprint_zone_generator.h"
@@ -39,6 +41,8 @@ using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT;
 using GRAPHIC_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_GENERATOR;
 using GROUP_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GROUP_GENERATOR;
 using PAD_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_GENERATOR;
+using PROPERTY_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PROPERTY_GENERATOR;
+using SETTINGS_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_SETTINGS_GENERATOR;
 using TEXT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_TEXT_GENERATOR;
 using VARIANT_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_VARIANT_GENERATOR;
 using ZONE_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_ZONE_GENERATOR;
@@ -226,6 +230,8 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
         { "texts", JSON::value_t::array }, { "textBoxes", JSON::value_t::array },
         { "zones", JSON::value_t::array },
         { "groups", JSON::value_t::array }, { "variants", JSON::value_t::array },
+        { "properties", JSON::value_t::array },
+        { "rules", JSON::value_t::object }, { "privateLayers", JSON::value_t::array },
         { "models", JSON::value_t::array }
     };
 
@@ -266,6 +272,21 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
     aSource += property( "Description", aFootprint["description"].get<std::string>(),
                          "F.Fab", true, 0, fieldUuid( "Description" ) );
 
+    for( const JSON& customProperty : aFootprint["properties"] )
+    {
+        const std::string logicalId = customProperty.value( "id", "" );
+        const std::string uuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                aProject, "footprint-property", id + ":" + logicalId );
+
+        if( logicalId.empty() || !PROPERTY_GENERATOR::Render( customProperty, uuid, aSource ) )
+            return false;
+
+        ++aResult.counts["properties"].get_ref<int64_t&>();
+    }
+
+    if( !SETTINGS_GENERATOR::RenderRules( aFootprint["rules"], aSource ) )
+        return false;
+
     const JSON& attributes = aFootprint["attributes"];
     const std::pair<const char*, const char*> attributeTokens[] = {
         { "smd", "smd" }, { "throughHole", "through_hole" },
@@ -287,6 +308,13 @@ bool renderFootprint( const JSON& aFootprint, const std::string& aProject,
 
     if( !attr.empty() )
         aSource += "\t(attr" + attr + ")\n";
+
+    if( !aFootprint.contains( "stackup" )
+        || !SETTINGS_GENERATOR::RenderStackup( aFootprint["stackup"], aSource )
+        || !SETTINGS_GENERATOR::RenderPrivateLayers( aFootprint["privateLayers"], aSource ) )
+    {
+        return false;
+    }
 
     if( !aFootprint["netTieGroups"].empty() )
     {

@@ -68,7 +68,8 @@ bool DESIGN_SCRIPT_FOOTPRINT_GROUP_GENERATOR::Render(
     static const std::map<std::string, std::string> domains = {
         { "pad", "footprint-pad" }, { "graphic", "footprint-graphic" },
         { "text", "footprint-text" }, { "text_box", "footprint-text-box" },
-        { "zone", "footprint-zone" }, { "group", "footprint-group" }
+        { "property", "footprint-property" }, { "zone", "footprint-zone" },
+        { "group", "footprint-group" }
     };
     const std::string groupId = aGroup["id"].get<std::string>();
     const std::string uuid = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(

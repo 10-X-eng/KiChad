@@ -14,6 +14,8 @@ if [[ ! -x "$kicad_binary" || ! -x "$kicad_cli" ]]; then
     exit 1
 fi
 
+export LD_LIBRARY_PATH="${install_root}/lib:${install_root}/lib/kicad${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
 version="$($kicad_cli version)"
 major="${version%%.*}"
 
@@ -36,7 +38,5 @@ set_versioned_path SYMBOL_DIR "${library_root}/kicad-symbols"
 set_versioned_path FOOTPRINT_DIR "${library_root}/kicad-footprints"
 set_versioned_path 3DMODEL_DIR "${library_root}/kicad-packages3D"
 set_versioned_path TEMPLATE_DIR "${library_root}/kicad-templates"
-
-export LD_LIBRARY_PATH="${install_root}/lib:${install_root}/lib/kicad${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 exec "$kicad_binary" "$@"

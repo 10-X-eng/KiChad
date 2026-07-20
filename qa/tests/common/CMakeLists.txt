@@ -147,6 +147,10 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_pad_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_padstack_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_padstack_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_property_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_property_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_settings_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_settings_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_text_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_text_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_variant_compiler.cpp

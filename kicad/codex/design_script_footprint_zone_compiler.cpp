@@ -287,17 +287,29 @@ bool copperLayer( const std::string& aLayer )
 }
 
 
+bool userLayer( const std::string& aLayer )
+{
+    if( !aLayer.starts_with( "User." ) )
+        return false;
+
+    const std::string_view number( aLayer.data() + 5, aLayer.size() - 5 );
+    int index = 0;
+    const std::from_chars_result parsed =
+            std::from_chars( number.data(), number.data() + number.size(), index );
+    return parsed.ec == std::errc() && parsed.ptr == number.data() + number.size()
+           && index >= 1 && index <= 45;
+}
+
+
 bool physicalLayer( const std::string& aLayer )
 {
     static const std::set<std::string> fixed = {
         "F.Cu", "B.Cu", "F.Adhes", "B.Adhes", "F.Paste", "B.Paste",
-        "F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "User.Drawings",
-        "User.Comments", "Eco1.User", "Eco2.User", "Edge.Cuts", "Margin",
+        "F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "Dwgs.User",
+        "Cmts.User", "Eco1.User", "Eco2.User", "Edge.Cuts", "Margin",
         "F.CrtYd", "B.CrtYd", "F.Fab", "B.Fab"
     };
-    return fixed.contains( aLayer ) || copperLayer( aLayer )
-           || ( aLayer.starts_with( "User." ) && aLayer.size() == 6
-                && aLayer.back() >= '1' && aLayer.back() <= '9' );
+    return fixed.contains( aLayer ) || copperLayer( aLayer ) || userLayer( aLayer );
 }
 
 

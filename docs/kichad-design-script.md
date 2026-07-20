@@ -1255,6 +1255,60 @@ non-degenerate polygon outline and explicit four-sided margins. Generated text, 
 graphic objects all receive stable identities and are accepted and resaved by the KiCad 10 native
 footprint loader during apply.
 
+Footprint-wide design rules use one explicit effective-policy form. `inherit` is the only spelling
+for a native inherited value, so zero remains a real authored value rather than a hidden sentinel:
+
+```scheme
+(rules
+  (clearance 0.1mm)
+  (solder_mask_margin -0.02mm)
+  (solder_paste_margin inherit)
+  (solder_paste_margin_ratio -0.1)
+  (zone_connection thermal))
+```
+
+When present, all five fields are required. The form lowers directly to the footprint's native
+clearance, solder-mask, solder-paste, and zone-connection overrides. A footprint that does not
+declare `rules` inherits every board policy.
+
+Footprint-local custom copper stacks and private layers are also semantic declarations:
+
+```scheme
+(stackup custom (layers F.Cu In1.Cu In2.Cu B.Cu))
+(private_layers User.1 F.Fab)
+```
+
+The custom stack must contain 2 through 32 even copper layers ordered `F.Cu`, contiguous `InN.Cu`,
+then `B.Cu`. Absence of `stackup` is the one representation for KiCad's ordinary expand-inner
+mode. Named zone layers, private copper layers, and custom padstack overrides are checked against
+the authored stack. A `front_inner_back` padstack is rejected with a custom footprint stack because
+its generic `inner` layer would be ambiguous; named custom padstack layers remain exact.
+
+Reusable footprint metadata has one stable-ID property representation. The logical ID controls
+identity and grouping while `name` is the human-visible field name, so renaming or repositioning a
+property does not silently replace its native object:
+
+```scheme
+(property manufacturer_part_number
+  (name "Manufacturer Part Number")
+  (value "MODULE-BASE")
+  (at 0mm 1.5mm)
+  (rotation 0deg)
+  (layer F.Fab)
+  (visible false)
+  (keep_upright true)
+  (knockout false)
+  (font (face default) (size 0.8mm 0.8mm)
+    (line_spacing 1) (thickness auto) (bold false) (italic false))
+  (justify center center false))
+```
+
+Every top-level display field is explicit. Property names are unique case-insensitively and cannot
+collide with `Reference`, `Value`, `Datasheet`, or `Description`. Groups may reference a property by
+logical ID, and variants may override only an existing non-Reference mandatory or custom property.
+The compiler emits current KiCad property syntax with a deterministic UUID and full font,
+justification, visibility, orientation, keep-upright, and knockout semantics.
+
 Footprint zones use one semantic form with an explicit `purpose`; there is no second keepout syntax
 and no native s-expression escape hatch:
 
@@ -1312,7 +1366,8 @@ nested groups may be declared in any order, and cycles are rejected:
   (name "Electrical core") (locked false)
   (member pad ground)
   (member graphic shield_edge)
-  (member text assembly_note))
+  (member text assembly_note)
+  (member property manufacturer_part_number))
 
 (group complete_module
   (name "Complete module") (locked true)
@@ -1339,13 +1394,13 @@ offset, scale, rotation, visibility, and opacity. Referencing a model does not y
 its bytes, so sourcing and package-data workflows must still provide that project asset separately.
 
 All footprints are sorted and emitted as KiCad 10 format `20260206` files with deterministic UUIDv8
-field, pad, graphic, text, text-box, zone, and group identities. Apply uses the generated sources directly for compiler-created board
+field, property, pad, graphic, text, text-box, zone, and group identities. Apply uses the generated sources directly for compiler-created board
 instances, snapshots the exact prior whole library, atomically swaps a staging directory into place,
 and asks `kicad-cli fp upgrade --force` to parse and resave every file in an isolated directory.
 Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
 the operation and restore the prior library, project tables, schematics, and settings in reverse
 order. Footprint authoring remains intentionally partial: per-layer custom primitive geometry,
-secondary/tertiary drilling, embedded assets, local rules/properties, component classes, and
+secondary/tertiary drilling, embedded assets, component classes, and
 complete package-data-to-KLC geometry generation remain explicit capability gaps. Plugging,
 filling, capping, and covering are KiCad via—not footprint-pad—file semantics and are tracked under
 the board-via capability.

@@ -188,13 +188,27 @@ bool compileStroke( const DOCUMENT& aDocument, size_t aNode, JSON& aStroke )
 }
 
 
+bool userLayer( const std::string& aLayer )
+{
+    if( !aLayer.starts_with( "User." ) )
+        return false;
+
+    const std::string_view number( aLayer.data() + 5, aLayer.size() - 5 );
+    int index = 0;
+    const std::from_chars_result parsed =
+            std::from_chars( number.data(), number.data() + number.size(), index );
+    return parsed.ec == std::errc() && parsed.ptr == number.data() + number.size()
+           && index >= 1 && index <= 45;
+}
+
+
 bool compileLayers( const DOCUMENT& aDocument, size_t aNode, JSON& aLayers )
 {
     const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
     static const std::set<std::string> fixed = {
         "F.Cu", "B.Cu", "F.Adhes", "B.Adhes", "F.Paste", "B.Paste",
-        "F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "User.Drawings",
-        "User.Comments", "Eco1.User", "Eco2.User", "Edge.Cuts", "Margin",
+        "F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "Dwgs.User",
+        "Cmts.User", "Eco1.User", "Eco2.User", "Edge.Cuts", "Margin",
         "F.CrtYd", "B.CrtYd", "F.Fab", "B.Fab"
     };
     std::set<std::string> unique;
@@ -207,9 +221,7 @@ bool compileLayers( const DOCUMENT& aDocument, size_t aNode, JSON& aLayers )
         std::string layer;
 
         if( !scalar( aDocument, node.children[index], layer )
-            || ( !fixed.contains( layer )
-                 && !( layer.starts_with( "User." ) && layer.size() == 6
-                       && layer.back() >= '1' && layer.back() <= '9' ) )
+            || ( !fixed.contains( layer ) && !userLayer( layer ) )
             || !unique.emplace( layer ).second )
         {
             return false;

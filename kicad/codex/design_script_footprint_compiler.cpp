@@ -14,10 +14,13 @@
 #include "design_script_footprint_graphic_compiler.h"
 #include "design_script_footprint_group_compiler.h"
 #include "design_script_footprint_pad_compiler.h"
+#include "design_script_footprint_property_compiler.h"
+#include "design_script_footprint_settings_compiler.h"
 #include "design_script_footprint_text_compiler.h"
 #include "design_script_footprint_variant_compiler.h"
 #include "design_script_footprint_zone_compiler.h"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -40,6 +43,8 @@ using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT;
 using GRAPHIC_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER;
 using GROUP_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_GROUP_COMPILER;
 using PAD_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER;
+using PROPERTY_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PROPERTY_COMPILER;
+using SETTINGS_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_SETTINGS_COMPILER;
 using TEXT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_TEXT_COMPILER;
 using VARIANT_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_VARIANT_COMPILER;
 using ZONE_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_ZONE_COMPILER;
@@ -51,6 +56,7 @@ constexpr size_t MAX_FOOTPRINT_MODELS = 64;
 constexpr size_t MAX_FOOTPRINT_ZONES = 512;
 constexpr size_t MAX_FOOTPRINT_GROUPS = 1024;
 constexpr size_t MAX_FOOTPRINT_VARIANTS = 256;
+constexpr size_t MAX_FOOTPRINT_PROPERTIES = 1024;
 constexpr int64_t MAX_MODEL_OFFSET_NM = 2'000'000'000LL;
 
 
@@ -461,6 +467,12 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
         { "graphics", JSON::array() }, { "texts", JSON::array() },
         { "textBoxes", JSON::array() }, { "zones", JSON::array() },
         { "groups", JSON::array() }, { "variants", JSON::array() },
+        { "properties", JSON::array() },
+        { "rules",
+          { { "clearanceNm", nullptr }, { "solderMaskMarginNm", nullptr },
+            { "solderPasteMarginNm", nullptr }, { "solderPasteMarginPpm", nullptr },
+            { "zoneConnection", "inherit" } } },
+        { "stackup", nullptr }, { "privateLayers", JSON::array() },
         { "models", JSON::array() }
     };
     std::set<std::string> fields;
@@ -472,6 +484,11 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
     std::set<std::string> zoneIds;
     std::set<std::string> groupIds;
     std::set<std::string> variantIds;
+    std::set<std::string> propertyIds;
+    std::set<std::string> propertyNames = {
+        "reference", "value", "datasheet", "description"
+    };
+    std::set<std::string> settingsForms;
 
     for( size_t index = 2; index < node.children.size(); ++index )
     {
@@ -562,6 +579,43 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
             continue;
         }
 
+        if( head == "property" )
+        {
+            if( result.footprint["properties"].size() >= MAX_FOOTPRINT_PROPERTIES )
+            {
+                diagnostic( result, "too_many_authored_footprint_properties",
+                            "a footprint may contain at most 1024 custom properties" );
+                continue;
+            }
+
+            PROPERTY_COMPILER::RESULT property = PROPERTY_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : property.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string propertyId = property.property.value( "id", "" );
+            const std::string propertyName = property.property.value( "name", "" );
+            std::string foldedName = propertyName;
+            std::transform( foldedName.begin(), foldedName.end(), foldedName.begin(),
+                            []( unsigned char aCharacter )
+                            {
+                                return static_cast<char>( std::tolower( aCharacter ) );
+                            } );
+
+            if( !propertyId.empty() && !propertyIds.emplace( propertyId ).second )
+                diagnostic( result, "duplicate_authored_footprint_property_id",
+                            "footprint property logical ID " + propertyId
+                                    + " occurs more than once" );
+
+            if( !propertyName.empty() && !propertyNames.emplace( foldedName ).second )
+                diagnostic( result, "duplicate_authored_footprint_property_name",
+                            "footprint property name " + propertyName
+                                    + " collides case-insensitively with another field" );
+
+            result.footprint["properties"].push_back( std::move( property.property ) );
+            continue;
+        }
+
         if( head == "model" )
         {
             if( result.footprint["models"].size() >= MAX_FOOTPRINT_MODELS )
@@ -648,6 +702,29 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
                             "footprint variant " + variantId + " occurs more than once" );
 
             result.footprint["variants"].push_back( std::move( variant.variant ) );
+            continue;
+        }
+
+        if( head == "rules" || head == "stackup" || head == "private_layers" )
+        {
+            if( !settingsForms.emplace( head ).second )
+            {
+                diagnostic( result, "duplicate_authored_footprint_settings",
+                            "footprint settings form " + head + " occurs more than once" );
+                continue;
+            }
+
+            SETTINGS_COMPILER::RESULT settings =
+                    head == "rules" ? SETTINGS_COMPILER::CompileRules( aDocument, child )
+                    : head == "stackup" ? SETTINGS_COMPILER::CompileStackup( aDocument, child )
+                                          : SETTINGS_COMPILER::CompilePrivateLayers( aDocument, child );
+
+            for( JSON& entry : settings.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.footprint[head == "rules" ? "rules"
+                             : head == "stackup" ? "stackup" : "privateLayers"] =
+                    std::move( settings.value );
             continue;
         }
 
@@ -768,7 +845,8 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
 
     const std::map<std::string, const std::set<std::string>*> memberSets = {
         { "pad", &padIds }, { "graphic", &graphicIds }, { "text", &textIds },
-        { "text_box", &textBoxIds }, { "zone", &zoneIds }, { "group", &groupIds }
+        { "text_box", &textBoxIds }, { "property", &propertyIds },
+        { "zone", &zoneIds }, { "group", &groupIds }
     };
     std::map<std::pair<std::string, std::string>, std::string> memberOwners;
     std::map<std::string, std::vector<std::string>> groupEdges;
@@ -838,6 +916,119 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
 
     for( const std::string& groupId : groupIds )
         visitGroup( groupId );
+
+    for( const JSON& variant : result.footprint["variants"] )
+    {
+        if( !variant.is_object() || !variant.contains( "fields" )
+            || !variant["fields"].is_array() )
+        {
+            continue;
+        }
+
+        for( const JSON& field : variant["fields"] )
+        {
+            std::string variantFieldName = field.value( "name", "" );
+            std::transform( variantFieldName.begin(), variantFieldName.end(),
+                            variantFieldName.begin(), []( unsigned char aCharacter )
+            {
+                return static_cast<char>( std::tolower( aCharacter ) );
+            } );
+
+            if( !variantFieldName.empty() && !propertyNames.contains( variantFieldName ) )
+                diagnostic( result, "unknown_authored_footprint_variant_field",
+                            "variant " + variant.value( "id", "" )
+                                    + " overrides absent footprint field "
+                                    + field.value( "name", "" ) );
+        }
+    }
+
+    if( result.footprint["stackup"].is_array() )
+    {
+        std::set<std::string> stackupLayers;
+
+        for( const JSON& layer : result.footprint["stackup"] )
+        {
+            if( layer.is_string() )
+                stackupLayers.emplace( layer.get<std::string>() );
+        }
+
+        for( const JSON& zone : result.footprint["zones"] )
+        {
+            if( !zone.is_object() || !zone.contains( "layers" ) || !zone["layers"].is_array() )
+                continue;
+
+            for( const JSON& layer : zone["layers"] )
+            {
+                if( !layer.is_string() )
+                    continue;
+
+                const std::string zoneLayerName = layer.get<std::string>();
+
+                if( ( zoneLayerName == "F.Cu" || zoneLayerName == "B.Cu"
+                      || zoneLayerName.starts_with( "In" ) )
+                    && !stackupLayers.contains( zoneLayerName ) )
+                {
+                    diagnostic( result, "authored_footprint_zone_outside_custom_stackup",
+                                "footprint zone references " + zoneLayerName
+                                        + " outside its custom stackup" );
+                }
+            }
+        }
+
+        for( const JSON& layer : result.footprint["privateLayers"] )
+        {
+            if( !layer.is_string() )
+                continue;
+
+            const std::string privateLayerName = layer.get<std::string>();
+
+            if( ( privateLayerName == "F.Cu" || privateLayerName == "B.Cu"
+                  || ( privateLayerName.starts_with( "In" )
+                       && privateLayerName.ends_with( ".Cu" ) ) )
+                && !stackupLayers.contains( privateLayerName ) )
+            {
+                diagnostic( result, "authored_footprint_private_layer_outside_custom_stackup",
+                            "footprint private layer " + privateLayerName
+                                    + " is outside its custom stackup" );
+            }
+        }
+
+        for( const JSON& pad : result.footprint["pads"] )
+        {
+            if( !pad.is_object() || !pad.contains( "padstack" )
+                || !pad["padstack"].is_object() )
+            {
+                continue;
+            }
+
+            const JSON& padstack = pad["padstack"];
+            const std::string padId = pad.value( "id", "" );
+
+            if( padstack.value( "mode", "" ) == "front_inner_back" )
+            {
+                diagnostic( result, "ambiguous_authored_footprint_padstack_for_custom_stackup",
+                            "pad " + padId + " uses front_inner_back with a custom stackup; "
+                                    "use a custom padstack with named copper layers" );
+                continue;
+            }
+
+            if( !padstack.contains( "layers" ) || !padstack["layers"].is_array() )
+                continue;
+
+            for( const JSON& layer : padstack["layers"] )
+            {
+                const std::string padstackLayerName = layer.value( "name", "" );
+
+                if( !padstackLayerName.empty()
+                    && !stackupLayers.contains( padstackLayerName ) )
+                {
+                    diagnostic( result, "authored_footprint_padstack_outside_custom_stackup",
+                                "pad " + padId + " padstack references " + padstackLayerName
+                                        + " outside the footprint custom stackup" );
+                }
+            }
+        }
+    }
 
     result.ok = result.diagnostics.empty();
     return result;

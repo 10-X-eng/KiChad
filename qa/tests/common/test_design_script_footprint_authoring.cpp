@@ -262,6 +262,18 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
   (footprint Product:SHIELDED_MODULE
     (reference U) (value SHIELDED_MODULE)
     (attributes (smd true))
+    (property manufacturer_part_number
+      (name "Manufacturer Part Number") (value "MODULE-BASE")
+      (at 0mm 1.5mm) (rotation 0deg) (layer F.Fab)
+      (visible false) (keep_upright true) (knockout false)
+      (font (size 0.8mm 0.8mm) (thickness auto))
+      (justify center center false))
+    (rules
+      (clearance 0.1mm) (solder_mask_margin -0.02mm)
+      (solder_paste_margin inherit) (solder_paste_margin_ratio -0.1)
+      (zone_connection thermal))
+    (stackup custom (layers F.Cu In1.Cu In2.Cu B.Cu))
+    (private_layers User.1 F.Fab)
     (line shield_edge (start -3mm -2mm) (end 3mm -2mm)
       (stroke 0.15mm solid) (layers F.SilkS))
     (text assembly_note "SHIELD" (at 0mm 0mm) (rotation 0deg)
@@ -293,7 +305,8 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
         (pads false) (footprints false))
       (border solid) (locked true))
     (group electrical_core (name "Electrical core") (locked false)
-      (member pad ground) (member graphic shield_edge) (member text assembly_note))
+      (member pad ground) (member graphic shield_edge) (member text assembly_note)
+      (member property manufacturer_part_number))
     (group complete_module (name "Complete module") (locked true)
       (member group electrical_core) (member zone antenna_keepout))
     (variant production
@@ -312,6 +325,9 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
     BOOST_CHECK_EQUAL( footprint["zones"].size(), 2 );
     BOOST_CHECK_EQUAL( footprint["groups"].size(), 2 );
     BOOST_CHECK_EQUAL( footprint["variants"].size(), 2 );
+    BOOST_CHECK_EQUAL( footprint["properties"].size(), 1 );
+    BOOST_CHECK_EQUAL( footprint["stackup"].size(), 4 );
+    BOOST_CHECK_EQUAL( footprint["rules"]["clearanceNm"], 100000 );
     BOOST_CHECK_EQUAL( footprint["zones"][0]["fill"]["smoothing"], "fillet" );
     BOOST_CHECK_EQUAL( footprint["zones"][0]["islands"]["minimumAreaNm2"],
                        200000000000LL );
@@ -330,6 +346,18 @@ BOOST_AUTO_TEST_CASE( LowersFootprintZonesGroupsAndAssemblyVariants )
     BOOST_CHECK_NE( source.find( "(variant" ), std::string::npos );
     BOOST_CHECK_NE( source.find( "(field (name \"Manufacturer Part Number\")" ),
                     std::string::npos );
+    BOOST_CHECK_NE( source.find( "(property \"Manufacturer Part Number\" \"MODULE-BASE\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( source.find( "(clearance 0.1)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(solder_mask_margin -0.02)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(solder_paste_margin_ratio -0.1)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(zone_connect 1)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(stackup (layer \"F.Cu\") (layer \"B.Cu\") "
+                                 "(layer \"In1.Cu\") (layer \"In2.Cu\"))" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( source.find( "(private_layers \"F.Fab\" \"User.1\")" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( generated.counts["properties"], 1 );
     BOOST_CHECK_EQUAL( generated.counts["zones"], 2 );
     BOOST_CHECK_EQUAL( generated.counts["groups"], 2 );
     BOOST_CHECK_EQUAL( generated.counts["variants"], 2 );

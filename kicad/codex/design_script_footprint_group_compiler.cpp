@@ -95,7 +95,7 @@ DESIGN_SCRIPT_FOOTPRINT_GROUP_COMPILER::Compile(
     std::set<std::string> singletonFields;
     std::set<std::pair<std::string, std::string>> uniqueMembers;
     static const std::set<std::string> memberTypes = {
-        "pad", "graphic", "text", "text_box", "zone", "group"
+        "pad", "graphic", "text", "text_box", "property", "zone", "group"
     };
 
     for( size_t index = 2; index < node.children.size(); ++index )
@@ -123,7 +123,7 @@ DESIGN_SCRIPT_FOOTPRINT_GROUP_COMPILER::Compile(
                 || !identifier( logicalId ) )
             {
                 diagnostic( result, "invalid_authored_footprint_group_member",
-                            "group member requires type pad, graphic, text, text_box, zone, or group and one logical ID" );
+                            "group member requires type pad, graphic, text, text_box, property, zone, or group and one logical ID" );
                 continue;
             }
 
