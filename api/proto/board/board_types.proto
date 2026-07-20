@@ -482,6 +482,10 @@ message Via
   Net net = 5;
 
   ViaType type = 6;
+
+  // Copper layers that must retain a zone-connected annular ring when
+  // unconnected_layer_removal is not ULR_KEEP. Unlisted layers are explicitly unflashed.
+  repeated BoardLayer zone_layer_connections = 7;
 }
 
 message BoardGraphicShape

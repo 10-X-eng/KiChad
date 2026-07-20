@@ -1120,6 +1120,20 @@ void validateStackupLayers( const JSON& aStatements, RESULT& aResult )
                 }
             }
 
+            const int first = std::min( start, end );
+            const int last = std::max( start, end );
+
+            for( const JSON& layer : statement.value( "forceFlashLayers", JSON::array() ) )
+            {
+                const std::string name = layer.is_string() ? layer.get<std::string>() : "";
+                const int index = copperLayerIndex( name, copperLayers );
+
+                if( index < first || index > last )
+                    diagnostic( aResult, "error", "via_force_flash_layer_outside_span",
+                                "force_flash layer " + name
+                                        + " is outside the via's drilled span" );
+            }
+
             const JSON& backdrills = statement.value( "backdrills", JSON( nullptr ) );
 
             if( backdrills.is_object() )
@@ -1290,7 +1304,8 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     std::map<std::string, size_t> fields;
     collectFields( aDocument, aNode, 2,
                    { "id", "at", "diameter", "drill", "layers", "type", "locked",
-                     "padstack", "protection", "backdrills", "unconnected_layers" },
+                     "padstack", "protection", "backdrills", "unconnected_layers",
+                     "force_flash" },
                    fields, aResult, "via" );
     std::string logicalId;
     JSON        position = JSON::object();
@@ -1304,6 +1319,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     JSON        protection = nullptr;
     JSON        backdrills = nullptr;
     std::string unconnectedLayers = "keep";
+    JSON        forceFlashLayers = JSON::array();
 
     if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
         || !validIdentifier( logicalId ) )
@@ -1388,6 +1404,36 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
         diagnostic( aResult, "error", "invalid_via_unconnected_layer_policy",
                     "unconnected_layers must be keep, remove, keep_start_end, or "
                     "start_end_only" );
+    }
+
+    if( fields.contains( "force_flash" ) )
+    {
+        const DOCUMENT::NODE& forceFlash = aDocument.Nodes()[fields["force_flash"]];
+        std::set<std::string> unique;
+
+        if( forceFlash.children.size() < 2 )
+            diagnostic( aResult, "error", "empty_via_force_flash",
+                        "force_flash requires at least one copper layer" );
+
+        for( size_t index = 1; index < forceFlash.children.size(); ++index )
+        {
+            std::string layer;
+
+            if( !scalarText( aDocument, forceFlash.children[index], layer )
+                || !copperLayer( layer ) || !unique.emplace( layer ).second )
+            {
+                diagnostic( aResult, "error", "invalid_via_force_flash_layer",
+                            "force_flash requires unique copper-layer names" );
+            }
+            else
+            {
+                forceFlashLayers.push_back( layer );
+            }
+        }
+
+        if( unconnectedLayers == "keep" )
+            diagnostic( aResult, "error", "redundant_via_force_flash",
+                        "force_flash requires an unconnected_layers removal policy" );
     }
 
     if( fields.contains( "padstack" ) )
@@ -1530,6 +1576,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "protection", std::move( protection ) },
              { "backdrills", std::move( backdrills ) },
              { "unconnectedLayers", unconnectedLayers },
+             { "forceFlashLayers", std::move( forceFlashLayers ) },
              { "locked", locked },
              { "typed", true } };
 }

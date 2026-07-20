@@ -670,6 +670,7 @@ JSON planOutline( const JSON& aStatement, const std::string& aProject )
     const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
     const std::string itemId =
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "shape", logicalId );
+
     JSON item = {
         { "id", { { "value", itemId } } },
         { "shape",
@@ -1152,13 +1153,19 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
         mapMachining( "backPostMachining", "backPostMachining" );
     }
 
+    JSON zoneLayerConnections = JSON::array();
+
+    for( const JSON& layer : aStatement.at( "forceFlashLayers" ) )
+        zoneLayerConnections.push_back( layerEnum( layer.get<std::string>() ) );
+
     JSON item = {
         { "id", { { "value", itemId } } },
         { "position", vectorProto( aStatement.at( "position" ) ) },
         { "padStack", std::move( padStack ) },
         { "locked", lockedEnum( aStatement ) },
         { "net", { { "name", aStatement.at( "net" ) } } },
-        { "type", typeEnum }
+        { "type", typeEnum },
+        { "zoneLayerConnections", std::move( zoneLayerConnections ) }
     };
 
     return { { "action", "upsert" },

@@ -506,6 +506,18 @@ void PCB_VIA::Serialize( google::protobuf::Any &aContainer ) const
                                : kiapi::common::types::LockedState::LS_UNLOCKED );
     PackNet( via.mutable_net() );
 
+    if( GetRemoveUnconnected() )
+    {
+        for( PCB_LAYER_ID layer : GetLayerSet().CuStack() )
+        {
+            if( GetZoneLayerOverride( layer ) == ZLO_FORCE_FLASHED )
+            {
+                via.add_zone_layer_connections(
+                        ToProtoEnum<PCB_LAYER_ID, kiapi::board::types::BoardLayer>( layer ) );
+            }
+        }
+    }
+
     aContainer.PackFrom( via );
 }
 
@@ -533,6 +545,22 @@ bool PCB_VIA::Deserialize( const google::protobuf::Any &aContainer )
     SetViaType( FromProtoEnum<VIATYPE>( via.type() ) );
     UnpackNet( via.net() );
     SetLocked( via.locked() == kiapi::common::types::LockedState::LS_LOCKED );
+    ClearZoneLayerOverrides();
+
+    if( GetRemoveUnconnected() )
+    {
+        for( PCB_LAYER_ID layer : GetLayerSet().CuStack() )
+            SetZoneLayerOverride( layer, ZLO_FORCE_NO_ZONE_CONNECTION );
+
+        for( int layer : via.zone_layer_connections() )
+        {
+            const PCB_LAYER_ID nativeLayer = FromProtoEnum<PCB_LAYER_ID>(
+                    static_cast<kiapi::board::types::BoardLayer>( layer ) );
+
+            if( IsCopperLayer( nativeLayer ) && GetLayerSet().Contains( nativeLayer ) )
+                SetZoneLayerOverride( nativeLayer, ZLO_FORCE_FLASHED );
+        }
+    }
 
     return true;
 }
@@ -3387,4 +3415,3 @@ ENUM_TO_WXANY( COVERING_MODE );
 ENUM_TO_WXANY( PLUGGING_MODE );
 ENUM_TO_WXANY( CAPPING_MODE );
 ENUM_TO_WXANY( FILLING_MODE );
-

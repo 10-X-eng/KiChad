@@ -1644,6 +1644,7 @@ lowers into KiCad 10's typed `PadStack` IPC message:
   (layers F.Cu B.Cu)
   (type through)
   (unconnected_layers keep_start_end)
+  (force_flash F.Cu)
   (locked false)
   (protection
     (tenting (front open) (back tented))
@@ -1666,6 +1667,10 @@ diameter must exceed the primary drill.
 all rings, `remove` strips every unconnected ring, `keep_start_end` strips only intermediate
 unconnected rings, and `start_end_only` keeps copper exclusively on the drilled span's endpoints.
 The selected policy is carried directly in KiCad's typed padstack and survives readback.
+When removal is active, `force_flash` names the copper layers that must retain an explicit
+zone-connected annular ring; all other layers follow the selected removal policy. KiChad extends
+the typed Via IPC message with this native state so live create/update/readback and `.kicad_pcb`
+save/reload have the same semantics.
 
 An advanced via replaces—not supplements—the simple circular `diameter` with exactly one semantic
 `padstack`. `front_inner_back` requires `F.Cu`, `inner`, and `B.Cu`. `custom` requires every named
