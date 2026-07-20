@@ -11,6 +11,8 @@
 
 #include "design_script_board_compiler.h"
 
+#include "design_script_via_protection_compiler.h"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -1218,8 +1220,9 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
 
     std::map<std::string, size_t> fields;
     collectFields( aDocument, aNode, 2,
-                   { "id", "at", "diameter", "drill", "layers", "type", "locked" }, fields,
-                   aResult, "via" );
+                   { "id", "at", "diameter", "drill", "layers", "type", "locked",
+                     "protection" },
+                   fields, aResult, "via" );
     std::string logicalId;
     JSON        position = JSON::object();
     int64_t     diameter = 0;
@@ -1228,6 +1231,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     std::string endLayer;
     std::string type = "through";
     bool        locked = false;
+    JSON        protection = nullptr;
 
     if( !fields.contains( "id" ) || !parseScalarForm( aDocument, fields["id"], logicalId )
         || !validIdentifier( logicalId ) )
@@ -1302,6 +1306,57 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
                     "via locked must be true or false" );
     }
 
+    if( fields.contains( "protection" ) )
+    {
+        KICHAD::DESIGN_SCRIPT_VIA_PROTECTION_COMPILER::RESULT compiled =
+                KICHAD::DESIGN_SCRIPT_VIA_PROTECTION_COMPILER::Compile(
+                        aDocument, fields["protection"] );
+
+        for( JSON& entry : compiled.diagnostics )
+            aResult.diagnostics.push_back( std::move( entry ) );
+
+        protection = std::move( compiled.protection );
+    }
+
+    if( protection.is_object() )
+    {
+        const auto sideIsAuthored = [&]( const char* aFeature, const char* aSide )
+        {
+            return protection[aFeature].is_object()
+                   && protection[aFeature].value( aSide, "inherit" ) != "inherit";
+        };
+
+        if( startLayer != "F.Cu" && endLayer != "F.Cu"
+            && ( sideIsAuthored( "tenting", "front" )
+                 || sideIsAuthored( "covering", "front" )
+                 || sideIsAuthored( "plugging", "front" )
+                 || protection["frontPostMachining"].is_object() ) )
+        {
+            diagnostic( aResult, "error", "invalid_via_front_protection",
+                        "front-side via treatment requires a span that reaches F.Cu" );
+        }
+
+        if( startLayer != "B.Cu" && endLayer != "B.Cu"
+            && ( sideIsAuthored( "tenting", "back" )
+                 || sideIsAuthored( "covering", "back" )
+                 || sideIsAuthored( "plugging", "back" )
+                 || protection["backPostMachining"].is_object() ) )
+        {
+            diagnostic( aResult, "error", "invalid_via_back_protection",
+                        "back-side via treatment requires a span that reaches B.Cu" );
+        }
+
+        for( const char* field : { "frontPostMachining", "backPostMachining" } )
+        {
+            if( protection[field].is_object()
+                && protection[field].value( "diameterNm", int64_t{ 0 } ) <= drill )
+            {
+                diagnostic( aResult, "error", "invalid_via_post_machining_diameter",
+                            "post-machining diameter must exceed the primary via drill" );
+            }
+        }
+    }
+
     if( !net.empty() )
         aResult.netReferences.emplace_back( net );
 
@@ -1314,6 +1369,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "startLayer", startLayer },
              { "endLayer", endLayer },
              { "viaType", type },
+             { "protection", std::move( protection ) },
              { "locked", locked },
              { "typed", true } };
 }

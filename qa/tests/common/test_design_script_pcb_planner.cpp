@@ -40,7 +40,13 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
       (width 0.25mm) (layer F.Cu))
     (route SIGNAL (id arc-a) (from 3mm 4mm) (mid 4mm 5mm) (to 5mm 4mm)
       (width 0.2mm) (layer B.Cu) (locked true))
-    (via SIGNAL (id via-a) (at 5mm 4mm) (diameter 0.8mm) (drill 0.4mm))))
+    (via SIGNAL (id via-a) (at 5mm 4mm) (diameter 0.8mm) (drill 0.4mm)
+      (protection
+        (tenting (front open) (back tented))
+        (covering (front covered) (back inherit))
+        (plugging (front plugged) (back unplugged))
+        (filling filled) (capping uncapped)
+        (post_machining front counterbore (diameter 0.6mm) (depth 0.15mm))))))
 )KDS";
 
 
@@ -84,6 +90,16 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     BOOST_CHECK_EQUAL( first.operations[1]["item"]["width"]["valueNm"].get<std::string>(),
                        "250000" );
     BOOST_CHECK_EQUAL( first.operations[2]["item"]["locked"].get<std::string>(), "LS_LOCKED" );
+    const nlohmann::json& viaStack = first.operations[3]["item"]["padStack"];
+    BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["solderMaskMode"], "SMM_MASKED" );
+    BOOST_CHECK_EQUAL( viaStack["backOuterLayers"]["solderMaskMode"], "SMM_UNMASKED" );
+    BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["coveringMode"], "VCM_COVERED" );
+    BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["pluggingMode"], "VPM_PLUGGED" );
+    BOOST_CHECK_EQUAL( viaStack["drill"]["filled"], "VDFM_FILLED" );
+    BOOST_CHECK_EQUAL( viaStack["drill"]["capped"], "VDCM_UNCAPPED" );
+    BOOST_CHECK_EQUAL( viaStack["frontPostMachining"]["mode"], "VDPM_COUNTERBORE" );
+    BOOST_CHECK_EQUAL( viaStack["frontPostMachining"]["size"], 600000 );
+    BOOST_CHECK_EQUAL( viaStack["frontPostMachining"]["depth"], 150000 );
     const std::string id = first.operations[1]["itemId"].get<std::string>();
     BOOST_CHECK_EQUAL( id, "c3fc8149-6c3c-8f2d-94c6-2d462e6d2a49" );
     BOOST_CHECK_EQUAL( id[14], '8' );

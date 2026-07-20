@@ -60,6 +60,7 @@ set( KICAD_SRCS
     codex/design_script_symbol_text_compiler.cpp
     codex/design_script_symbol_text_generator.cpp
     codex/design_script_symbol_resolver.cpp
+    codex/design_script_via_protection_compiler.cpp
     codex/fabrication_artifact_validator.cpp
     codex/legacy_bom_artifact_validator.cpp
     codex/mechanical_artifact_validator.cpp

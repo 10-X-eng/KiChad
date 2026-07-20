@@ -160,7 +160,11 @@ transaction order.
     (place R1 (at 10mm 10mm) (rotation 0deg) (side front))
     (route LED_A (id led-a-trace) (from 10mm 10mm) (to 20mm 10mm)
       (width 0.25mm) (layer F.Cu))
-    (via LED_A (id led-a-via) (at 20mm 10mm) (diameter 0.8mm) (drill 0.4mm))
+    (via LED_A (id led-a-via) (at 20mm 10mm) (diameter 0.8mm) (drill 0.4mm)
+      (protection
+        (tenting (front open) (back tented))
+        (plugging (front plugged) (back inherit))
+        (filling filled) (capping uncapped)))
     (zone LED_A
       (id led-a-plane)
       (name "LED copper plane")
@@ -1464,6 +1468,40 @@ constraints. It validates UTF-8, parses and compiles the complete document, inst
 reloads the live DRC engine, and reads it back byte-for-byte. Failure restores both the previous
 file and previous engine rules. KDS journals that exact prior state and restores it on a lost
 acknowledgement or any later pre-commit failure.
+
+### Board routing and via protection
+
+Routes are explicit line or three-point arc geometry with stable IDs, a real schematic net, copper
+layer, width, and lock state. Vias likewise have one physical form for through, blind, buried, and
+microvia spans. Their optional `protection` block records manufacturer-facing intent directly and
+lowers into KiCad 10's typed `PadStack` IPC message:
+
+```scheme
+(via USB_D_P
+  (id usb-dp-via)
+  (at 18mm 12mm)
+  (diameter 0.8mm)
+  (drill 0.4mm)
+  (layers F.Cu B.Cu)
+  (type through)
+  (locked false)
+  (protection
+    (tenting (front open) (back tented))
+    (covering (front covered) (back inherit))
+    (plugging (front plugged) (back unplugged))
+    (filling filled)
+    (capping uncapped)
+    (post_machining front counterbore
+      (diameter 0.6mm) (depth 0.15mm))))
+```
+
+Every sided treatment names both `front` and `back`; use `inherit` to retain the board rule. Tenting
+uses `open|tented`, covering uses `covered|uncovered`, and plugging uses `plugged|unplugged` so an
+LLM never has to infer an inverted boolean. Filling and capping use equally direct state words.
+Treatments on a physical side are rejected unless the via span reaches that outer copper layer.
+Counterbores require diameter and depth; countersinks require diameter and included angle. Their
+diameter must exceed the primary drill. Full per-layer via copper shapes, custom shape primitives,
+back/tertiary drill hits, layer-removal policy, and teardrops remain explicit gaps.
 
 ### Copper zone form
 

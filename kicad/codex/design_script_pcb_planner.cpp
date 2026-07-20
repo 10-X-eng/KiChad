@@ -947,22 +947,96 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
     else
         typeEnum = "VT_MICRO";
 
+    JSON padStack = {
+        { "type", "PST_NORMAL" },
+        { "layers", JSON::array( { startLayer, endLayer } ) },
+        { "drill",
+          { { "startLayer", startLayer },
+            { "endLayer", endLayer },
+            { "diameter", { { "xNm", drill }, { "yNm", drill } } },
+            { "shape", "DS_CIRCLE" } } },
+        { "unconnectedLayerRemoval", "ULR_KEEP" },
+        { "copperLayers",
+          JSON::array( { { { "layer", "BL_F_Cu" },
+                            { "shape", "PSS_CIRCLE" },
+                            { "size", { { "xNm", diameter }, { "yNm", diameter } } } } } ) }
+    };
+    const JSON protection = aStatement.value( "protection", JSON( nullptr ) );
+
+    if( protection.is_object() )
+    {
+        const auto mapSidePair = [&]( const char* aField, const std::map<std::string, std::string>& aMap,
+                                      const char* aProtoField )
+        {
+            if( !protection[aField].is_object() )
+                return;
+
+            const std::string front = protection[aField].at( "front" ).get<std::string>();
+            const std::string back = protection[aField].at( "back" ).get<std::string>();
+            padStack["frontOuterLayers"][aProtoField] = aMap.at( front );
+            padStack["backOuterLayers"][aProtoField] = aMap.at( back );
+        };
+        mapSidePair( "tenting",
+                     { { "inherit", "SMM_FROM_DESIGN_RULES" }, { "open", "SMM_MASKED" },
+                       { "tented", "SMM_UNMASKED" } },
+                     "solderMaskMode" );
+        mapSidePair( "covering",
+                     { { "inherit", "VCM_FROM_DESIGN_RULES" }, { "covered", "VCM_COVERED" },
+                       { "uncovered", "VCM_UNCOVERED" } },
+                     "coveringMode" );
+        mapSidePair( "plugging",
+                     { { "inherit", "VPM_FROM_DESIGN_RULES" }, { "plugged", "VPM_PLUGGED" },
+                       { "unplugged", "VPM_UNPLUGGED" } },
+                     "pluggingMode" );
+
+        if( protection["filling"].is_string() )
+        {
+            static const std::map<std::string, std::string> values = {
+                { "inherit", "VDFM_FROM_DESIGN_RULES" }, { "filled", "VDFM_FILLED" },
+                { "unfilled", "VDFM_UNFILLED" }
+            };
+            padStack["drill"]["filled"] = values.at(
+                    protection["filling"].get<std::string>() );
+        }
+
+        if( protection["capping"].is_string() )
+        {
+            static const std::map<std::string, std::string> values = {
+                { "inherit", "VDCM_FROM_DESIGN_RULES" }, { "capped", "VDCM_CAPPED" },
+                { "uncapped", "VDCM_UNCAPPED" }
+            };
+            padStack["drill"]["capped"] = values.at(
+                    protection["capping"].get<std::string>() );
+        }
+
+        const auto mapMachining = [&]( const char* aField, const char* aProtoField )
+        {
+            if( !protection[aField].is_object() )
+                return;
+
+            const JSON& source = protection[aField];
+            JSON target = {
+                { "mode", source.at( "mode" ) == "counterbore"
+                                  ? "VDPM_COUNTERBORE" : "VDPM_COUNTERSINK" },
+                { "size", source.at( "diameterNm" ) }
+            };
+
+            if( source["depthNm"].is_number_integer() )
+                target["depth"] = source["depthNm"];
+
+            if( source["angleTenths"].is_number_integer() )
+                target["angle"] = source["angleTenths"];
+
+            padStack[aProtoField] = std::move( target );
+        };
+        mapMachining( "frontPostMachining", "frontPostMachining" );
+        mapMachining( "backPostMachining", "backPostMachining" );
+    }
+
     JSON item = {
         { "id", { { "value", itemId } } },
         { "position", vectorProto( aStatement.at( "position" ) ) },
-        { "padStack",
-          { { "type", "PST_NORMAL" },
-            { "layers", JSON::array( { startLayer, endLayer } ) },
-            { "drill",
-              { { "startLayer", startLayer },
-                { "endLayer", endLayer },
-                { "diameter", { { "xNm", drill }, { "yNm", drill } } },
-                { "shape", "DS_CIRCLE" } } },
-            { "unconnectedLayerRemoval", "ULR_KEEP" },
-            { "copperLayers",
-              JSON::array( { { { "layer", "BL_F_Cu" },
-                                { "shape", "PSS_CIRCLE" },
-                                { "size", { { "xNm", diameter }, { "yNm", diameter } } } } } ) } } },
+        { "padStack", std::move( padStack ) },
         { "locked", lockedEnum( aStatement ) },
         { "net", { { "name", aStatement.at( "net" ) } } },
         { "type", typeEnum }
