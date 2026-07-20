@@ -64,7 +64,8 @@ std::string nativePoint( const JSON& aPoint )
 }
 
 
-bool renderPrimitive( const JSON& aPrimitive, std::string& aSource )
+bool renderPrimitive( const JSON& aPrimitive, const std::string& aIndent,
+                      std::string& aSource )
 {
     static const std::set<std::string> kinds = {
         "line", "rectangle", "arc", "circle", "polygon", "bezier"
@@ -85,14 +86,15 @@ bool renderPrimitive( const JSON& aPrimitive, std::string& aSource )
     const std::string nativeKind = kind == "rectangle" ? "rect"
                                    : kind == "bezier" ? "curve"
                                    : kind == "polygon" ? "poly" : kind;
-    aSource += "\t\t\t(gr_" + nativeKind + "\n";
+    const std::string childIndent = aIndent + "\t";
+    aSource += aIndent + "(gr_" + nativeKind + "\n";
 
     auto emitPoint = [&]( const char* aToken, const char* aField )
     {
         if( !aPrimitive.contains( aField ) || !validPoint( aPrimitive[aField] ) )
             return false;
 
-        aSource += "\t\t\t\t(" + std::string( aToken ) + " "
+        aSource += childIndent + "(" + std::string( aToken ) + " "
                    + nativePoint( aPrimitive[aField] ) + ")\n";
         return true;
     };
@@ -112,7 +114,7 @@ bool renderPrimitive( const JSON& aPrimitive, std::string& aSource )
             }
 
             if( aPrimitive["radiusNm"].get<int64_t>() > 0 )
-                aSource += "\t\t\t\t(radius "
+                aSource += childIndent + "(radius "
                            + millimetres( aPrimitive["radiusNm"].get<int64_t>() ) + ")\n";
         }
     }
@@ -137,8 +139,8 @@ bool renderPrimitive( const JSON& aPrimitive, std::string& aSource )
         JSON endpoint = aPrimitive["center"];
         endpoint["xNm"] = endpoint["xNm"].get<int64_t>()
                            + aPrimitive["radiusNm"].get<int64_t>();
-        aSource += "\t\t\t\t(center " + nativePoint( aPrimitive["center"] ) + ")\n"
-                   "\t\t\t\t(end " + nativePoint( endpoint ) + ")\n";
+        aSource += childIndent + "(center " + nativePoint( aPrimitive["center"] ) + ")\n"
+                   + childIndent + "(end " + nativePoint( endpoint ) + ")\n";
     }
     else if( kind == "polygon" )
     {
@@ -148,17 +150,17 @@ bool renderPrimitive( const JSON& aPrimitive, std::string& aSource )
             return false;
         }
 
-        aSource += "\t\t\t\t(pts\n";
+        aSource += childIndent + "(pts\n";
 
         for( const JSON& point : aPrimitive["points"] )
         {
             if( !validPoint( point ) )
                 return false;
 
-            aSource += "\t\t\t\t\t(xy " + nativePoint( point ) + ")\n";
+            aSource += childIndent + "\t(xy " + nativePoint( point ) + ")\n";
         }
 
-        aSource += "\t\t\t\t)\n";
+        aSource += childIndent + ")\n";
     }
     else if( kind == "bezier" )
     {
@@ -170,24 +172,69 @@ bool renderPrimitive( const JSON& aPrimitive, std::string& aSource )
                 return false;
         }
 
-        aSource += "\t\t\t\t(pts\n"
-                   "\t\t\t\t\t(xy " + nativePoint( aPrimitive["start"] ) + ")\n"
-                   "\t\t\t\t\t(xy " + nativePoint( aPrimitive["control1"] ) + ")\n"
-                   "\t\t\t\t\t(xy " + nativePoint( aPrimitive["control2"] ) + ")\n"
-                   "\t\t\t\t\t(xy " + nativePoint( aPrimitive["end"] ) + ")\n"
-                   "\t\t\t\t)\n";
+        aSource += childIndent + "(pts\n"
+                   + childIndent + "\t(xy " + nativePoint( aPrimitive["start"] ) + ")\n"
+                   + childIndent + "\t(xy " + nativePoint( aPrimitive["control1"] ) + ")\n"
+                   + childIndent + "\t(xy " + nativePoint( aPrimitive["control2"] ) + ")\n"
+                   + childIndent + "\t(xy " + nativePoint( aPrimitive["end"] ) + ")\n"
+                   + childIndent + ")\n";
     }
 
-    aSource += "\t\t\t\t(width "
+    aSource += childIndent + "(width "
                + millimetres( aPrimitive["widthNm"].get<int64_t>() ) + ")\n";
 
     if( fillable )
-        aSource += "\t\t\t\t(fill "
+        aSource += childIndent + "(fill "
                    + std::string( aPrimitive["fill"].get<bool>() ? "yes" : "no" ) + ")\n";
     else if( aPrimitive["fill"].get<bool>() )
         return false;
 
-    aSource += "\t\t\t)\n";
+    aSource += aIndent + ")\n";
+    return true;
+}
+
+
+bool renderCustom( const JSON& aCustom, bool aPadWide, const std::string& aIndent,
+                   std::string& aSource )
+{
+    if( !aCustom.is_object() || !aCustom.contains( "anchor" )
+        || !aCustom["anchor"].is_string()
+        || ( aCustom["anchor"] != "circle" && aCustom["anchor"] != "rect" )
+        || !aCustom.contains( "clearance" )
+        || ( aPadWide
+                     ? ( !aCustom["clearance"].is_string()
+                         || ( aCustom["clearance"] != "outline"
+                              && aCustom["clearance"] != "convex_hull" ) )
+                     : !aCustom["clearance"].is_null() )
+        || !aCustom.contains( "primitives" ) || !aCustom["primitives"].is_array()
+        || aCustom["primitives"].empty() )
+    {
+        return false;
+    }
+
+    const std::string childIndent = aIndent + "\t";
+    aSource += aIndent + "(options\n";
+
+    if( aPadWide )
+    {
+        aSource += childIndent + "(clearance "
+                   + std::string( aCustom["clearance"] == "convex_hull"
+                                          ? "convexhull"
+                                          : "outline" )
+                   + ")\n";
+    }
+
+    aSource += childIndent + "(anchor " + aCustom["anchor"].get<std::string>() + ")\n"
+               + aIndent + ")\n"
+               + aIndent + "(primitives\n";
+
+    for( const JSON& primitive : aCustom["primitives"] )
+    {
+        if( !renderPrimitive( primitive, childIndent, aSource ) )
+            return false;
+    }
+
+    aSource += aIndent + ")\n";
     return true;
 }
 
@@ -200,33 +247,14 @@ namespace KICHAD
 bool DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_GENERATOR::Render(
         const JSON& aCustom, std::string& aSource )
 {
-    if( !aCustom.is_object() || !aCustom.contains( "anchor" )
-        || !aCustom["anchor"].is_string()
-        || ( aCustom["anchor"] != "circle" && aCustom["anchor"] != "rect" )
-        || !aCustom.contains( "clearance" ) || !aCustom["clearance"].is_string()
-        || ( aCustom["clearance"] != "outline" && aCustom["clearance"] != "convex_hull" )
-        || !aCustom.contains( "primitives" ) || !aCustom["primitives"].is_array()
-        || aCustom["primitives"].empty() )
-    {
-        return false;
-    }
+    return renderCustom( aCustom, true, "\t\t", aSource );
+}
 
-    aSource += "\t\t(options\n"
-               "\t\t\t(clearance "
-               + std::string( aCustom["clearance"] == "convex_hull" ? "convexhull" : "outline" )
-               + ")\n"
-               "\t\t\t(anchor " + aCustom["anchor"].get<std::string>() + ")\n"
-               "\t\t)\n"
-               "\t\t(primitives\n";
 
-    for( const JSON& primitive : aCustom["primitives"] )
-    {
-        if( !renderPrimitive( primitive, aSource ) )
-            return false;
-    }
-
-    aSource += "\t\t)\n";
-    return true;
+bool DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_GENERATOR::RenderLayer(
+        const JSON& aCustom, std::string& aSource )
+{
+    return renderCustom( aCustom, false, "\t\t\t\t", aSource );
 }
 
 } // namespace KICHAD

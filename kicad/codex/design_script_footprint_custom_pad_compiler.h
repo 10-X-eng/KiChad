@@ -36,6 +36,9 @@ public:
     };
 
     static RESULT Compile( const LOSSLESS_SEXPR_DOCUMENT& aDocument, size_t aNode );
+
+    /** Typechecks the same custom geometry inside one copper padstack layer. */
+    static RESULT CompileLayer( const LOSSLESS_SEXPR_DOCUMENT& aDocument, size_t aNode );
 };
 
 } // namespace KICHAD

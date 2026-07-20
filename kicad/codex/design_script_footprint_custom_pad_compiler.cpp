@@ -402,15 +402,7 @@ JSON compilePrimitive( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult 
     return primitive;
 }
 
-} // namespace
-
-
-namespace KICHAD
-{
-
-DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::RESULT
-DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::Compile(
-        const LOSSLESS_SEXPR_DOCUMENT& aDocument, size_t aNode )
+RESULT compileCustom( const DOCUMENT& aDocument, size_t aNode, bool aPadWide )
 {
     RESULT result;
     const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
@@ -422,9 +414,9 @@ DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::Compile(
         return result;
     }
 
-    result.custom = {
-        { "anchor", "" }, { "clearance", "" }, { "primitives", JSON::array() }
-    };
+    result.custom = { { "anchor", "" },
+                      { "clearance", aPadWide ? JSON( "" ) : JSON( nullptr ) },
+                      { "primitives", JSON::array() } };
     std::set<std::string> fields;
     std::set<std::string> primitiveIds;
     static const std::set<std::string> primitiveHeads = {
@@ -482,7 +474,10 @@ DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::Compile(
         }
         else if( head == "clearance" )
         {
-            if( value != "outline" && value != "convex_hull" )
+            if( !aPadWide )
+                diagnostic( result, "unsupported_authored_padstack_layer_custom_clearance",
+                            "per-layer custom geometry inherits the pad-wide zone clearance mode" );
+            else if( value != "outline" && value != "convex_hull" )
                 diagnostic( result, "invalid_authored_custom_pad_clearance",
                             "custom pad clearance must be outline or convex_hull" );
             else
@@ -491,20 +486,45 @@ DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::Compile(
         else
         {
             diagnostic( result, "unknown_authored_custom_pad_field",
-                        "custom pad supports anchor, clearance, and semantic primitives" );
+                        aPadWide
+                                ? "custom pad supports anchor, clearance, and semantic primitives"
+                                : "padstack-layer custom geometry supports anchor and semantic primitives" );
         }
     }
 
     if( result.custom["anchor"].get<std::string>().empty()
-        || result.custom["clearance"].get<std::string>().empty()
+        || ( aPadWide && result.custom["clearance"].get<std::string>().empty() )
         || result.custom["primitives"].empty() )
     {
         diagnostic( result, "incomplete_authored_custom_pad",
-                    "custom pad requires anchor, clearance, and at least one primitive" );
+                    aPadWide
+                            ? "custom pad requires anchor, clearance, and at least one primitive"
+                            : "padstack-layer custom geometry requires anchor and at least one primitive" );
     }
 
     result.ok = result.diagnostics.empty();
     return result;
+}
+
+} // namespace
+
+
+namespace KICHAD
+{
+
+DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::RESULT
+DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::Compile(
+        const LOSSLESS_SEXPR_DOCUMENT& aDocument, size_t aNode )
+{
+    return compileCustom( aDocument, aNode, true );
+}
+
+
+DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::RESULT
+DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_COMPILER::CompileLayer(
+        const LOSSLESS_SEXPR_DOCUMENT& aDocument, size_t aNode )
+{
+    return compileCustom( aDocument, aNode, false );
 }
 
 } // namespace KICHAD

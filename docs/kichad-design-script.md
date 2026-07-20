@@ -1180,7 +1180,11 @@ overrides, with unspecified copper layers inheriting the front geometry exactly 
   (size 2mm 2mm) (layers all_copper all_mask) (drill round 1mm)
   (padstack front_inner_back
     (layer inner
-      (shape circle) (size 1.5mm 1.5mm)
+      (shape custom) (size 0.6mm 0.6mm)
+      (custom
+        (anchor circle)
+        (line spoke (start -0.6mm 0mm) (end 0.6mm 0mm) (width 0.25mm))
+        (circle hub (center 0mm 0mm) (radius 0.35mm) (fill true)))
       (thermal_spoke_width 0.2mm) (thermal_gap 0.15mm))
     (layer B.Cu
       (shape chamfered_rect) (size 1.8mm 1.8mm)
@@ -1193,7 +1197,10 @@ overrides, with unspecified copper layers inheriting the front geometry exactly 
 ```
 
 Every layer entry requires its own shape and size, then may independently set offset, trapezoid
-delta, rounding/chamfer, clearance, zone connection, thermal spoke width/angle, and thermal gap.
+delta, rounding/chamfer, custom copper primitives, clearance, zone connection, thermal spoke
+width/angle, and thermal gap. Per-layer custom geometry uses the same named `custom` primitives as
+a top-level custom pad. It omits `clearance` because KiCad stores that zone-clearance mode once for
+the whole pad rather than per copper layer.
 `hole_treatment` uses manufacturing words rather than inverted booleans: `open` means a solder-mask
 opening, `tented` means solder mask covers that side, and `inherit` leaves board policy in control.
 Counterbores require diameter and depth; countersinks require diameter and included angle. The

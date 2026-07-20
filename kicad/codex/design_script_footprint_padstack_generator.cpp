@@ -11,6 +11,8 @@
 
 #include "design_script_footprint_padstack_generator.h"
 
+#include "design_script_footprint_custom_pad_generator.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -25,6 +27,7 @@ namespace
 {
 
 using JSON = nlohmann::json;
+using CUSTOM_GENERATOR = KICHAD::DESIGN_SCRIPT_FOOTPRINT_CUSTOM_PAD_GENERATOR;
 
 
 std::string millimetres( int64_t aNanometers )
@@ -121,7 +124,7 @@ bool customLayerName( const std::string& aLayer )
 bool renderLayer( const JSON& aLayer, const std::string& aMode, std::string& aSource )
 {
     static const std::set<std::string> shapes = {
-        "circle", "rect", "oval", "trapezoid", "roundrect", "chamfered_rect"
+        "circle", "rect", "oval", "trapezoid", "roundrect", "chamfered_rect", "custom"
     };
     static const std::map<std::string, int> zoneConnections = {
         { "none", 0 }, { "thermal", 1 }, { "solid", 2 }, { "tht_thermal", 3 }
@@ -242,6 +245,19 @@ bool renderLayer( const JSON& aLayer, const std::string& aMode, std::string& aSo
     }
     else if( !aLayer.contains( "chamferRatioPpm" ) || !aLayer["chamferRatioPpm"].is_null()
              || !aLayer.contains( "chamferCorners" ) || !aLayer["chamferCorners"].empty() )
+    {
+        return false;
+    }
+
+    if( shape == "custom" )
+    {
+        if( !aLayer.contains( "custom" ) || !aLayer["custom"].is_object()
+            || !CUSTOM_GENERATOR::RenderLayer( aLayer["custom"], aSource ) )
+        {
+            return false;
+        }
+    }
+    else if( !aLayer.contains( "custom" ) || !aLayer["custom"].is_null() )
     {
         return false;
     }

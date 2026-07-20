@@ -27,6 +27,9 @@ public:
     using JSON = nlohmann::json;
 
     static bool Render( const JSON& aCustom, std::string& aSource );
+
+    /** Renders custom geometry inside a native per-copper-layer padstack entry. */
+    static bool RenderLayer( const JSON& aCustom, std::string& aSource );
 };
 
 } // namespace KICHAD
