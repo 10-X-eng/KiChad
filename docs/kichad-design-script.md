@@ -927,7 +927,8 @@ KDS uses one library declaration for installed and project-local dependencies:
 (library symbol ProductSymbols (table project)
   (uri "${KIPRJMOD}/libraries/product.kicad_sym"))
 (library footprint ProductFootprints (table project)
-  (uri "${KIPRJMOD}/libraries/Product.pretty"))
+  (uri "${KIPRJMOD}/libraries/Product.pretty")
+  (managed true))
 (library model ProductModels (table project)
   (uri "${KIPRJMOD}/libraries/models"))
 ```
@@ -1064,6 +1065,90 @@ schematics. Native rejection or any later pre-commit failure restores the prior 
 tables, schematics, and settings in reverse order. Parent directories must already exist and file
 symlinks are rejected. Embedded-font ownership and unmanaged-library publishing remain explicit
 partial coverage rather than being accepted and ignored.
+
+### KDS-owned footprint libraries
+
+KDS can likewise own a complete project `.pretty` library. The semantic source contains no native
+s-expression escape hatch; current KiCad 10 `.kicad_mod` files are deterministic compiler
+artifacts:
+
+```scheme
+(library footprint ProductFootprints (table project)
+  (uri "${KIPRJMOD}/libraries/ProductFootprints.pretty")
+  (managed true))
+
+(footprint ProductFootprints:SENSOR_2P
+  (reference U)
+  (value SENSOR_2P)
+  (datasheet "https://example.com/SENSOR_2P.pdf")
+  (description "Two-pad production sensor")
+  (keywords "sensor smd")
+  (attributes
+    (smd true)
+    (exclude_from_position false)
+    (exclude_from_bom false)
+    (allow_missing_courtyard true))
+  (net_tie_group 1 2)
+  (pad input
+    (number 1)
+    (type smd)
+    (shape roundrect)
+    (at -0.8mm 0mm)
+    (rotation 0deg)
+    (size 0.8mm 0.8mm)
+    (layers F.Cu F.Mask F.Paste)
+    (roundrect_radius 0.2mm)
+    (pin_function INPUT)
+    (pin_type signal)
+    (solder_mask_margin 0.02mm)
+    (solder_paste_margin_ratio -0.1)
+    (zone_connection thermal)
+    (thermal_spoke_width 0.2mm)
+    (thermal_spoke_angle 45deg)
+    (thermal_gap 0.15mm))
+  (pad output
+    (number 2)
+    (type smd)
+    (shape rect)
+    (at 0.8mm 0mm)
+    (rotation 90deg)
+    (size 0.8mm 1mm)
+    (layers F.Cu F.Mask F.Paste))
+  (model "${KIPRJMOD}/models/SENSOR_2P.step"
+    (visible true)
+    (opacity 0.75)
+    (offset 0mm 0mm 0.1mm)
+    (scale 1 1 1)
+    (rotation 0deg 0deg 90deg)))
+```
+
+Each `pad` begins with a stable logical ID, distinct from its electrical `number`. Supported types
+are `smd`, `connect`, `thru_hole`, and `np_thru_hole`; standard shapes are `circle`, `rect`, `oval`,
+`trapezoid`, and `roundrect`. Layer tokens are explicit: `F.Cu`, `B.Cu`, their mask/paste/adhesive
+layers, plus `all_copper` and `all_mask` for the native wildcard sets. Through-hole pads require
+`(drill round DIAMETER)` or `(drill oval WIDTH HEIGHT)` and `all_copper`; surface pads cannot carry
+a drill. NPTH pads cannot have an electrical number. Physical radius, trapezoid, layer-removal, and
+drill/type constraints are rejected by the compiler before any file mutation.
+
+Pads may also declare `shape_offset`, `trapezoid_delta`, a typed native `property`, `die_length`,
+pin function/type metadata, and local solder-mask, solder-paste, clearance, zone-connection, thermal
+spoke, and thermal-gap overrides. Every override uses `inherit` when the footprint should retain the
+board or zone policy; implicit sentinel values are not exposed to the model. Jumper and net-tie
+groups name existing electrical pad numbers and are checked for duplicate membership.
+
+Model assignments are confined to `${KIPRJMOD}` and accept STEP, STP, or WRL paths with bounded
+offset, scale, rotation, visibility, and opacity. Referencing a model does not yet acquire or embed
+its bytes, so sourcing and package-data workflows must still provide that project asset separately.
+
+All footprints are sorted and emitted as KiCad 10 format `20260206` files with deterministic UUIDv8
+field and pad identities. Apply uses the generated sources directly for compiler-created board
+instances, snapshots the exact prior whole library, atomically swaps a staging directory into place,
+and asks `kicad-cli fp upgrade --force` to parse and resave every file in an isolated directory.
+Unexpected files, subdirectories, symlinks, native rejection, or any later pre-commit failure abort
+the operation and restore the prior library, project tables, schematics, and settings in reverse
+order. The initial authoring slice is intentionally partial: footprint graphics/text, custom and
+per-layer pad shapes, zones/groups, variants, embedded assets, and complete KLC geometry generation
+remain explicit capability gaps.
 
 ### Stackup form
 
@@ -1579,7 +1664,7 @@ instances are executable through KiCad's native parser and transaction API. Free
 native graphics, embedded images, complete table grids/cells, named/locked nested groups, and
 complete per-unit component field rendering are executable through lossless reconciliation and
 KiCad's native schematic loader. Global installed symbol content, library
-content publishing, footprint/model authoring, and the incomplete schematic facets named by the
+content publishing, the remaining footprint/model authoring facets, and the incomplete schematic facets named by the
 capability catalog remain non-executable until their own lossless backends and rollback tests land.
 AI-native symbol authoring is executable for metadata, completely laid-out fields, properties,
 common/numbered units, named and De Morgan body styles, unit display names, unit locking, footprint

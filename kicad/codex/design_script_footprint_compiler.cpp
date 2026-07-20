@@ -1,0 +1,608 @@
+/*
+ * This program source code file is part of KiChad, a Codex-integrated downstream of KiCad.
+ *
+ * Copyright (C) 2026 KiChad Developers
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ */
+
+#include "design_script_footprint_compiler.h"
+
+#include "design_script_footprint_pad_compiler.h"
+
+#include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstdint>
+#include <set>
+#include <string>
+#include <string_view>
+#include <utility>
+
+
+namespace
+{
+
+using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
+using JSON = nlohmann::json;
+using RESULT = KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT;
+using PAD_COMPILER = KICHAD::DESIGN_SCRIPT_FOOTPRINT_PAD_COMPILER;
+
+constexpr size_t MAX_FOOTPRINT_PADS = 4096;
+constexpr size_t MAX_FOOTPRINT_MODELS = 64;
+constexpr int64_t MAX_MODEL_OFFSET_NM = 2'000'000'000LL;
+
+
+void diagnostic( RESULT& aResult, const std::string& aCode, const std::string& aMessage )
+{
+    aResult.diagnostics.push_back( { { "severity", "error" },
+                                     { "code", aCode },
+                                     { "message", aMessage } } );
+}
+
+
+bool scalar( const DOCUMENT& aDocument, size_t aNode, std::string& aValue )
+{
+    if( aNode >= aDocument.Nodes().size()
+        || aDocument.Nodes()[aNode].kind == DOCUMENT::NODE_KIND::LIST )
+    {
+        return false;
+    }
+
+    aValue = aDocument.AtomText( aNode );
+    return true;
+}
+
+
+bool identifier( const std::string& aValue )
+{
+    if( aValue.empty() || aValue.size() > 128 )
+        return false;
+
+    for( unsigned char character : aValue )
+    {
+        if( !( std::isalnum( character ) || character == '_' || character == '-'
+               || character == '.' || character == '+' ) )
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool libraryId( const std::string& aValue, std::string& aLibrary, std::string& aName )
+{
+    const size_t separator = aValue.find( ':' );
+
+    if( separator == std::string::npos || separator == 0 || separator + 1 >= aValue.size()
+        || aValue.find( ':', separator + 1 ) != std::string::npos )
+    {
+        return false;
+    }
+
+    aLibrary = aValue.substr( 0, separator );
+    aName = aValue.substr( separator + 1 );
+    return identifier( aLibrary ) && identifier( aName )
+           && aLibrary != "." && aLibrary != ".." && aName != "." && aName != "..";
+}
+
+
+bool boolean( const std::string& aText, bool& aValue )
+{
+    if( aText == "true" )
+    {
+        aValue = true;
+        return true;
+    }
+
+    if( aText == "false" )
+    {
+        aValue = false;
+        return true;
+    }
+
+    return false;
+}
+
+
+bool distance( const std::string& aText, int64_t& aNanometers )
+{
+    long double value = 0.0L;
+    const char* begin = aText.data();
+    const char* end = begin + aText.size();
+    const std::from_chars_result converted = std::from_chars( begin, end, value );
+
+    if( converted.ec != std::errc() || converted.ptr == begin || !std::isfinite( value ) )
+        return false;
+
+    const std::string_view unit( converted.ptr, static_cast<size_t>( end - converted.ptr ) );
+    long double scale = 0.0L;
+
+    if( unit == "mm" )
+        scale = 1'000'000.0L;
+    else if( unit == "mil" )
+        scale = 25'400.0L;
+    else if( unit == "um" )
+        scale = 1'000.0L;
+    else if( unit == "nm" )
+        scale = 1.0L;
+    else if( unit == "in" )
+        scale = 25'400'000.0L;
+    else
+        return false;
+
+    const long double rounded = std::round( value * scale );
+
+    if( !std::isfinite( rounded ) || rounded < -MAX_MODEL_OFFSET_NM
+        || rounded > MAX_MODEL_OFFSET_NM )
+    {
+        return false;
+    }
+
+    aNanometers = static_cast<int64_t>( rounded );
+    return true;
+}
+
+
+bool angle( const std::string& aText, int64_t& aTenths )
+{
+    if( !aText.ends_with( "deg" ) )
+        return false;
+
+    const std::string_view number( aText.data(), aText.size() - 3 );
+    long double degrees = 0.0L;
+    const std::from_chars_result converted =
+            std::from_chars( number.data(), number.data() + number.size(), degrees );
+
+    if( converted.ec != std::errc() || converted.ptr != number.data() + number.size()
+        || !std::isfinite( degrees ) )
+    {
+        return false;
+    }
+
+    const long double tenths = std::round( degrees * 10.0L );
+
+    if( tenths < -3600.0L || tenths > 3600.0L
+        || std::fabs( tenths - degrees * 10.0L ) > 0.000001L )
+    {
+        return false;
+    }
+
+    aTenths = static_cast<int64_t>( tenths );
+    return true;
+}
+
+
+bool decimalPpm( const std::string& aText, int64_t aMinimum, int64_t aMaximum,
+                 int64_t& aPartsPerMillion )
+{
+    long double value = 0.0L;
+    const char* begin = aText.data();
+    const char* end = begin + aText.size();
+    const std::from_chars_result converted = std::from_chars( begin, end, value );
+
+    if( converted.ec != std::errc() || converted.ptr != end || !std::isfinite( value ) )
+        return false;
+
+    const long double ppm = std::round( value * 1'000'000.0L );
+
+    if( ppm < static_cast<long double>( aMinimum )
+        || ppm > static_cast<long double>( aMaximum ) )
+    {
+        return false;
+    }
+
+    aPartsPerMillion = static_cast<int64_t>( ppm );
+    return true;
+}
+
+
+bool oneValue( const DOCUMENT& aDocument, size_t aNode, std::string& aValue )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+    return node.kind == DOCUMENT::NODE_KIND::LIST && node.children.size() == 2
+           && scalar( aDocument, node.children[1], aValue );
+}
+
+
+bool xyz( const DOCUMENT& aDocument, size_t aNode, bool aAngles, bool aScale, JSON& aValue )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+
+    if( node.children.size() != 4 )
+        return false;
+
+    static const char* keys[] = { "x", "y", "z" };
+
+    for( size_t index = 0; index < 3; ++index )
+    {
+        std::string text;
+        int64_t parsed = 0;
+
+        if( !scalar( aDocument, node.children[index + 1], text )
+            || ( aAngles && !angle( text, parsed ) )
+            || ( aScale && !decimalPpm( text, 1'000, 1'000'000'000, parsed ) )
+            || ( !aAngles && !aScale && !distance( text, parsed ) ) )
+        {
+            return false;
+        }
+
+        aValue[keys[index]] = parsed;
+    }
+
+    return true;
+}
+
+
+JSON compileAttributes( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult )
+{
+    JSON attributes = {
+        { "smd", false }, { "throughHole", false }, { "boardOnly", false },
+        { "excludeFromPosition", false }, { "excludeFromBom", false },
+        { "allowMissingCourtyard", false }, { "dnp", false },
+        { "allowSoldermaskBridges", false }
+    };
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+    std::set<std::string> fields;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+        std::string value;
+        bool parsed = false;
+        static const std::set<std::string> supported = {
+            "smd", "through_hole", "board_only", "exclude_from_position",
+            "exclude_from_bom", "allow_missing_courtyard", "dnp",
+            "allow_soldermask_bridges"
+        };
+
+        if( !supported.contains( head ) || !fields.emplace( head ).second
+            || !oneValue( aDocument, child, value ) || !boolean( value, parsed ) )
+        {
+            diagnostic( aResult, "invalid_authored_footprint_attributes",
+                        "footprint attributes require unique supported true/false fields" );
+            continue;
+        }
+
+        const std::string key = head == "through_hole" ? "throughHole"
+                              : head == "board_only" ? "boardOnly"
+                              : head == "exclude_from_position" ? "excludeFromPosition"
+                              : head == "exclude_from_bom" ? "excludeFromBom"
+                              : head == "allow_missing_courtyard" ? "allowMissingCourtyard"
+                              : head == "allow_soldermask_bridges" ? "allowSoldermaskBridges"
+                                                                    : head;
+        attributes[key] = parsed;
+    }
+
+    return attributes;
+}
+
+
+JSON compilePadGroup( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
+                      const std::string& aKind )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+    JSON numbers = JSON::array();
+    std::set<std::string> unique;
+
+    for( size_t index = 1; index < node.children.size(); ++index )
+    {
+        std::string number;
+
+        if( !scalar( aDocument, node.children[index], number ) || number.empty()
+            || number.size() > 64 || number.find( '\0' ) != std::string::npos
+            || !unique.emplace( number ).second )
+        {
+            diagnostic( aResult, "invalid_authored_footprint_" + aKind,
+                        aKind + " requires at least two unique bounded pad numbers" );
+            return JSON::array();
+        }
+
+        numbers.push_back( number );
+    }
+
+    if( numbers.size() < 2 )
+        diagnostic( aResult, "invalid_authored_footprint_" + aKind,
+                    aKind + " requires at least two unique bounded pad numbers" );
+
+    return numbers;
+}
+
+
+JSON compileModel( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult )
+{
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+    std::string path;
+
+    if( node.children.size() < 2 || !scalar( aDocument, node.children[1], path )
+        || !path.starts_with( "${KIPRJMOD}/" ) || path.size() > 4096
+        || path.find( '\0' ) != std::string::npos || path.find_first_of( "\r\n" ) != std::string::npos
+        || path.find( '\\' ) != std::string::npos || path.find( "/../" ) != std::string::npos
+        || !( path.ends_with( ".step" ) || path.ends_with( ".stp" )
+              || path.ends_with( ".wrl" ) ) )
+    {
+        diagnostic( aResult, "invalid_authored_footprint_model_path",
+                    "footprint model requires a confined project STEP, STP, or WRL path" );
+        return JSON::object();
+    }
+
+    JSON model = {
+        { "path", path }, { "visible", true }, { "opacityPpm", 1'000'000 },
+        { "offsetNm", { { "x", 0 }, { "y", 0 }, { "z", 0 } } },
+        { "scalePpm", { { "x", 1'000'000 }, { "y", 1'000'000 }, { "z", 1'000'000 } } },
+        { "rotationTenths", { { "x", 0 }, { "y", 0 }, { "z", 0 } } }
+    };
+    std::set<std::string> fields;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( aResult, "duplicate_authored_footprint_model_field",
+                        "footprint model field " + head + " occurs more than once" );
+            continue;
+        }
+
+        if( head == "offset" || head == "scale" || head == "rotation" )
+        {
+            JSON parsed = JSON::object();
+
+            if( !xyz( aDocument, child, head == "rotation", head == "scale", parsed ) )
+                diagnostic( aResult, "invalid_authored_footprint_model_transform",
+                            "model " + head + " requires three bounded values" );
+            else
+                model[head == "offset" ? "offsetNm"
+                      : head == "scale" ? "scalePpm"
+                                          : "rotationTenths"] = std::move( parsed );
+
+            continue;
+        }
+
+        std::string value;
+
+        if( !oneValue( aDocument, child, value ) )
+        {
+            diagnostic( aResult, "invalid_authored_footprint_model_field",
+                        "footprint model field " + head + " requires one value" );
+            continue;
+        }
+
+        if( head == "visible" )
+        {
+            bool parsed = false;
+
+            if( !boolean( value, parsed ) )
+                diagnostic( aResult, "invalid_authored_footprint_model_visibility",
+                            "model visible must be true or false" );
+            else
+                model["visible"] = parsed;
+        }
+        else if( head == "opacity" )
+        {
+            int64_t parsed = 0;
+
+            if( !decimalPpm( value, 0, 1'000'000, parsed ) )
+                diagnostic( aResult, "invalid_authored_footprint_model_opacity",
+                            "model opacity must be from zero through one" );
+            else
+                model["opacityPpm"] = parsed;
+        }
+        else
+        {
+            diagnostic( aResult, "unknown_authored_footprint_model_field",
+                        "model supports visible, opacity, offset, scale, and rotation" );
+        }
+    }
+
+    return model;
+}
+
+} // namespace
+
+
+namespace KICHAD
+{
+
+DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compile(
+        const LOSSLESS_SEXPR_DOCUMENT& aDocument, size_t aNode )
+{
+    RESULT result;
+    const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
+    std::string id;
+    std::string library;
+    std::string name;
+
+    if( node.children.size() < 2 || !scalar( aDocument, node.children[1], id )
+        || !libraryId( id, library, name ) )
+    {
+        diagnostic( result, "invalid_authored_footprint_id",
+                    "footprint requires one bounded LIBRARY:NAME identifier" );
+        return result;
+    }
+
+    result.footprint = {
+        { "id", id }, { "library", library }, { "name", name },
+        { "reference", "REF**" }, { "value", name }, { "datasheet", "" },
+        { "description", "" }, { "keywords", "" },
+        { "attributes",
+          { { "smd", false }, { "throughHole", false }, { "boardOnly", false },
+            { "excludeFromPosition", false }, { "excludeFromBom", false },
+            { "allowMissingCourtyard", false }, { "dnp", false },
+            { "allowSoldermaskBridges", false } } },
+        { "duplicatePadNumbersAreJumpers", false }, { "jumperGroups", JSON::array() },
+        { "netTieGroups", JSON::array() }, { "pads", JSON::array() },
+        { "models", JSON::array() }
+    };
+    std::set<std::string> fields;
+    std::set<std::string> padIds;
+
+    for( size_t index = 2; index < node.children.size(); ++index )
+    {
+        const size_t child = node.children[index];
+        const std::string head = aDocument.ListHead( child );
+
+        if( head == "pad" )
+        {
+            if( result.footprint["pads"].size() >= MAX_FOOTPRINT_PADS )
+            {
+                diagnostic( result, "too_many_authored_footprint_pads",
+                            "a footprint may contain at most 4096 pads" );
+                continue;
+            }
+
+            PAD_COMPILER::RESULT pad = PAD_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : pad.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string padId = pad.pad.value( "id", "" );
+
+            if( !padId.empty() && !padIds.emplace( padId ).second )
+                diagnostic( result, "duplicate_authored_footprint_pad_id",
+                            "footprint pad logical ID " + padId + " occurs more than once" );
+
+            result.footprint["pads"].push_back( std::move( pad.pad ) );
+            continue;
+        }
+
+        if( head == "model" )
+        {
+            if( result.footprint["models"].size() >= MAX_FOOTPRINT_MODELS )
+                diagnostic( result, "too_many_authored_footprint_models",
+                            "a footprint may reference at most 64 3D models" );
+            else
+                result.footprint["models"].push_back(
+                        compileModel( aDocument, child, result ) );
+
+            continue;
+        }
+
+        if( head == "jumper_group" || head == "net_tie_group" )
+        {
+            JSON group = compilePadGroup( aDocument, child, result, head );
+
+            if( group.size() >= 2 )
+                result.footprint[head == "jumper_group" ? "jumperGroups"
+                                                          : "netTieGroups"]
+                        .push_back( std::move( group ) );
+
+            continue;
+        }
+
+        if( !fields.emplace( head ).second )
+        {
+            diagnostic( result, "duplicate_authored_footprint_field",
+                        "footprint " + id + " field " + head + " occurs more than once" );
+            continue;
+        }
+
+        if( head == "attributes" )
+        {
+            result.footprint["attributes"] = compileAttributes( aDocument, child, result );
+            continue;
+        }
+
+        std::string value;
+
+        if( !oneValue( aDocument, child, value ) )
+        {
+            diagnostic( result, "invalid_authored_footprint_field",
+                        "footprint " + id + " field " + head + " requires one value" );
+            continue;
+        }
+
+        if( head == "reference" || head == "value" || head == "datasheet"
+            || head == "description" || head == "keywords" )
+        {
+            const size_t maximum = head == "reference" ? 64 : 4096;
+
+            if( value.size() > maximum || value.find( '\0' ) != std::string::npos )
+                diagnostic( result, "invalid_authored_footprint_text_field",
+                            "footprint " + head + " exceeds its bounded UTF-8 size" );
+            else
+                result.footprint[head] = value;
+        }
+        else if( head == "duplicate_pad_numbers_are_jumpers" )
+        {
+            bool parsed = false;
+
+            if( !boolean( value, parsed ) )
+                diagnostic( result, "invalid_authored_footprint_jumper_flag",
+                            "duplicate_pad_numbers_are_jumpers must be true or false" );
+            else
+                result.footprint["duplicatePadNumbersAreJumpers"] = parsed;
+        }
+        else
+        {
+            diagnostic( result, "unknown_authored_footprint_field",
+                        "unsupported footprint field " + head );
+        }
+    }
+
+    std::set<std::string> availablePadNumbers;
+
+    for( const JSON& pad : result.footprint["pads"] )
+    {
+        const std::string number = pad.value( "number", "" );
+
+        if( !number.empty() )
+            availablePadNumbers.emplace( number );
+    }
+
+    std::set<std::string> jumperPads;
+
+    for( const JSON& group : result.footprint["jumperGroups"] )
+    {
+        for( const JSON& number : group )
+        {
+            const std::string value = number.get<std::string>();
+
+            if( !availablePadNumbers.contains( value ) )
+                diagnostic( result, "unknown_authored_footprint_jumper_pad",
+                            "jumper group references absent pad number " + value );
+            else if( !jumperPads.emplace( value ).second )
+                diagnostic( result, "duplicate_authored_footprint_jumper_pad",
+                            "pad number " + value + " occurs in multiple jumper groups" );
+        }
+    }
+
+    std::set<std::string> netTiePads;
+
+    for( const JSON& group : result.footprint["netTieGroups"] )
+    {
+        for( const JSON& number : group )
+        {
+            const std::string value = number.get<std::string>();
+
+            if( !availablePadNumbers.contains( value ) )
+                diagnostic( result, "unknown_authored_footprint_net_tie_pad",
+                            "net-tie group references absent pad number " + value );
+            else if( !netTiePads.emplace( value ).second )
+                diagnostic( result, "duplicate_authored_footprint_net_tie_pad",
+                            "pad number " + value + " occurs in multiple net-tie groups" );
+        }
+    }
+
+    const JSON& attributes = result.footprint["attributes"];
+
+    if( attributes.value( "boardOnly", false )
+        && ( attributes.value( "smd", false ) || attributes.value( "throughHole", false ) ) )
+    {
+        diagnostic( result, "invalid_authored_footprint_mounting_attributes",
+                    "board_only footprints cannot also be classified as smd or through_hole" );
+    }
+
+    result.ok = result.diagnostics.empty();
+    return result;
+}
+
+} // namespace KICHAD

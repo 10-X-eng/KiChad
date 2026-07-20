@@ -14,6 +14,7 @@
 #include <kicad/codex/codex_tool_registry.h>
 #include <kicad/codex/design_script_pcb_planner.h>
 #include <kicad/codex/kicad_ipc_client.h>
+#include <kicad/codex/managed_footprint_library_io.h>
 #include <kicad/codex/project_settings_ipc.h>
 
 #include <atomic>
@@ -2093,6 +2094,160 @@ BOOST_AUTO_TEST_CASE( AppliesAndRollsBackKdsOwnedNativeSymbolLibrary )
     BOOST_CHECK( journal["previousManagedSymbolLibraries"][0]["present"].get<bool>() );
     BOOST_CHECK( !journal["previousManagedSymbolLibraries"][0]["sourceBase64"]
                           .get<std::string>().empty() );
+    server.Stop();
+}
+
+
+BOOST_AUTO_TEST_CASE( AppliesAndRollsBackKdsOwnedNativeFootprintLibrary )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    wxFileName libraries = wxFileName::DirName( fixture.Root() );
+    libraries.AppendDir( wxS( "libraries" ) );
+    BOOST_REQUIRE( wxFileName::Mkdir( libraries.GetFullPath(), 0700 ) );
+    wxFileName socketPath( fixture.Root(), wxS( "api-managed-footprint-test.sock" ) );
+    KINNG_REQUEST_SERVER server( "ipc://" + socketPath.GetFullPath().ToStdString() );
+    const std::string token = "qa-managed-footprint-token";
+
+    server.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( !request.ParseFromString( *aSerializedRequest ) )
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+                else if( request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path( fixture.Root().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_UNHANDLED );
+                }
+
+                server.Reply( response.SerializeAsString() );
+            } );
+
+    bool rejectFootprint = false;
+    int footprintValidationCalls = 0;
+    CODEX_TOOL_REGISTRY registry(
+            [&fixture]() { return fixture.Root(); }, []() { return true; },
+            [&fixture]() { return fixture.Root(); }, {}, {}, {}, {},
+            [&]( const wxFileName& path, std::string& error )
+            {
+                ++footprintValidationCalls;
+                BOOST_CHECK_EQUAL( path.GetDirs().Last(), wxS( "Product.pretty" ) );
+
+                if( rejectFootprint )
+                {
+                    error = "injected native footprint rejection";
+                    return false;
+                }
+
+                return true;
+            } );
+    const std::string source = R"KDS((kichad_design
+  (version 1) (project design)
+  (library symbol Device (table global))
+  (library footprint Product (table project)
+    (uri "${KIPRJMOD}/libraries/Product.pretty") (managed true))
+  (footprint Product:SENSOR_2P
+    (reference U) (value SENSOR_2P) (description "Managed sensor footprint")
+    (attributes (smd true) (allow_missing_courtyard true))
+    (pad p1 (number 1) (type smd) (shape roundrect) (at -0.8mm 0mm)
+      (size 0.8mm 0.8mm) (layers F.Cu F.Mask F.Paste)
+      (roundrect_radius 0.2mm))
+    (pad p2 (number 2) (type smd) (shape rect) (at 0.8mm 0mm)
+      (size 0.8mm 0.8mm) (layers F.Cu F.Mask F.Paste)))
+  (footprint Product:MOUNTING_HOLE
+    (reference H) (value MOUNTING_HOLE)
+    (pad h1 (number "") (type np_thru_hole) (shape circle) (at 0mm 0mm)
+      (size 3mm 3mm) (layers all_copper all_mask) (drill round 3mm)))
+))KDS";
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                                { "path", "managed-footprint.kicad_kds" },
+                                                { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    std::string hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    JSON preview = registry.Handle( "design", { { "operation", "preview" },
+                                                  { "path", "managed-footprint.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( preview.at( "success" ).get<bool>(), preview.dump() );
+    BOOST_CHECK_EQUAL( envelope( preview )["data"]["managedFootprintLibraries"]["counts"]
+                                         ["libraries"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( envelope( preview )["data"]["managedFootprintLibraries"]["counts"]
+                                         ["footprints"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( envelope( preview )["data"]["managedFootprintLibraries"]["counts"]
+                                         ["pads"].get<int>(), 3 );
+
+    JSON applied = registry.Handle( "design", { { "operation", "apply" },
+                                                  { "path", "managed-footprint.kicad_kds" },
+                                                  { "boardPath", "design.kicad_pcb" },
+                                                  { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( applied.at( "success" ).get<bool>(), applied.dump() );
+    BOOST_CHECK_EQUAL(
+            envelope( applied )["data"]["managedFootprintLibrariesApplied"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( footprintValidationCalls, 1 );
+    wxFileName footprintPath = libraries;
+    footprintPath.AppendDir( wxS( "Product.pretty" ) );
+    BOOST_REQUIRE( footprintPath.DirExists() );
+    bool priorPresent = false;
+    KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::FILES priorFiles;
+    std::string ioError;
+    BOOST_REQUIRE_MESSAGE( KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::ReadOptional(
+                                   footprintPath, priorPresent, priorFiles, ioError ), ioError );
+    BOOST_CHECK( priorPresent );
+    BOOST_REQUIRE_EQUAL( priorFiles.size(), 2 );
+    BOOST_CHECK_NE( priorFiles["SENSOR_2P.kicad_mod"].find( "Managed sensor footprint" ),
+                    std::string::npos );
+
+    std::string changed = std::regex_replace( source,
+                                               std::regex( "Managed sensor footprint" ),
+                                               "Rejected sensor footprint" );
+    saved = registry.Handle( "design", { { "operation", "save" },
+                                           { "path", "managed-footprint.kicad_kds" },
+                                           { "source", changed },
+                                           { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    hash = envelope( saved )["data"]["sourceSha256"].get<std::string>();
+    rejectFootprint = true;
+    JSON rejected = registry.Handle( "design", { { "operation", "apply" },
+                                                   { "path", "managed-footprint.kicad_kds" },
+                                                   { "boardPath", "design.kicad_pcb" },
+                                                   { "expectedSha256", hash } } );
+    BOOST_CHECK( !rejected.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( rejected )["error"]["code"].get<std::string>(),
+                       "managed_footprint_library_validation_failed" );
+    bool restoredPresent = false;
+    KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::FILES restoredFiles;
+    BOOST_REQUIRE_MESSAGE( KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::ReadOptional(
+                                   footprintPath, restoredPresent, restoredFiles, ioError ),
+                           ioError );
+    BOOST_CHECK( restoredPresent );
+    BOOST_CHECK( restoredFiles == priorFiles );
+    BOOST_CHECK_EQUAL( footprintValidationCalls, 2 );
+    const wxFileName journalPath( fixture.Root(),
+                                  wxS( "managed-footprint.kicad_kds_journal" ) );
+    BOOST_REQUIRE( journalPath.FileExists() );
+    const JSON journal = JSON::parse( readExactTextFile( journalPath ) );
+    BOOST_REQUIRE_EQUAL( journal["previousManagedFootprintLibraries"].size(), 1 );
+    BOOST_CHECK_EQUAL( journal["previousManagedFootprintLibraries"][0]["nickname"],
+                       "Product" );
+    BOOST_CHECK_EQUAL( journal["previousManagedFootprintLibraries"][0]["path"],
+                       "libraries/Product.pretty" );
+    BOOST_CHECK( journal["previousManagedFootprintLibraries"][0]["present"].get<bool>() );
+    BOOST_REQUIRE_EQUAL( journal["previousManagedFootprintLibraries"][0]["files"].size(), 2 );
+    BOOST_CHECK( !journal["previousManagedFootprintLibraries"][0]["files"][0]
+                          ["sourceBase64"].get<std::string>().empty() );
     server.Stop();
 }
 

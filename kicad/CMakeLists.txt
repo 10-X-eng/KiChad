@@ -33,6 +33,10 @@ set( KICAD_SRCS
     codex/design_script_board_compiler.cpp
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
+    codex/design_script_footprint_compiler.cpp
+    codex/design_script_footprint_library_generator.cpp
+    codex/design_script_footprint_pad_compiler.cpp
+    codex/design_script_footprint_pad_generator.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
     codex/design_script_schematic_planner.cpp
@@ -49,6 +53,7 @@ set( KICAD_SRCS
     codex/fabrication_artifact_validator.cpp
     codex/legacy_bom_artifact_validator.cpp
     codex/mechanical_artifact_validator.cpp
+    codex/managed_footprint_library_io.cpp
     codex/managed_symbol_library_io.cpp
     codex/schematic_bom_artifact_validator.cpp
     codex/schematic_dxf_artifact_validator.cpp

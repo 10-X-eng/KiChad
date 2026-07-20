@@ -1,0 +1,206 @@
+/*
+ * This program source code file is part of KiChad, a Codex-integrated downstream of KiCad.
+ *
+ * Copyright (C) 2026 KiChad Developers
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ */
+
+#include <boost/test/unit_test.hpp>
+
+#include <kicad/codex/design_script_compiler.h>
+#include <kicad/codex/design_script_footprint_library_generator.h>
+
+
+BOOST_AUTO_TEST_SUITE( DesignScriptFootprintAuthoring )
+
+
+BOOST_AUTO_TEST_CASE( LowersStandardPadsAndModelsToCurrentDeterministicFootprints )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project authored_footprints)
+  (library footprint Product (table project)
+    (uri "${KIPRJMOD}/libraries/Product.pretty") (managed true))
+  (footprint Product:SENSOR_2P
+    (reference U) (value SENSOR_2P)
+    (datasheet "https://example.test/sensor.pdf")
+    (description "Two-pad sensor package") (keywords "sensor smd")
+    (attributes (smd true) (exclude_from_position false)
+      (exclude_from_bom false) (allow_missing_courtyard true))
+    (net_tie_group 1 2)
+    (pad input
+      (number 1) (type smd) (shape roundrect) (at -0.8mm 0mm)
+      (rotation 0deg) (size 0.8mm 0.8mm)
+      (layers F.Cu F.Mask F.Paste) (roundrect_radius 0.2mm)
+      (solder_mask_margin 0.02mm) (solder_paste_margin inherit)
+      (solder_paste_margin_ratio -0.1) (clearance inherit)
+      (zone_connection thermal) (thermal_spoke_width 0.2mm)
+      (thermal_spoke_angle 45deg) (thermal_gap 0.15mm)
+      (pin_function INPUT) (pin_type signal))
+    (pad output
+      (number 2) (type smd) (shape rect) (at 0.8mm 0mm)
+      (rotation 90deg) (size 0.8mm 1mm) (layers F.Cu F.Mask F.Paste)
+      (shape_offset 0.05mm 0mm) (property testpoint) (die_length 0.25mm))
+    (pad triangle
+      (number 3) (type smd) (shape trapezoid) (at 0mm 1.5mm)
+      (size 1mm 0.8mm) (layers F.Cu F.Mask)
+      (trapezoid_delta 0.8mm 0mm))
+    (model "${KIPRJMOD}/models/SENSOR_2P.step"
+      (visible true) (opacity 0.75)
+      (offset 0mm 0mm 0.1mm) (scale 1 1 1) (rotation 0deg 0deg 90deg)))
+  (footprint Product:HEADER_1X01
+    (reference J) (value HEADER_1X01)
+    (attributes (through_hole true))
+    (duplicate_pad_numbers_are_jumpers false)
+    (pad pin1
+      (number 1) (type thru_hole) (shape circle) (at 0mm 0mm)
+      (rotation 0deg) (size 2mm 2mm) (layers all_copper all_mask)
+      (drill round 1mm) (remove_unused_layers true) (keep_end_layers true))
+    (pad mounting_hole
+      (number "") (type np_thru_hole) (shape circle) (at 3mm 0mm)
+      (rotation 0deg) (size 2mm 2mm) (layers all_copper all_mask)
+      (drill round 2mm)))
+))KDS";
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump( 2 ) );
+    BOOST_REQUIRE_EQUAL( compiled.ir["authoredFootprints"].size(), 2 );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["authoredFootprints"], 2 );
+
+    const auto& sensor = compiled.ir["authoredFootprints"][0];
+    BOOST_CHECK_EQUAL( sensor["library"], "Product" );
+    BOOST_CHECK_EQUAL( sensor["pads"][0]["roundrectRadiusNm"], 200000 );
+    BOOST_CHECK_EQUAL( sensor["pads"][0]["solderPasteMarginPpm"], -100000 );
+    BOOST_CHECK_EQUAL( sensor["models"][0]["opacityPpm"], 750000 );
+    BOOST_CHECK_EQUAL( sensor["models"][0]["rotationTenths"]["z"], 900 );
+
+    KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT first =
+            KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
+    KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT second =
+            KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( first.ok, first.diagnostics.dump( 2 ) );
+    BOOST_CHECK_EQUAL( first.sources, second.sources );
+    BOOST_REQUIRE( first.sources.contains( "Product:SENSOR_2P" ) );
+    BOOST_REQUIRE( first.sources.contains( "Product:HEADER_1X01" ) );
+    const std::string smd = first.sources["Product:SENSOR_2P"].get<std::string>();
+    const std::string tht = first.sources["Product:HEADER_1X01"].get<std::string>();
+    BOOST_CHECK_NE( smd.find( "(version 20260206)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(generator \"kichad_kds\")" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(net_tie_pad_groups \"1, 2\")" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(pad \"1\" smd roundrect" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(layers \"F.Cu\" \"F.Mask\" \"F.Paste\")" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(roundrect_rratio 0.25)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(rect_delta 0.8 0)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(solder_paste_margin_ratio -0.1)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(thermal_bridge_angle 45)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(model \"${KIPRJMOD}/models/SENSOR_2P.step\"" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(opacity 0.75)" ), std::string::npos );
+    BOOST_CHECK_NE( smd.find( "(rotate (xyz 0 0 90))" ), std::string::npos );
+    BOOST_CHECK_NE( tht.find( "(pad \"1\" thru_hole circle" ), std::string::npos );
+    BOOST_CHECK_NE( tht.find( "(drill 1)" ), std::string::npos );
+    BOOST_CHECK_NE( tht.find( "(layers \"*.Cu\" \"*.Mask\")" ), std::string::npos );
+    BOOST_CHECK_NE( tht.find( "(remove_unused_layers yes)" ), std::string::npos );
+    BOOST_CHECK_NE( tht.find( "(keep_end_layers yes)" ), std::string::npos );
+    BOOST_CHECK_NE( tht.find( "(pad \"\" np_thru_hole circle" ), std::string::npos );
+    BOOST_CHECK_EQUAL( first.counts["libraries"], 1 );
+    BOOST_CHECK_EQUAL( first.counts["footprints"], 2 );
+    BOOST_CHECK_EQUAL( first.counts["pads"], 5 );
+    BOOST_CHECK_EQUAL( first.counts["models"], 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsUnsafeOrPhysicallyInvalidFootprintSemantics )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1) (project invalid_footprints)
+  (library footprint Product (table project)
+    (uri "${KIPRJMOD}/Product.pretty") (managed true))
+  (footprint Product:BAD_RADIUS
+    (pad p1 (number 1) (type smd) (shape roundrect) (at 0mm 0mm)
+      (size 1mm 1mm) (layers F.Cu F.Mask) (roundrect_radius 0.6mm)))
+  (footprint Product:DRILLED_SMD
+    (pad p1 (number 1) (type smd) (shape circle) (at 0mm 0mm)
+      (size 1mm 1mm) (layers F.Cu F.Mask) (drill round 0.5mm)))
+  (footprint Product:PTH_WITHOUT_COPPER
+    (pad p1 (number 1) (type thru_hole) (shape circle) (at 0mm 0mm)
+      (size 1mm 1mm) (layers F.Cu F.Mask) (drill round 0.5mm)))
+  (footprint Product:NUMBERED_NPTH
+    (pad h1 (number MH1) (type np_thru_hole) (shape circle) (at 0mm 0mm)
+      (size 1mm 1mm) (layers all_copper all_mask) (drill round 0.5mm)))
+  (footprint Product:BAD_CIRCLE
+    (pad p1 (number 1) (type smd) (shape circle) (at 0mm 0mm)
+      (size 1mm 2mm) (layers F.Cu F.Mask)))
+  (footprint Product:OVERSIZE_DRILL
+    (pad p1 (number 1) (type thru_hole) (shape circle) (at 0mm 0mm)
+      (size 1mm 1mm) (layers all_copper all_mask) (drill round 2mm)))
+  (footprint Product:WINDOWS_TRAVERSAL
+    (pad p1 (number 1) (type smd) (shape rect) (at 0mm 0mm)
+      (size 1mm 1mm) (layers F.Cu F.Mask))
+    (model "${KIPRJMOD}/models\\outside.step"))
+  (footprint Product:BAD_REFERENCES
+    (jumper_group 1 404) (net_tie_group 1 405)
+    (pad p1 (number 1) (type smd) (shape rect) (at 0mm 0mm)
+      (size 1mm 1mm) (layers F.Cu F.Mask))
+    (model "${KIPRJMOD}/../outside.step"))
+))KDS";
+
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_CHECK( !compiled.ok );
+    const std::string diagnostics = compiled.diagnostics.dump();
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_pad_roundrect_radius" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_pad_drill_semantics" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_through_hole_layers" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "numbered_authored_footprint_npth_pad" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_pad_circle_size" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_pad_drill_size" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "unknown_authored_footprint_jumper_pad" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "unknown_authored_footprint_net_tie_pad" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "invalid_authored_footprint_model_path" ),
+                    std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( RequiresExplicitWholeLibraryOwnership )
+{
+    const std::string unmanaged = R"KDS((kichad_design
+  (version 1) (project unmanaged_footprint)
+  (library footprint Local (table project) (uri "${KIPRJMOD}/Local.pretty"))
+  (footprint Local:X
+    (pad p1 (number 1) (type smd) (shape rect) (at 0mm 0mm)
+      (size 1mm 1mm) (layers F.Cu F.Mask)))
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( unmanaged );
+    BOOST_CHECK( !compiled.ok );
+    BOOST_CHECK_NE( compiled.diagnostics.dump().find( "unmanaged_authored_footprint_library" ),
+                    std::string::npos );
+
+    const std::string empty = R"KDS((kichad_design
+  (version 1) (project empty_footprint)
+  (library footprint Local (table project)
+    (uri "${KIPRJMOD}/Local.pretty") (managed true))
+))KDS";
+    compiled = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( empty );
+    BOOST_CHECK( !compiled.ok );
+    BOOST_CHECK_NE( compiled.diagnostics.dump().find( "empty_managed_footprint_library" ),
+                    std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()

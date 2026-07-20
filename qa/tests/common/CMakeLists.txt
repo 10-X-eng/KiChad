@@ -57,6 +57,7 @@ set( QA_COMMON_SRCS
     test_three_d_pdf_artifact_validator.cpp
     test_u3d_artifact_validator.cpp
     test_design_script_compiler.cpp
+    test_design_script_footprint_authoring.cpp
     test_design_script_pcb_planner.cpp
     test_design_script_pcb_reconciler.cpp
     test_design_script_schematic_planner.cpp
@@ -67,6 +68,7 @@ set( QA_COMMON_SRCS
     test_design_script_symbol_library_generator.cpp
     test_design_script_symbol_metadata.cpp
     test_design_script_symbol_text.cpp
+    test_managed_footprint_library_io.cpp
     test_managed_symbol_library_io.cpp
     test_coroutine.cpp
     test_eda_shape.cpp
@@ -131,6 +133,10 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_library_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_pad_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_pad_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_planner.cpp
@@ -151,6 +157,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/legacy_bom_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/mechanical_artifact_validator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/managed_footprint_library_io.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/managed_symbol_library_io.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_bom_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/schematic_dxf_artifact_validator.cpp

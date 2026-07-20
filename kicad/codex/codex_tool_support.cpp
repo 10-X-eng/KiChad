@@ -804,6 +804,11 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
             return false;
         }
 
+        // Whole-library KDS ownership is generated from the compiled IR and injected by the
+        // design backend.  It must not depend on stale or absent on-disk artifacts.
+        if( library.value( "managed", false ) )
+            continue;
+
         if( nickname.empty() || !uri.starts_with( prefix )
             || uri.size() <= prefix.size() || !uri.ends_with( ".pretty" ) )
         {

@@ -14,6 +14,7 @@
 #include "design_script_capabilities.h"
 
 #include "design_script_board_compiler.h"
+#include "design_script_footprint_compiler.h"
 #include "design_script_symbol_compiler.h"
 #include "lossless_sexpr_document.h"
 
@@ -709,10 +710,11 @@ JSON compileLibrary( const DOCUMENT& aDocument, size_t aNode,
     }
 
     if( library.value( "managed", false )
-        && ( table != "project" || kind != "symbol" ) )
+        && ( table != "project" || ( kind != "symbol" && kind != "footprint" ) ) )
     {
         diagnostic( aResult, "error", "unsupported_managed_library",
-                    "KDS version 1 managed libraries currently require a project symbol library" );
+                    "KDS version 1 managed libraries require a project symbol or footprint "
+                    "library" );
     }
 
     if( table == "project" )
@@ -6702,6 +6704,34 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(hidden BOOL) (name_size DISTANCE) (number_size DISTANCE) "
                       "(alternate NAME ELECTRICAL_TYPE SHAPE)... ) ...))" } },
                   { { "form",
+                      "(footprint LIBRARY:NAME (reference TEXT) (value TEXT) "
+                      "(datasheet TEXT) (description TEXT) (keywords TEXT) "
+                      "(attributes (smd BOOL) (through_hole BOOL) (board_only BOOL) "
+                      "(exclude_from_position BOOL) (exclude_from_bom BOOL) "
+                      "(allow_missing_courtyard BOOL) (dnp BOOL) "
+                      "(allow_soldermask_bridges BOOL)) "
+                      "(duplicate_pad_numbers_are_jumpers BOOL) "
+                      "(jumper_group PAD_NUMBER...) (net_tie_group PAD_NUMBER...) "
+                      "(pad ID (number TEXT) (type smd|thru_hole|connect|np_thru_hole) "
+                      "(shape circle|rect|oval|trapezoid|roundrect) (at X Y) "
+                      "(rotation ANGLE) (size W H) (layers LAYER...) "
+                      "[(drill round DIAMETER)|(drill oval WIDTH HEIGHT)] "
+                      "[(shape_offset X Y)] [(trapezoid_delta X Y)] "
+                      "[(roundrect_radius DISTANCE)] [(property TYPE)] "
+                      "[(pin_function TEXT)] [(pin_type TEXT)] [(die_length DISTANCE)] "
+                      "[(solder_mask_margin inherit|DISTANCE)] "
+                      "[(solder_paste_margin inherit|DISTANCE)] "
+                      "[(solder_paste_margin_ratio inherit|DECIMAL)] "
+                      "[(clearance inherit|DISTANCE)] "
+                      "[(zone_connection inherit|none|thermal|solid|tht_thermal)] "
+                      "[(thermal_spoke_width inherit|DISTANCE)] "
+                      "[(thermal_spoke_angle inherit|ANGLE)] "
+                      "[(thermal_gap inherit|DISTANCE)] "
+                      "[(remove_unused_layers BOOL)] [(keep_end_layers BOOL)]) ... "
+                      "(model ${KIPRJMOD}/PATH.step|.stp|.wrl [(visible BOOL)] "
+                      "[(opacity DECIMAL)] [(offset X Y Z)] [(scale X Y Z)] "
+                      "[(rotation X Y Z)]) ...)" } },
+                  { { "form",
                       "(component REF (symbol LIB:ID) (value VALUE) "
                       "(footprint LIB:ID|none) "
                       "(datasheet TEXT) (description TEXT) (property NAME VALUE) "
@@ -6958,6 +6988,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "project", JSON::object() },
         { "libraries", JSON::array() },
         { "authoredSymbols", JSON::array() },
+        { "authoredFootprints", JSON::array() },
         { "schematic",
           { { "sheets", JSON::array() }, { "components", JSON::array() },
             { "nets", JSON::array() }, { "noConnects", JSON::array() },
@@ -6981,6 +7012,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     std::set<std::string>    netNames;
     std::set<std::string>    libraryIds;
     std::set<std::string>    authoredSymbolIds;
+    std::set<std::string>    authoredFootprintIds;
     std::set<std::string>    sheetIds;
     bool                     sawRules = false;
     bool                     sawNetClasses = false;
@@ -7077,6 +7109,25 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             }
 
             result.ir["authoredSymbols"].emplace_back( std::move( authored.symbol ) );
+        }
+        else if( form == "footprint" )
+        {
+            KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT authored =
+                    KICHAD::DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compile( *document, formNode );
+
+            for( JSON& footprintDiagnostic : authored.diagnostics )
+                result.diagnostics.emplace_back( std::move( footprintDiagnostic ) );
+
+            const std::string id = authored.footprint.value( "id", "" );
+
+            if( !id.empty() && !authoredFootprintIds.emplace( id ).second )
+            {
+                diagnostic( result, "error", "duplicate_authored_footprint",
+                            "authored footprint " + id + " occurs more than once" );
+            }
+
+            result.ir["authoredFootprints"].emplace_back(
+                    std::move( authored.footprint ) );
         }
         else if( form == "component" )
         {
@@ -8120,7 +8171,9 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     size_t projectSymbolLibraries = 0;
     size_t projectFootprintLibraries = 0;
     std::map<std::string, const JSON*> symbolLibraries;
+    std::map<std::string, const JSON*> footprintLibraries;
     std::map<std::string, size_t> managedSymbolCounts;
+    std::map<std::string, size_t> managedFootprintCounts;
 
     for( const JSON& library : result.ir["libraries"] )
     {
@@ -8128,6 +8181,12 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             && !library.value( "id", "" ).empty() )
         {
             symbolLibraries[library.value( "id", "" )] = &library;
+        }
+
+        if( library.is_object() && library.value( "kind", "" ) == "footprint"
+            && !library.value( "id", "" ).empty() )
+        {
+            footprintLibraries[library.value( "id", "" )] = &library;
         }
 
         if( !library.is_object() || library.value( "table", "" ) != "project" )
@@ -8182,6 +8241,52 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             diagnostic( result, "error", "empty_managed_symbol_library",
                         "managed symbol library " + nickname
                                 + " requires at least one top-level symbol declaration" );
+        }
+    }
+
+    if( result.ir["authoredFootprints"].size() > 4096 )
+    {
+        diagnostic( result, "error", "too_many_authored_footprints",
+                    "a script may author at most 4096 footprints" );
+    }
+
+    for( const JSON& footprint : result.ir["authoredFootprints"] )
+    {
+        if( !footprint.is_object() || !footprint.contains( "library" )
+            || !footprint["library"].is_string() )
+        {
+            continue;
+        }
+
+        const std::string nickname = footprint["library"].get<std::string>();
+        auto library = footprintLibraries.find( nickname );
+
+        if( library == footprintLibraries.end() )
+        {
+            diagnostic( result, "error", "unresolved_authored_footprint_library",
+                        "authored footprint " + footprint.value( "id", "" )
+                                + " has no declared footprint library " + nickname );
+        }
+        else if( library->second->value( "table", "" ) != "project"
+                 || !library->second->value( "managed", false ) )
+        {
+            diagnostic( result, "error", "unmanaged_authored_footprint_library",
+                        "authored footprint " + footprint.value( "id", "" )
+                                + " requires a project footprint library with (managed true)" );
+        }
+        else
+        {
+            ++managedFootprintCounts[nickname];
+        }
+    }
+
+    for( const auto& [nickname, library] : footprintLibraries )
+    {
+        if( library->value( "managed", false ) && managedFootprintCounts[nickname] == 0 )
+        {
+            diagnostic( result, "error", "empty_managed_footprint_library",
+                        "managed footprint library " + nickname
+                                + " requires at least one top-level footprint declaration" );
         }
     }
 
@@ -8280,6 +8385,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "counts",
           { { "libraries", result.ir["libraries"].size() },
             { "authoredSymbols", result.ir["authoredSymbols"].size() },
+            { "authoredFootprints", result.ir["authoredFootprints"].size() },
             { "sheets", result.ir["schematic"]["sheets"].size() },
             { "components", result.ir["schematic"]["components"].size() },
             { "nets", result.ir["schematic"]["nets"].size() },

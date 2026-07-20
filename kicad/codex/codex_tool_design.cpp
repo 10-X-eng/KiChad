@@ -13,6 +13,7 @@
 
 #include "codex_tool_internal.h"
 #include "design_script_compiler.h"
+#include "design_script_footprint_library_generator.h"
 #include "design_script_pcb_planner.h"
 #include "design_script_pcb_reconciler.h"
 #include "design_script_schematic_planner.h"
@@ -21,6 +22,7 @@
 #include "design_script_symbol_resolver.h"
 #include "kicad_ipc_client.h"
 #include "kicad_ipc_transaction.h"
+#include "managed_footprint_library_io.h"
 #include "managed_symbol_library_io.h"
 #include "project_settings_ipc.h"
 
@@ -83,6 +85,18 @@ struct MANAGED_SYMBOL_LIBRARY_UPDATE
     std::string source;
     bool        previousPresent = false;
     std::string previousSource;
+    bool        applied = false;
+};
+
+
+struct MANAGED_FOOTPRINT_LIBRARY_UPDATE
+{
+    std::string nickname;
+    std::string relativePath;
+    wxFileName  path;
+    KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::FILES files;
+    bool        previousPresent = false;
+    KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::FILES previousFiles;
     bool        applied = false;
 };
 
@@ -261,6 +275,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
         KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT generatedSymbols =
                 KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( compiled.ir );
+        KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT generatedFootprints =
+                KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
         JSON symbolLibrarySources;
         JSON footprintSources;
 
@@ -271,6 +287,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                     ? "managed symbol libraries could not be generated"
                                     : generatedSymbols.diagnostics.front().value(
                                               "message", "managed symbol generation failed" ) );
+        }
+
+        if( !generatedFootprints.ok )
+        {
+            return failure( "footprint_generation_failed",
+                            generatedFootprints.diagnostics.empty()
+                                    ? "managed footprint libraries could not be generated"
+                                    : generatedFootprints.diagnostics.front().value(
+                                              "message", "managed footprint generation failed" ) );
         }
 
         if( !KICHAD::CODEX_TOOLS::InventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
@@ -287,6 +312,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             return failure( "footprint_inventory_failed", pathError );
         }
+
+        for( const auto& [id, nativeSource] : generatedFootprints.sources.items() )
+            footprintSources[id] = nativeSource;
 
         KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
                 KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
@@ -411,6 +439,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         for( const auto& entry : generatedSymbols.sources.items() )
             payload["managedSymbolLibraries"]["nicknames"].push_back( entry.key() );
 
+        payload["managedFootprintLibraries"] = {
+            { "counts", generatedFootprints.counts },
+            { "libraries", generatedFootprints.libraries }
+        };
+
         if( hasPath )
             payload["path"] = aArguments["path"];
 
@@ -462,6 +495,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
         KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::RESULT generatedSymbols =
                 KICHAD::DESIGN_SCRIPT_SYMBOL_LIBRARY_GENERATOR::Generate( compiled.ir );
+        KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT generatedFootprints =
+                KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
         JSON symbolLibrarySources;
         JSON footprintSources;
 
@@ -472,6 +507,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                     ? "managed symbol libraries could not be generated"
                                     : generatedSymbols.diagnostics.front().value(
                                               "message", "managed symbol generation failed" ) );
+        }
+
+        if( !generatedFootprints.ok )
+        {
+            return failure( "footprint_generation_failed",
+                            generatedFootprints.diagnostics.empty()
+                                    ? "managed footprint libraries could not be generated"
+                                    : generatedFootprints.diagnostics.front().value(
+                                              "message", "managed footprint generation failed" ) );
         }
 
         if( !KICHAD::CODEX_TOOLS::InventoryProjectSymbolLibraries( aProjectPath, compiled.ir,
@@ -488,6 +532,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             return failure( "footprint_inventory_failed", pathError );
         }
+
+        for( const auto& [id, nativeSource] : generatedFootprints.sources.items() )
+            footprintSources[id] = nativeSource;
 
         KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
                 KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
@@ -971,6 +1018,64 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             managedSymbolLibraryUpdates.emplace_back( std::move( update ) );
         }
 
+        std::vector<MANAGED_FOOTPRINT_LIBRARY_UPDATE> managedFootprintLibraryUpdates;
+
+        for( const JSON& library : compiled.ir["libraries"] )
+        {
+            if( !library.is_object() || library.value( "kind", "" ) != "footprint"
+                || library.value( "table", "" ) != "project"
+                || !library.value( "managed", false ) )
+            {
+                continue;
+            }
+
+            MANAGED_FOOTPRINT_LIBRARY_UPDATE update;
+            update.nickname = library.value( "id", "" );
+
+            if( update.nickname.empty()
+                || !generatedFootprints.libraries.contains( update.nickname )
+                || !generatedFootprints.libraries[update.nickname].is_array()
+                || generatedFootprints.libraries[update.nickname].empty()
+                || !library.contains( "uri" ) || !library["uri"].is_string() )
+            {
+                return failure( "invalid_plan",
+                                "KDS produced an inconsistent managed footprint library" );
+            }
+
+            for( const JSON& nameValue : generatedFootprints.libraries[update.nickname] )
+            {
+                if( !nameValue.is_string() )
+                {
+                    return failure( "invalid_plan",
+                                    "KDS produced a malformed managed footprint name" );
+                }
+
+                const std::string name = nameValue.get<std::string>();
+                const std::string id = update.nickname + ":" + name;
+
+                if( name.empty() || !generatedFootprints.sources.contains( id )
+                    || !generatedFootprints.sources[id].is_string()
+                    || !update.files.emplace(
+                            name + ".kicad_mod",
+                            generatedFootprints.sources[id].get<std::string>() ).second )
+                {
+                    return failure( "invalid_plan",
+                                    "KDS produced inconsistent managed footprint source files" );
+                }
+            }
+
+            if( !KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::Resolve(
+                        aProjectPath, library["uri"].get<std::string>(), update.path,
+                        update.relativePath, pathError )
+                || !KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::ReadOptional(
+                        update.path, update.previousPresent, update.previousFiles, pathError ) )
+            {
+                return failure( "managed_footprint_library_inventory_failed", pathError );
+            }
+
+            managedFootprintLibraryUpdates.emplace_back( std::move( update ) );
+        }
+
         KICHAD_IPC_CLIENT client( "org.kichad.codex.design", aIpcSocketDirectory );
         KICHAD_IPC_TARGET target;
 
@@ -1224,6 +1329,32 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                             wxBase64Encode( update.previousSource.data(),
                                             update.previousSource.size() )
                                     .ToStdString() } } );
+            }
+        }
+
+        if( !managedFootprintLibraryUpdates.empty() )
+        {
+            applyJournal["previousManagedFootprintLibraries"] = JSON::array();
+
+            for( const MANAGED_FOOTPRINT_LIBRARY_UPDATE& update :
+                 managedFootprintLibraryUpdates )
+            {
+                JSON entry = { { "nickname", update.nickname },
+                               { "path", update.relativePath },
+                               { "present", update.previousPresent },
+                               { "files", JSON::array() } };
+
+                for( const auto& [filename, previousSource] : update.previousFiles )
+                {
+                    entry["files"].push_back(
+                            { { "name", filename },
+                              { "sourceBase64",
+                                wxBase64Encode( previousSource.data(), previousSource.size() )
+                                        .ToStdString() } } );
+                }
+
+                applyJournal["previousManagedFootprintLibraries"].push_back(
+                        std::move( entry ) );
             }
         }
 
@@ -1623,6 +1754,82 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             ++managedSymbolLibrariesApplied;
         }
 
+        size_t managedFootprintLibrariesApplied = 0;
+
+        auto rollbackManagedFootprintLibraries = [&]( std::string& aMessage )
+        {
+            for( auto update = managedFootprintLibraryUpdates.rbegin();
+                 update != managedFootprintLibraryUpdates.rend(); ++update )
+            {
+                if( !update->applied )
+                    continue;
+
+                std::string rollbackError;
+
+                if( !KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::InstallAtomically(
+                            update->path, update->previousPresent,
+                            update->previousFiles, rollbackError ) )
+                {
+                    aMessage += "; managed footprint library rollback also failed: "
+                                + rollbackError;
+                }
+            }
+        };
+
+        for( MANAGED_FOOTPRINT_LIBRARY_UPDATE& update : managedFootprintLibraryUpdates )
+        {
+            const bool installed = KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::InstallAtomically(
+                    update.path, true, update.files, pathError );
+            const bool nativeValid = installed
+                                     && ( m_footprintLibraryValidator
+                                                  ? m_footprintLibraryValidator( update.path,
+                                                                                 pathError )
+                                                  : KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::ValidateNative(
+                                                            update.path, pathError ) );
+
+            if( !nativeValid )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !KICHAD::MANAGED_FOOTPRINT_LIBRARY_IO::InstallAtomically(
+                            update.path, update.previousPresent,
+                            update.previousFiles, rollbackError ) )
+                {
+                    message += "; current managed footprint library rollback also failed: "
+                               + rollbackError;
+                }
+
+                rollbackManagedFootprintLibraries( message );
+                rollbackManagedSymbolLibraries( message );
+
+                for( auto library = libraryTableUpdates.rbegin();
+                     library != libraryTableUpdates.rend(); ++library )
+                {
+                    if( !library->applied )
+                        continue;
+
+                    rollbackError.clear();
+
+                    if( !KICHAD::CODEX_TOOLS::InstallTextFileAtomically(
+                                library->path, library->previousPresent,
+                                library->previousSource, rollbackError ) )
+                    {
+                        message += "; library-table rollback also failed: " + rollbackError;
+                    }
+                }
+
+                rollbackAllSettings( message );
+                return failure( installed ? "managed_footprint_library_validation_failed"
+                                          : "managed_footprint_library_apply_failed",
+                                message );
+            }
+
+            update.applied = true;
+            ++managedFootprintLibrariesApplied;
+        }
+
         size_t schematicFilesApplied = 0;
 
         auto rollbackSchematicFiles = [&]( std::string& aMessage )
@@ -1658,6 +1865,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 }
 
                 rollbackSchematicFiles( message );
+                rollbackManagedFootprintLibraries( message );
                 rollbackManagedSymbolLibraries( message );
 
                 for( auto library = libraryTableUpdates.rbegin();
@@ -1718,6 +1926,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     std::string message = pathError
                                           + "; the apply journal was retained for safe recovery";
                     rollbackSchematicFiles( message );
+                    rollbackManagedFootprintLibraries( message );
                     rollbackManagedSymbolLibraries( message );
 
                     for( auto library = libraryTableUpdates.rbegin();
@@ -1746,6 +1955,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         auto rollbackAllArtifacts = [&]( std::string& aMessage )
         {
             rollbackSchematicFiles( aMessage );
+            rollbackManagedFootprintLibraries( aMessage );
             rollbackManagedSymbolLibraries( aMessage );
 
             for( auto update = libraryTableUpdates.rbegin();
@@ -1789,6 +1999,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                                || fieldTemplatesApplied
                                                || customRulesApplied || libraryTablesApplied > 0
                                                || managedSymbolLibrariesApplied > 0
+                                               || managedFootprintLibrariesApplied > 0
                                                || schematicFilesApplied > 0
                                        ? "design settings applied"
                                        : "no board changes" },
@@ -1801,6 +2012,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                              { "customRulesApplied", customRulesApplied },
                              { "libraryTablesApplied", libraryTablesApplied },
                              { "managedSymbolLibrariesApplied", managedSymbolLibrariesApplied },
+                             { "managedFootprintLibrariesApplied",
+                               managedFootprintLibrariesApplied },
                              { "schematicFilesApplied", schematicFilesApplied },
                              { "schematicCounts", schematicReconciled.counts },
                              { "journalRetained", !journalRemoved } };
@@ -1878,6 +2091,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "customRulesApplied", customRulesApplied },
                          { "libraryTablesApplied", libraryTablesApplied },
                          { "managedSymbolLibrariesApplied", managedSymbolLibrariesApplied },
+                         { "managedFootprintLibrariesApplied",
+                           managedFootprintLibrariesApplied },
                          { "schematicFilesApplied", schematicFilesApplied },
                          { "schematicCounts", schematicReconciled.counts },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
