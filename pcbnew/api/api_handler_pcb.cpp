@@ -45,6 +45,7 @@
 #include <pcb_shape.h>
 #include <pcb_text.h>
 #include <pcb_textbox.h>
+#include <pcb_table.h>
 #include <pcb_track.h>
 #include <pcbnew_id.h>
 #include <pcb_marker.h>
@@ -1251,6 +1252,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
         case PCB_SHAPE_T:
         case PCB_TEXT_T:
         case PCB_TEXTBOX_T:
+        case PCB_TABLE_T:
         case PCB_BARCODE_T:
         case PCB_REFERENCE_IMAGE_T:
         {
@@ -1269,6 +1271,23 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
             if( inserted )
                 typesInserted.insert( type );
 
+            break;
+        }
+
+        case PCB_TABLECELL_T:
+        {
+            handledAnything = true;
+
+            for( BOARD_ITEM* item : board->Drawings() )
+            {
+                if( PCB_TABLE* table = dynamic_cast<PCB_TABLE*>( item ) )
+                {
+                    const std::vector<PCB_TABLECELL*> cells = table->GetCells();
+                    std::copy( cells.begin(), cells.end(), std::back_inserter( items ) );
+                }
+            }
+
+            typesInserted.insert( PCB_TABLECELL_T );
             break;
         }
 

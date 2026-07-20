@@ -55,7 +55,7 @@ nlohmann::json PcbSpec()
             { { "type", "string" },
               { "enum", nlohmann::json::array(
                                 { "footprint", "trace", "via", "arc", "zone", "rule_area",
-                                  "shape", "text", "textbox", "dimension" } ) },
+                                  "shape", "text", "textbox", "table", "dimension" } ) },
               { "description", "KiCad 10 protobuf board item type." } };
     schema["properties"]["messagePath"] =
             { { "type", "string" }, { "maxLength", 512 },

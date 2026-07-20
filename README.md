@@ -175,8 +175,9 @@ Those same primitives also create arbitrary-layer board artwork with native net 
 paired solder-mask expansion, including sequential inner-copper and custom user layers.
 Board text boxes use that same AI-readable, stable-ID authoring model and become editable native
 `BoardTextBox` objects with rectangle or polygon geometry, four-sided margins, border style,
-typography, justification, hyperlink, knockout, layer, and lock state. Tables remain a distinct
-capability rather than being hidden inside the text-box implementation.
+typography, justification, hyperlink, knockout, layer, and lock state. Board tables remain a
+distinct implementation and become atomic native `BoardTable` objects with ordered dimensions,
+merged grids, independently styled borders/separators, and deterministic owned cells.
 It also resolves and places an existing schematic-linked footprint on the back side while proving
 the footprint UUID, symbol path, pad UUID, and flipped pad layers are preserved. A second absent
 footprint is parsed from the declared project-local `.pretty` library, linked to its deterministic

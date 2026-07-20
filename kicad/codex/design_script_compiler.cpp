@@ -6916,7 +6916,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(protection (tenting ...) (covering ...) (plugging ...) "
                       "(filling inherit|filled|unfilled) (capping inherit|capped|uncapped) "
                       "(post_machining front|back counterbore|countersink ...))]) "
-                      "(zone NET ...) (text ...) (text_box ...) (dimension ...) "
+                      "(zone NET ...) (text ...) (text_box ...) (table ...) (dimension ...) "
                       "(keepout ...))" } },
                   { { "form",
                       "(stackup (finish NAME) (impedance_controlled BOOL) "
@@ -6953,6 +6953,16 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(justify HORIZONTAL VERTICAL MIRRORED_BOOL) "
                       "(stroke WIDTH STYLE) (border BOOL) (knockout BOOL) "
                       "(locked BOOL) [(hyperlink URI)])" } },
+                  { { "form",
+                      "(table ID (at X Y) (rotation 0deg|90deg) (layer LAYER) "
+                      "(locked BOOL) (columns WIDTH...) (rows HEIGHT...) "
+                      "(border (external BOOL) (header BOOL) (stroke WIDTH STYLE COLOR)) "
+                      "(separators (rows BOOL) (columns BOOL) (stroke WIDTH STYLE COLOR)) "
+                      "(cells (cell ROW COLUMN TEXT (margins L T R B) "
+                      "(text_size W H) (font stroke|NAME) (line_spacing RATIO) "
+                      "(thickness auto|DISTANCE) (justify H V) (mirror BOOL) "
+                      "(bold BOOL) (italic BOOL) (hyperlink none|URI) (locked BOOL))...) "
+                      "(merges (merge START_ROW START_COLUMN END_ROW END_COLUMN)...))" } },
                   { { "form",
                       "(dimension aligned|orthogonal|radial|leader|center (id ID) "
                       "(layer LAYER) STYLE_GEOMETRY (line_width D) (arrow_length D) ...)" } },

@@ -593,6 +593,35 @@ message BoardTextBox
   bool knockout = 8;
 }
 
+// One cell owned by a board table.  Its rectangle is explicit so table edits round-trip exactly.
+message BoardTableCell
+{
+  kiapi.common.types.KIID id = 1;
+  kiapi.common.types.TextBox textbox = 2;
+  uint32 column_span = 3;
+  uint32 row_span = 4;
+  TextBoxMargins margins = 5;
+  kiapi.common.types.LockedState locked = 6;
+}
+
+// A complete native board table, including all owned cells and line policy.
+message BoardTable
+{
+  kiapi.common.types.KIID id = 1;
+  BoardLayer layer = 2;
+  kiapi.common.types.LockedState locked = 3;
+  uint32 column_count = 4;
+  repeated kiapi.common.types.Distance column_widths = 5;
+  repeated kiapi.common.types.Distance row_heights = 6;
+  bool stroke_external = 7;
+  bool stroke_header_separator = 8;
+  kiapi.common.types.StrokeAttributes border_stroke = 9;
+  bool stroke_rows = 10;
+  bool stroke_columns = 11;
+  kiapi.common.types.StrokeAttributes separators_stroke = 12;
+  repeated BoardTableCell cells = 13;
+}
+
 // NOTE: There has been some discussion about what to do with pad attributes and properties.
 // This may be considered somewhat unstable until we decide what to do with the KiCad side.
 // It is not clear what the set of mutually-exclusive pad types will be at the end of the day,

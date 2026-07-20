@@ -13,6 +13,7 @@
 
 #include "design_script_board_graphic_proto_generator.h"
 #include "design_script_board_text_box_proto_generator.h"
+#include "design_script_board_table_proto_generator.h"
 #include "design_script_custom_pad_proto_generator.h"
 
 #include <algorithm>
@@ -758,6 +759,26 @@ JSON planTextBox( const JSON& aStatement, const std::string& aProject )
              { "itemType", "textbox" },
              { "logicalId", logicalId },
              { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
+
+JSON planTable( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "table", logicalId );
+    JSON item;
+
+    if( !KICHAD::DESIGN_SCRIPT_BOARD_TABLE_PROTO_GENERATOR::Render(
+                aStatement.at( "table" ), aProject, item )
+        || item.at( "id" ).at( "value" ) != itemId )
+    {
+        throw std::runtime_error( "invalid board table IR" );
+    }
+
+    return { { "action", "upsert" }, { "itemType", "table" },
+             { "logicalId", logicalId }, { "itemId", itemId },
              { "item", std::move( item ) } };
 }
 
@@ -1551,6 +1572,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
             else if( kind == "board_text_box" )
             {
                 result.operations.emplace_back( planTextBox( statement, project ) );
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "board_table" )
+            {
+                result.operations.emplace_back( planTable( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
             else if( kind == "dimension" )

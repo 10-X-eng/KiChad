@@ -34,6 +34,8 @@ set( KICAD_SRCS
     codex/design_script_board_graphic_compiler.cpp
     codex/design_script_board_graphic_proto_generator.cpp
     codex/design_script_board_outline_compiler.cpp
+    codex/design_script_board_table_compiler.cpp
+    codex/design_script_board_table_proto_generator.cpp
     codex/design_script_board_text_box_compiler.cpp
     codex/design_script_board_text_box_proto_generator.cpp
     codex/design_script_capabilities.cpp

@@ -87,7 +87,8 @@ bool managedType( const std::string& aType )
 {
     return aType == "shape" || aType == "trace" || aType == "arc" || aType == "via"
            || aType == "zone" || aType == "rule_area" || aType == "text"
-           || aType == "textbox" || aType == "dimension" || aType == "footprint";
+           || aType == "textbox" || aType == "table" || aType == "dimension"
+           || aType == "footprint";
 }
 
 
@@ -137,6 +138,14 @@ JSON updateFields( const std::string& aType, const JSON& aItem )
     {
         return JSON::array( { "textbox", "layer", "locked", "outline", "margins",
                               "border_enabled", "knockout" } );
+    }
+
+    if( aType == "table" )
+    {
+        return JSON::array( { "layer", "locked", "column_count", "column_widths",
+                              "row_heights", "stroke_external",
+                              "stroke_header_separator", "border_stroke", "stroke_rows",
+                              "stroke_columns", "separators_stroke", "cells" } );
     }
 
     if( aType == "dimension" )

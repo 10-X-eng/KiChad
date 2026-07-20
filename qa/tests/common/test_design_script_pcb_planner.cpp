@@ -791,6 +791,81 @@ BOOST_AUTO_TEST_CASE( LowersBoardTextBoxIntoCompleteNativeProtobufJson )
 }
 
 
+BOOST_AUTO_TEST_CASE( LowersMergedBoardTableIntoCompleteNativeProtobufJson )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project board_table)
+  (board
+    (table pin-summary
+      (at 30mm 40mm) (rotation 90deg) (layer F.Fab) (locked true)
+      (columns 18mm 27mm) (rows 7mm 8mm)
+      (border (external true) (header true)
+        (stroke 0.3mm dash #10203080))
+      (separators (rows true) (columns false)
+        (stroke default solid default))
+      (cells
+        (cell 1 1 "AI pin summary"
+          (margins 0.5mm 0.6mm 0.7mm 0.8mm)
+          (text_size 1.2mm 1.5mm) (font "Noto Sans")
+          (line_spacing 1.25) (thickness 0.2mm)
+          (justify left top) (mirror true) (bold true) (italic true)
+          (hyperlink "https://example.com/pins") (locked true))
+        (cell 1 2 ""
+          (margins 0mm 0mm 0mm 0mm)
+          (text_size 1mm 1mm) (font stroke) (line_spacing 1) (thickness auto)
+          (justify center center) (mirror false) (bold false) (italic false)
+          (hyperlink none) (locked false))
+        (cell 2 1 "VCC"
+          (margins 0.4mm 0.4mm 0.4mm 0.4mm)
+          (text_size 1mm 1mm) (font stroke) (line_spacing 1) (thickness auto)
+          (justify left center) (mirror false) (bold true) (italic false)
+          (hyperlink none) (locked false))
+        (cell 2 2 "3V3 supply"
+          (margins 0.4mm 0.4mm 0.4mm 0.4mm)
+          (text_size 1mm 1mm) (font stroke) (line_spacing 1) (thickness auto)
+          (justify left center) (mirror false) (bold false) (italic false)
+          (hyperlink none) (locked false)))
+      (merges (merge 1 1 1 2)))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    KICHAD::DESIGN_SCRIPT_PCB_PLANNER::RESULT plan =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( plan.operations.size(), 1 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemType"].get<std::string>(), "table" );
+    checkProtobufJson<kiapi::board::types::BoardTable>( plan.operations[0]["item"] );
+    const nlohmann::json& item = plan.operations[0]["item"];
+    BOOST_CHECK_EQUAL( item["columnCount"].get<int>(), 2 );
+    BOOST_REQUIRE_EQUAL( item["columnWidths"].size(), 2 );
+    BOOST_REQUIRE_EQUAL( item["rowHeights"].size(), 2 );
+    BOOST_REQUIRE_EQUAL( item["cells"].size(), 4 );
+    BOOST_CHECK_EQUAL( item["cells"][0]["columnSpan"].get<int>(), 2 );
+    BOOST_CHECK_EQUAL( item["cells"][0]["rowSpan"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( item["cells"][1]["columnSpan"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( item["cells"][1]["rowSpan"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( item["cells"][0]["textbox"]["topLeft"]["xNm"], "30000000" );
+    BOOST_CHECK_EQUAL( item["cells"][0]["textbox"]["topLeft"]["yNm"], "40000000" );
+    BOOST_CHECK_EQUAL( item["cells"][0]["textbox"]["bottomRight"]["xNm"], "37000000" );
+    BOOST_CHECK_EQUAL( item["cells"][0]["textbox"]["bottomRight"]["yNm"], "-5000000" );
+    BOOST_CHECK_EQUAL( item["cells"][0]["textbox"]["attributes"]["angle"]["valueDegrees"], 90 );
+    BOOST_CHECK_EQUAL( item["cells"][0]["textbox"]["hyperlink"],
+                       "https://example.com/pins" );
+    BOOST_CHECK_EQUAL( item["borderStroke"]["style"], "SLS_DASH" );
+    BOOST_CHECK_CLOSE( item["borderStroke"]["color"]["a"].get<double>(),
+                       128.0 / 255.0, 0.001 );
+    BOOST_CHECK( item["strokeExternal"].get<bool>() );
+    BOOST_CHECK( item["strokeHeaderSeparator"].get<bool>() );
+    BOOST_CHECK( item["strokeRows"].get<bool>() );
+    BOOST_CHECK( !item["strokeColumns"].get<bool>() );
+    BOOST_CHECK_EQUAL( plan.operations[0]["itemId"].get<std::string>(),
+                       KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
+                               "board_table", "table", "pin-summary" ) );
+}
+
+
 BOOST_AUTO_TEST_CASE( LowersEveryDimensionStyleIntoOneNativeProtobufType )
 {
     const std::string source = R"KDS((kichad_design

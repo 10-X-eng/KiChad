@@ -1934,7 +1934,58 @@ The ID, content, one rectangle or polygon, rotation, layer, margins, font, justi
 stroke, border state, knockout state, and lock state are explicit. Hyperlink is optional and
 bounded to one 2048-byte line. The rectangle or polygon, margins, stroke style, and border policy
 round-trip through the extended KiCad 10 protobuf instead of being reconstructed from a bounding
-box. Board tables and table cells deliberately remain a separate KDS capability.
+box. Board tables and table cells deliberately remain a separate KDS implementation.
+
+### Board table form
+
+Board tables reuse the same 1-based, row/column AI-native grid model as schematic tables, adding
+the board layer and lock state while omitting schematic-only simulation and fill fields:
+
+```scheme
+(table pin-summary
+  (at 30mm 40mm)
+  (rotation 90deg)
+  (layer F.Fab)
+  (locked true)
+  (columns 18mm 27mm)
+  (rows 7mm 8mm)
+  (border
+    (external true) (header true)
+    (stroke 0.3mm dash #10203080))
+  (separators
+    (rows true) (columns false)
+    (stroke default solid default))
+  (cells
+    (cell 1 1 "AI pin summary"
+      (margins 0.5mm 0.6mm 0.7mm 0.8mm)
+      (text_size 1.2mm 1.5mm) (font "Noto Sans")
+      (line_spacing 1.25) (thickness 0.2mm)
+      (justify left top) (mirror true) (bold true) (italic true)
+      (hyperlink "https://example.com/pins") (locked true))
+    (cell 1 2 ""
+      (margins 0mm 0mm 0mm 0mm)
+      (text_size 1mm 1mm) (font stroke) (line_spacing 1) (thickness auto)
+      (justify center center) (mirror false) (bold false) (italic false)
+      (hyperlink none) (locked false))
+    (cell 2 1 "VCC"
+      (margins 0.4mm 0.4mm 0.4mm 0.4mm)
+      (text_size 1mm 1mm) (font stroke) (line_spacing 1) (thickness auto)
+      (justify left center) (mirror false) (bold true) (italic false)
+      (hyperlink none) (locked false))
+    (cell 2 2 "3V3 supply"
+      (margins 0.4mm 0.4mm 0.4mm 0.4mm)
+      (text_size 1mm 1mm) (font stroke) (line_spacing 1) (thickness auto)
+      (justify left center) (mirror false) (bold false) (italic false)
+      (hyperlink none) (locked false)))
+  (merges (merge 1 1 1 2)))
+```
+
+Every grid address is declared exactly once. Merge rectangles are non-overlapping and inclusive;
+only their top-left anchor may contain text, while the compiler derives KiCad's positive anchor
+span and zero covered-cell spans. Rows, columns, cells, dimensions, margins, font state, hyperlink,
+and cell lock state are all bounded. Border exterior/header lines and separator row/column lines
+have independent visibility plus complete native width, style, and RGBA color. The table and every
+owned cell receive deterministic UUIDs and lower as one atomic typed `BoardTable` transaction.
 
 ### Dimension form
 

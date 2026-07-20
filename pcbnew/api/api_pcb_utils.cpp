@@ -33,6 +33,8 @@
 #include <pcb_field.h>
 #include <pcb_text.h>
 #include <pcb_textbox.h>
+#include <pcb_table.h>
+#include <pcb_tablecell.h>
 #include <pcb_dimension.h>
 #include <zone.h>
 
@@ -46,6 +48,7 @@ std::unique_ptr<BOARD_ITEM> CreateItemForType( KICAD_T aType, BOARD_ITEM_CONTAIN
     case PCB_VIA_T:     return std::make_unique<PCB_VIA>( aContainer );
     case PCB_TEXT_T:    return std::make_unique<PCB_TEXT>( aContainer );
     case PCB_TEXTBOX_T: return std::make_unique<PCB_TEXTBOX>( aContainer );
+    case PCB_TABLE_T:   return std::make_unique<PCB_TABLE>( aContainer, -1 );
     case PCB_SHAPE_T:   return std::make_unique<PCB_SHAPE>( aContainer );
     case PCB_BARCODE_T: return std::make_unique<PCB_BARCODE>( aContainer );
     case PCB_ZONE_T:    return std::make_unique<ZONE>( aContainer );
@@ -70,6 +73,16 @@ std::unique_ptr<BOARD_ITEM> CreateItemForType( KICAD_T aType, BOARD_ITEM_CONTAIN
             return nullptr;
 
         return std::make_unique<PCB_FIELD>( footprint, FIELD_T::USER );
+    }
+
+    case PCB_TABLECELL_T:
+    {
+        PCB_TABLE* table = dynamic_cast<PCB_TABLE*>( aContainer );
+
+        if( !table )
+            return nullptr;
+
+        return std::make_unique<PCB_TABLECELL>( table );
     }
 
     case PCB_FOOTPRINT_T:

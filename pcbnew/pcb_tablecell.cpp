@@ -32,6 +32,9 @@
 #include <footprint.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <api/api_enums.h>
+#include <api/api_utils.h>
+#include <api/board/board_types.pb.h>
 
 
 PCB_TABLECELL::PCB_TABLECELL( BOARD_ITEM* aParent ) :
@@ -46,6 +49,109 @@ PCB_TABLECELL::PCB_TABLECELL( BOARD_ITEM* aParent ) :
 
     SetRectangleHeight( std::numeric_limits<int>::max() / 2 );
     SetRectangleWidth( std::numeric_limits<int>::max() / 2 );
+}
+
+
+void PCB_TABLECELL::Serialize( google::protobuf::Any& aContainer ) const
+{
+    using namespace kiapi::common::types;
+    kiapi::board::types::BoardTableCell cell;
+    cell.mutable_id()->set_value( m_Uuid.AsStdString() );
+    cell.set_column_span( GetColSpan() );
+    cell.set_row_span( GetRowSpan() );
+    cell.set_locked( IsLocked() ? LockedState::LS_LOCKED : LockedState::LS_UNLOCKED );
+
+    TextBox& text = *cell.mutable_textbox();
+    kiapi::common::PackVector2( *text.mutable_top_left(), GetPosition() );
+    kiapi::common::PackVector2( *text.mutable_bottom_right(), GetEnd() );
+    text.set_text( GetText().ToStdString() );
+    text.set_hyperlink( GetHyperlink().ToStdString() );
+
+    TextAttributes& attrs = *text.mutable_attributes();
+
+    if( GetFont() )
+        attrs.set_font_name( GetFont()->GetName().ToStdString() );
+
+    attrs.set_horizontal_alignment(
+            ToProtoEnum<GR_TEXT_H_ALIGN_T, HorizontalAlignment>( GetHorizJustify() ) );
+    attrs.set_vertical_alignment(
+            ToProtoEnum<GR_TEXT_V_ALIGN_T, VerticalAlignment>( GetVertJustify() ) );
+    attrs.mutable_angle()->set_value_degrees( GetTextAngleDegrees() );
+    attrs.set_line_spacing( GetLineSpacing() );
+    attrs.mutable_stroke_width()->set_value_nm( GetTextThickness() );
+    attrs.set_italic( IsItalic() );
+    attrs.set_bold( IsBold() );
+    attrs.set_underlined( GetAttributes().m_Underlined );
+    attrs.set_mirrored( IsMirrored() );
+    attrs.set_multiline( IsMultilineAllowed() );
+    attrs.set_keep_upright( IsKeepUpright() );
+    kiapi::common::PackVector2( *attrs.mutable_size(), GetTextSize() );
+
+    kiapi::board::types::TextBoxMargins& margins = *cell.mutable_margins();
+    margins.mutable_left()->set_value_nm( GetMarginLeft() );
+    margins.mutable_top()->set_value_nm( GetMarginTop() );
+    margins.mutable_right()->set_value_nm( GetMarginRight() );
+    margins.mutable_bottom()->set_value_nm( GetMarginBottom() );
+    aContainer.PackFrom( cell );
+}
+
+
+bool PCB_TABLECELL::Deserialize( const google::protobuf::Any& aContainer )
+{
+    using namespace kiapi::common::types;
+    kiapi::board::types::BoardTableCell cell;
+
+    if( !aContainer.UnpackTo( &cell ) )
+        return false;
+
+    const_cast<::KIID&>( m_Uuid ) = ::KIID( cell.id().value() );
+    SetColSpan( static_cast<int>( cell.column_span() ) );
+    SetRowSpan( static_cast<int>( cell.row_span() ) );
+    SetLocked( cell.locked() == LockedState::LS_LOCKED );
+    SetShape( SHAPE_T::RECTANGLE );
+
+    const TextBox& text = cell.textbox();
+    SetPosition( kiapi::common::UnpackVector2( text.top_left() ) );
+    SetEnd( kiapi::common::UnpackVector2( text.bottom_right() ) );
+    SetText( wxString::FromUTF8( text.text() ) );
+    SetHyperlink( wxString::FromUTF8( text.hyperlink() ) );
+
+    if( text.has_attributes() )
+    {
+        TEXT_ATTRIBUTES attrs = GetAttributes();
+        attrs.m_Bold = text.attributes().bold();
+        attrs.m_Italic = text.attributes().italic();
+        attrs.m_Underlined = text.attributes().underlined();
+        attrs.m_Mirrored = text.attributes().mirrored();
+        attrs.m_Multiline = text.attributes().multiline();
+        attrs.m_KeepUpright = text.attributes().keep_upright();
+        attrs.m_Size = kiapi::common::UnpackVector2( text.attributes().size() );
+
+        if( !text.attributes().font_name().empty() )
+        {
+            attrs.m_Font = KIFONT::FONT::GetFont( wxString::FromUTF8(
+                        text.attributes().font_name() ), attrs.m_Bold, attrs.m_Italic );
+        }
+
+        attrs.m_Angle = EDA_ANGLE( text.attributes().angle().value_degrees(), DEGREES_T );
+        attrs.m_LineSpacing = text.attributes().line_spacing();
+        attrs.m_StrokeWidth = text.attributes().stroke_width().value_nm();
+        attrs.m_Halign = FromProtoEnum<GR_TEXT_H_ALIGN_T, HorizontalAlignment>(
+                text.attributes().horizontal_alignment() );
+        attrs.m_Valign = FromProtoEnum<GR_TEXT_V_ALIGN_T, VerticalAlignment>(
+                text.attributes().vertical_alignment() );
+        SetAttributes( attrs );
+    }
+
+    if( cell.has_margins() )
+    {
+        SetMarginLeft( cell.margins().left().value_nm() );
+        SetMarginTop( cell.margins().top().value_nm() );
+        SetMarginRight( cell.margins().right().value_nm() );
+        SetMarginBottom( cell.margins().bottom().value_nm() );
+    }
+
+    return true;
 }
 
 

@@ -45,6 +45,9 @@ public:
 
     ~PCB_TABLE();
 
+    void Serialize( google::protobuf::Any& aContainer ) const override;
+    bool Deserialize( const google::protobuf::Any& aContainer ) override;
+
     // If implemented, would need to copy m_cells list.
     PCB_TABLE& operator=( const PCB_TABLE& ) = delete;
 

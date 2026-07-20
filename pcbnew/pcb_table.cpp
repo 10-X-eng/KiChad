@@ -34,6 +34,57 @@
 #include <view/view.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <api/api_enums.h>
+#include <api/api_utils.h>
+#include <api/board/board_types.pb.h>
+
+
+namespace
+{
+
+void packStroke( kiapi::common::types::StrokeAttributes& aOutput,
+                 const STROKE_PARAMS& aInput )
+{
+    using namespace kiapi::common::types;
+    aOutput.mutable_width()->set_value_nm( aInput.GetWidth() );
+
+    switch( aInput.GetLineStyle() )
+    {
+    case LINE_STYLE::DEFAULT:    aOutput.set_style( SLS_DEFAULT );       break;
+    case LINE_STYLE::SOLID:      aOutput.set_style( SLS_SOLID );         break;
+    case LINE_STYLE::DASH:       aOutput.set_style( SLS_DASH );          break;
+    case LINE_STYLE::DOT:        aOutput.set_style( SLS_DOT );           break;
+    case LINE_STYLE::DASHDOT:    aOutput.set_style( SLS_DASHDOT );       break;
+    case LINE_STYLE::DASHDOTDOT: aOutput.set_style( SLS_DASHDOTDOT );    break;
+    default:                     aOutput.set_style( SLS_UNKNOWN );        break;
+    }
+
+    if( aInput.GetColor() != KIGFX::COLOR4D::UNSPECIFIED )
+        kiapi::common::PackColor( *aOutput.mutable_color(), aInput.GetColor() );
+}
+
+
+STROKE_PARAMS unpackStroke( const kiapi::common::types::StrokeAttributes& aInput )
+{
+    using namespace kiapi::common::types;
+    LINE_STYLE style = LINE_STYLE::DEFAULT;
+
+    switch( aInput.style() )
+    {
+    case SLS_SOLID:      style = LINE_STYLE::SOLID;          break;
+    case SLS_DASH:       style = LINE_STYLE::DASH;           break;
+    case SLS_DOT:        style = LINE_STYLE::DOT;            break;
+    case SLS_DASHDOT:    style = LINE_STYLE::DASHDOT;        break;
+    case SLS_DASHDOTDOT: style = LINE_STYLE::DASHDOTDOT;     break;
+    default:             style = LINE_STYLE::DEFAULT;        break;
+    }
+
+    return STROKE_PARAMS( aInput.width().value_nm(), style,
+                          aInput.has_color() ? kiapi::common::UnpackColor( aInput.color() )
+                                             : KIGFX::COLOR4D::UNSPECIFIED );
+}
+
+} // namespace
 
 
 PCB_TABLE::PCB_TABLE( BOARD_ITEM* aParent, int aLineWidth ) :
@@ -73,6 +124,111 @@ PCB_TABLE::~PCB_TABLE()
     // We own our cells; delete them
     for( PCB_TABLECELL* cell : m_cells )
         delete cell;
+}
+
+
+void PCB_TABLE::Serialize( google::protobuf::Any& aContainer ) const
+{
+    using namespace kiapi::common::types;
+    kiapi::board::types::BoardTable table;
+    table.mutable_id()->set_value( m_Uuid.AsStdString() );
+    table.set_layer( ToProtoEnum<PCB_LAYER_ID, kiapi::board::types::BoardLayer>( GetLayer() ) );
+    table.set_locked( IsLocked() ? LockedState::LS_LOCKED : LockedState::LS_UNLOCKED );
+    table.set_column_count( GetColCount() );
+
+    for( int column = 0; column < GetColCount(); ++column )
+        table.add_column_widths()->set_value_nm( GetColWidth( column ) );
+
+    for( int row = 0; row < GetRowCount(); ++row )
+        table.add_row_heights()->set_value_nm( GetRowHeight( row ) );
+
+    table.set_stroke_external( StrokeExternal() );
+    table.set_stroke_header_separator( StrokeHeaderSeparator() );
+    packStroke( *table.mutable_border_stroke(), GetBorderStroke() );
+    table.set_stroke_rows( StrokeRows() );
+    table.set_stroke_columns( StrokeColumns() );
+    packStroke( *table.mutable_separators_stroke(), GetSeparatorsStroke() );
+
+    for( const PCB_TABLECELL* cell : m_cells )
+    {
+        google::protobuf::Any packed;
+        cell->Serialize( packed );
+        packed.UnpackTo( table.add_cells() );
+    }
+
+    aContainer.PackFrom( table );
+}
+
+
+bool PCB_TABLE::Deserialize( const google::protobuf::Any& aContainer )
+{
+    using namespace kiapi::common::types;
+    kiapi::board::types::BoardTable table;
+
+    if( !aContainer.UnpackTo( &table ) || table.column_count() == 0
+        || table.column_count() > 256
+        || table.column_widths_size() != static_cast<int>( table.column_count() )
+        || table.row_heights_size() == 0 || table.row_heights_size() > 256
+        || table.cells_size()
+                   != static_cast<int>( table.column_count() ) * table.row_heights_size() )
+    {
+        return false;
+    }
+
+    const auto validDistance = []( int64_t aDistance )
+    {
+        return aDistance > 0 && aDistance <= std::numeric_limits<int>::max();
+    };
+
+    for( const Distance& width : table.column_widths() )
+    {
+        if( !validDistance( width.value_nm() ) )
+            return false;
+    }
+
+    for( const Distance& height : table.row_heights() )
+    {
+        if( !validDistance( height.value_nm() ) )
+            return false;
+    }
+
+    const_cast<::KIID&>( m_Uuid ) = ::KIID( table.id().value() );
+    SetLayer( FromProtoEnum<PCB_LAYER_ID, kiapi::board::types::BoardLayer>( table.layer() ) );
+    SetLocked( table.locked() == LockedState::LS_LOCKED );
+    SetColCount( table.column_count() );
+    m_colWidths.clear();
+    m_rowHeights.clear();
+
+    for( int column = 0; column < table.column_widths_size(); ++column )
+        SetColWidth( column, table.column_widths( column ).value_nm() );
+
+    for( int row = 0; row < table.row_heights_size(); ++row )
+        SetRowHeight( row, table.row_heights( row ).value_nm() );
+
+    SetStrokeExternal( table.stroke_external() );
+    SetStrokeHeaderSeparator( table.stroke_header_separator() );
+    SetBorderStroke( unpackStroke( table.border_stroke() ) );
+    SetStrokeRows( table.stroke_rows() );
+    SetStrokeColumns( table.stroke_columns() );
+    SetSeparatorsStroke( unpackStroke( table.separators_stroke() ) );
+    ClearCells();
+
+    for( const kiapi::board::types::BoardTableCell& source : table.cells() )
+    {
+        std::unique_ptr<PCB_TABLECELL> cell = std::make_unique<PCB_TABLECELL>( this );
+        google::protobuf::Any packed;
+        packed.PackFrom( source );
+
+        if( !cell->Deserialize( packed ) )
+        {
+            ClearCells();
+            return false;
+        }
+
+        AddCell( cell.release() );
+    }
+
+    return true;
 }
 
 

@@ -38,6 +38,8 @@ KICOMMON_API std::optional<KICAD_T> TypeNameFromAny( const google::protobuf::Any
         { "type.googleapis.com/kiapi.board.types.Via", PCB_VIA_T },
         { "type.googleapis.com/kiapi.board.types.BoardText", PCB_TEXT_T },
         { "type.googleapis.com/kiapi.board.types.BoardTextBox", PCB_TEXTBOX_T },
+        { "type.googleapis.com/kiapi.board.types.BoardTable", PCB_TABLE_T },
+        { "type.googleapis.com/kiapi.board.types.BoardTableCell", PCB_TABLECELL_T },
         { "type.googleapis.com/kiapi.board.types.BoardGraphicShape", PCB_SHAPE_T },
         { "type.googleapis.com/kiapi.board.types.Barcode", PCB_BARCODE_T },
         { "type.googleapis.com/kiapi.board.types.Pad", PCB_PAD_T },
