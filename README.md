@@ -163,7 +163,7 @@ keepouts, nested stable-ID item groups, explicit assembly variants, and project-
 the current KiCad 10 `.kicad_mod` artifacts are whole-library swapped, native-loader
 validated, journaled, and restored exactly after an injected rejection. Board vias also carry
 AI-native arbitrary per-layer copper geometry including custom primitives, explicit unconnected-ring
-and forced-flash policy, top/bottom backdrilling, tenting, covering,
+and forced-flash policy, complete per-via teardrop geometry and policy, top/bottom backdrilling, tenting, covering,
 plugging, filling, capping, and post-machining intent through KiCad's official typed padstack IPC
 message. It creates and fills a
 deterministic copper zone through KiCad's official zone engine, creates a distinct locked keepout

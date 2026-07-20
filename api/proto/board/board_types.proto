@@ -465,6 +465,20 @@ enum ViaType
   VT_BURIED = 5;  // Since V10
 }
 
+// Complete per-item teardrop intent shared by vias and footprint pads.
+message TeardropParameters
+{
+  bool enabled = 1;
+  kiapi.common.types.Ratio target_length_ratio = 2;
+  kiapi.common.types.Distance max_length = 3;
+  kiapi.common.types.Ratio target_width_ratio = 4;
+  kiapi.common.types.Distance max_width = 5;
+  bool curved_edges = 6;
+  kiapi.common.types.Ratio track_width_limit = 7;
+  bool allow_two_segments = 8;
+  bool prefer_zone_connections = 9;
+}
+
 // Represents a via
 message Via
 {
@@ -486,6 +500,9 @@ message Via
   // Copper layers that must retain a zone-connected annular ring when
   // unconnected_layer_removal is not ULR_KEEP. Unlisted layers are explicitly unflashed.
   repeated BoardLayer zone_layer_connections = 7;
+
+  // Per-via teardrop generation geometry and policy.
+  TeardropParameters teardrop = 8;
 }
 
 message BoardGraphicShape

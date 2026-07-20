@@ -11,6 +11,7 @@
 
 #include "design_script_board_compiler.h"
 
+#include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
 #include "design_script_via_padstack_compiler.h"
 #include "design_script_via_protection_compiler.h"
@@ -1305,7 +1306,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     collectFields( aDocument, aNode, 2,
                    { "id", "at", "diameter", "drill", "layers", "type", "locked",
                      "padstack", "protection", "backdrills", "unconnected_layers",
-                     "force_flash" },
+                     "force_flash", "teardrop" },
                    fields, aResult, "via" );
     std::string logicalId;
     JSON        position = JSON::object();
@@ -1318,6 +1319,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     JSON        padstack = nullptr;
     JSON        protection = nullptr;
     JSON        backdrills = nullptr;
+    JSON        teardrop = nullptr;
     std::string unconnectedLayers = "keep";
     JSON        forceFlashLayers = JSON::array();
 
@@ -1500,6 +1502,18 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
         backdrills = std::move( compiled.backdrills );
     }
 
+    if( fields.contains( "teardrop" ) )
+    {
+        KICHAD::DESIGN_SCRIPT_TEARDROP_COMPILER::RESULT compiled =
+                KICHAD::DESIGN_SCRIPT_TEARDROP_COMPILER::Compile(
+                        aDocument, fields["teardrop"] );
+
+        for( JSON& entry : compiled.diagnostics )
+            aResult.diagnostics.push_back( std::move( entry ) );
+
+        teardrop = std::move( compiled.teardrop );
+    }
+
     if( backdrills.is_object() )
     {
         if( type != "through" )
@@ -1575,6 +1589,7 @@ JSON compileVia( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "padstack", std::move( padstack ) },
              { "protection", std::move( protection ) },
              { "backdrills", std::move( backdrills ) },
+             { "teardrop", std::move( teardrop ) },
              { "unconnectedLayers", unconnectedLayers },
              { "forceFlashLayers", std::move( forceFlashLayers ) },
              { "locked", locked },

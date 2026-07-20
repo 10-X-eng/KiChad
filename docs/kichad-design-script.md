@@ -1645,6 +1645,14 @@ lowers into KiCad 10's typed `PadStack` IPC message:
   (type through)
   (unconnected_layers keep_start_end)
   (force_flash F.Cu)
+  (teardrop
+    (enabled true)
+    (target_length 0.5 1mm)
+    (target_width 1 2mm)
+    (edges curved)
+    (track_width_limit 0.9)
+    (allow_two_segments true)
+    (prefer_zone_connections true))
   (locked false)
   (protection
     (tenting (front open) (back tented))
@@ -1671,6 +1679,13 @@ When removal is active, `force_flash` names the copper layers that must retain a
 zone-connected annular ring; all other layers follow the selected removal policy. KiChad extends
 the typed Via IPC message with this native state so live create/update/readback and `.kicad_pcb`
 save/reload have the same semantics.
+
+`teardrop` carries complete per-via geometry and connection policy. `target_length` and
+`target_width` pair the preferred pad/via-size ratio with an absolute maximum, while
+`track_width_limit` filters tracks by their width relative to the landing geometry. Edge shape,
+two-segment use, and whether a direct zone connection is preferred are explicit semantic values.
+The same KDS form is shared with footprint pads, so an AI learns one teardrop vocabulary instead of
+separate editor and file-format controls.
 
 An advanced via replaces—not supplements—the simple circular `diameter` with exactly one semantic
 `padstack`. `front_inner_back` requires `F.Cu`, `inner`, and `B.Cu`. `custom` requires every named
@@ -1710,8 +1725,8 @@ the same one-representation geometry used by footprint pads. Every copper shape 
 primary drill. `backdrills` names physical `top` and `bottom` operations instead of exposing
 KiCad's internal secondary/tertiary numbering; each operation requires a larger diameter and one
 inner stop layer. Two-sided backdrills must leave a non-empty plated layer span. Per-layer custom
-graphic primitives, unconnected-layer removal and forced-flash policy, and teardrops remain
-explicit gaps.
+graphic primitives, unconnected-layer removal, forced-flash policy, and per-item teardrop geometry
+and policy all lower through the typed KiCad 10 API.
 
 ### Copper zone form
 

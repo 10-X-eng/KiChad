@@ -518,6 +518,23 @@ void PCB_VIA::Serialize( google::protobuf::Any &aContainer ) const
         }
     }
 
+    const TEARDROP_PARAMETERS defaults;
+    const TEARDROP_PARAMETERS& params = GetTeardropParams();
+
+    if( params != defaults )
+    {
+        kiapi::board::types::TeardropParameters* teardrop = via.mutable_teardrop();
+        teardrop->set_enabled( params.m_Enabled );
+        teardrop->mutable_target_length_ratio()->set_value( params.m_BestLengthRatio );
+        teardrop->mutable_max_length()->set_value_nm( params.m_TdMaxLen );
+        teardrop->mutable_target_width_ratio()->set_value( params.m_BestWidthRatio );
+        teardrop->mutable_max_width()->set_value_nm( params.m_TdMaxWidth );
+        teardrop->set_curved_edges( params.m_CurvedEdges );
+        teardrop->mutable_track_width_limit()->set_value( params.m_WidthtoSizeFilterRatio );
+        teardrop->set_allow_two_segments( params.m_AllowUseTwoTracks );
+        teardrop->set_prefer_zone_connections( !params.m_TdOnPadsInZones );
+    }
+
     aContainer.PackFrom( via );
 }
 
@@ -560,6 +577,23 @@ bool PCB_VIA::Deserialize( const google::protobuf::Any &aContainer )
             if( IsCopperLayer( nativeLayer ) && GetLayerSet().Contains( nativeLayer ) )
                 SetZoneLayerOverride( nativeLayer, ZLO_FORCE_FLASHED );
         }
+    }
+
+    GetTeardropParams() = TEARDROP_PARAMETERS();
+
+    if( via.has_teardrop() )
+    {
+        const kiapi::board::types::TeardropParameters& teardrop = via.teardrop();
+        TEARDROP_PARAMETERS& params = GetTeardropParams();
+        params.m_Enabled = teardrop.enabled();
+        params.m_BestLengthRatio = teardrop.target_length_ratio().value();
+        params.m_TdMaxLen = teardrop.max_length().value_nm();
+        params.m_BestWidthRatio = teardrop.target_width_ratio().value();
+        params.m_TdMaxWidth = teardrop.max_width().value_nm();
+        params.m_CurvedEdges = teardrop.curved_edges();
+        params.m_WidthtoSizeFilterRatio = teardrop.track_width_limit().value();
+        params.m_AllowUseTwoTracks = teardrop.allow_two_segments();
+        params.m_TdOnPadsInZones = !teardrop.prefer_zone_connections();
     }
 
     return true;

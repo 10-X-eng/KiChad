@@ -43,6 +43,14 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
     (via SIGNAL (id via-a) (at 5mm 4mm) (diameter 0.8mm) (drill 0.4mm)
       (unconnected_layers keep_start_end)
       (force_flash F.Cu)
+      (teardrop
+        (enabled true)
+        (target_length 0.5 1mm)
+        (target_width 1 2mm)
+        (edges curved)
+        (track_width_limit 0.9)
+        (allow_two_segments true)
+        (prefer_zone_connections true))
       (protection
         (tenting (front open) (back tented))
         (covering (front covered) (back inherit))
@@ -116,6 +124,16 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
                        "ULR_REMOVE_EXCEPT_START_AND_END" );
     BOOST_REQUIRE_EQUAL( first.operations[3]["item"]["zoneLayerConnections"].size(), 1 );
     BOOST_CHECK_EQUAL( first.operations[3]["item"]["zoneLayerConnections"][0], "BL_F_Cu" );
+    const nlohmann::json& teardrop = first.operations[3]["item"]["teardrop"];
+    BOOST_CHECK_EQUAL( teardrop["enabled"], true );
+    BOOST_CHECK_CLOSE( teardrop["targetLengthRatio"]["value"].get<double>(), 0.5, 0.001 );
+    BOOST_CHECK_EQUAL( teardrop["maxLength"]["valueNm"].get<std::string>(), "1000000" );
+    BOOST_CHECK_CLOSE( teardrop["targetWidthRatio"]["value"].get<double>(), 1.0, 0.001 );
+    BOOST_CHECK_EQUAL( teardrop["maxWidth"]["valueNm"].get<std::string>(), "2000000" );
+    BOOST_CHECK_EQUAL( teardrop["curvedEdges"], true );
+    BOOST_CHECK_CLOSE( teardrop["trackWidthLimit"]["value"].get<double>(), 0.9, 0.001 );
+    BOOST_CHECK_EQUAL( teardrop["allowTwoSegments"], true );
+    BOOST_CHECK_EQUAL( teardrop["preferZoneConnections"], true );
     BOOST_CHECK_EQUAL( viaStack["backOuterLayers"]["solderMaskMode"], "SMM_UNMASKED" );
     BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["coveringMode"], "VCM_COVERED" );
     BOOST_CHECK_EQUAL( viaStack["frontOuterLayers"]["pluggingMode"], "VPM_PLUGGED" );

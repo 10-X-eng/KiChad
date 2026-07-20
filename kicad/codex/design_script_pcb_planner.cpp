@@ -1168,6 +1168,31 @@ JSON planVia( const JSON& aStatement, const std::string& aProject )
         { "zoneLayerConnections", std::move( zoneLayerConnections ) }
     };
 
+    const JSON teardrop = aStatement.value( "teardrop", JSON( nullptr ) );
+
+    if( teardrop.is_object() )
+    {
+        item["teardrop"] = {
+            { "enabled", teardrop.at( "enabled" ) },
+            { "targetLengthRatio",
+              { { "value", teardrop.at( "targetLengthRatioPpm" ).get<double>()
+                                   / 1'000'000.0 } } },
+            { "maxLength",
+              { { "valueNm", std::to_string( teardrop.at( "maxLengthNm" ).get<int64_t>() ) } } },
+            { "targetWidthRatio",
+              { { "value", teardrop.at( "targetWidthRatioPpm" ).get<double>()
+                                   / 1'000'000.0 } } },
+            { "maxWidth",
+              { { "valueNm", std::to_string( teardrop.at( "maxWidthNm" ).get<int64_t>() ) } } },
+            { "curvedEdges", teardrop.at( "edges" ) == "curved" },
+            { "trackWidthLimit",
+              { { "value", teardrop.at( "trackWidthLimitPpm" ).get<double>()
+                                   / 1'000'000.0 } } },
+            { "allowTwoSegments", teardrop.at( "allowTwoSegments" ) },
+            { "preferZoneConnections", teardrop.at( "preferZoneConnections" ) }
+        };
+    }
+
     return { { "action", "upsert" },
              { "itemType", "via" },
              { "logicalId", logicalId },

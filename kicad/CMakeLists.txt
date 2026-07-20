@@ -74,6 +74,7 @@ set( KICAD_SRCS
     codex/design_script_symbol_text_compiler.cpp
     codex/design_script_symbol_text_generator.cpp
     codex/design_script_symbol_resolver.cpp
+    codex/design_script_teardrop_compiler.cpp
     codex/design_script_via_backdrill_compiler.cpp
     codex/design_script_via_padstack_compiler.cpp
     codex/design_script_via_protection_compiler.cpp
