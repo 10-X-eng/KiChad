@@ -142,10 +142,13 @@ BOOST_AUTO_TEST_CASE( LowersPowerAndDerivedSymbolSemanticsWithoutDuplicatingUnit
   (sheet root (parent none) (file "power_symbols.kicad_sch") (title "Power"))
   (symbol Power:POWER_BASE
     (reference "#PWR") (value VCC) (power global)
+    (duplicate_pin_numbers_are_jumpers true) (jumper_group 1 2)
     (unit common
       (polyline mark (point 0mm 0mm) (point 0mm -1mm) (point 1mm -1mm)))
     (unit 1
       (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm)
+        (orientation down) (length 0mm))
+      (pin 2 (name VCC_AUX) (electrical power_in) (at 2.54mm 0mm)
         (orientation down) (length 0mm))))
   (symbol Power:VCC (extends POWER_BASE) (value VCC)
     (description "Positive supply") (property "Voltage" "3.3V"))
@@ -162,6 +165,10 @@ BOOST_AUTO_TEST_CASE( LowersPowerAndDerivedSymbolSemanticsWithoutDuplicatingUnit
     const std::string source = generated.sources["Power"].get<std::string>();
     BOOST_CHECK_NE( source.find( "(symbol \"POWER_BASE\"" ), std::string::npos );
     BOOST_CHECK_NE( source.find( "(power global)" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(duplicate_pin_numbers_are_jumpers yes)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( source.find( "(jumper_pin_groups" ), std::string::npos );
+    BOOST_CHECK_NE( source.find( "(\"1\" \"2\" )" ), std::string::npos );
     const size_t derived = source.find( "(symbol \"VCC\"" );
     BOOST_REQUIRE_NE( derived, std::string::npos );
     BOOST_CHECK_NE( source.find( "(extends \"POWER_BASE\")", derived ), std::string::npos );
@@ -173,7 +180,7 @@ BOOST_AUTO_TEST_CASE( LowersPowerAndDerivedSymbolSemanticsWithoutDuplicatingUnit
             KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( compiled.ir, generated.sources );
     BOOST_REQUIRE_MESSAGE( resolved.ok, resolved.diagnostics.dump( 2 ) );
     BOOST_CHECK_EQUAL( resolved.symbols["Power:VCC"]["inheritanceDepth"], 1 );
-    BOOST_REQUIRE_EQUAL( resolved.symbols["Power:VCC"]["units"]["1"].size(), 1 );
+    BOOST_REQUIRE_EQUAL( resolved.symbols["Power:VCC"]["units"]["1"].size(), 2 );
 }
 
 
@@ -184,7 +191,7 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedPowerAndDerivedSymbolOverrides )
   (library symbol Power (table project)
     (uri "${KIPRJMOD}/Power.kicad_sym") (managed true))
   (symbol Power:BASE
-    (reference PWR) (power local)
+    (reference PWR) (power local) (jumper_group 1 404)
     (unit 1 (pin 1 (electrical passive) (at 0mm 0mm))))
   (symbol Power:CHILD (extends BASE) (power global)
     (hide_pin_names true) (unit 1 (pin 1 (at 0mm 0mm))))
@@ -195,6 +202,8 @@ BOOST_AUTO_TEST_CASE( RejectsMalformedPowerAndDerivedSymbolOverrides )
     BOOST_CHECK( !compiled.ok );
     const std::string diagnostics = compiled.diagnostics.dump();
     BOOST_CHECK_NE( diagnostics.find( "invalid_authored_power_symbol" ), std::string::npos );
+    BOOST_CHECK_NE( diagnostics.find( "unknown_authored_symbol_jumper_pin" ),
+                    std::string::npos );
     BOOST_CHECK_NE( diagnostics.find( "derived_authored_symbol_has_units" ), std::string::npos );
     BOOST_CHECK_NE( diagnostics.find( "derived_authored_symbol_power" ), std::string::npos );
     BOOST_CHECK_NE( diagnostics.find( "unsupported_derived_authored_symbol_field" ),

@@ -6675,6 +6675,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(extends SAME_LIBRARY_PARENT)] "
                       "(exclude_from_sim BOOL) (in_bom BOOL) (on_board BOOL) "
                       "(in_pos_files BOOL) (hide_pin_names BOOL) "
+                      "(duplicate_pin_numbers_are_jumpers BOOL) (jumper_group PIN...) "
                       "(hide_pin_numbers BOOL) (pin_names_offset DISTANCE) "
                       "(unit common|1..256 [(body_style 1..64)] "
                       "(rectangle ID (from X Y) (to X Y) [(radius DISTANCE)]) | "

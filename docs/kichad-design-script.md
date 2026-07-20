@@ -1021,6 +1021,11 @@ same-library parent and declares no units of its own:
 Derived symbols can override field values and custom properties while inheriting units, graphics,
 pins, and power behavior. Missing parents, cross-library names, self-reference, and recursive
 inheritance chains are compile/generation errors before filesystem mutation.
+
+Jumpered packages can declare `(duplicate_pin_numbers_are_jumpers true)` and explicit
+`(jumper_group PIN_NUMBER PIN_NUMBER...)` sets. Every group needs at least two existing unique pin
+numbers, and a pin cannot occur in multiple groups. Both forms lower to KiCad's native connection
+graph semantics, so ERC and exported netlists see the same internal connections as the sidecar.
 Coordinates are explicitly dimensioned, bounded to ±2 m, and lowered
 to exact decimal millimetres without floating-point formatting drift. Pin orientations use the
 cardinal words `right`, `down`, `left`, and `up`.

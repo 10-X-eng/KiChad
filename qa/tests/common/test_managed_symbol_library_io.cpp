@@ -120,8 +120,10 @@ BOOST_AUTO_TEST_CASE( AtomicallyInstallsAndNativeLoadsGeneratedCurrentFormat )
       (pin 2 (at 0mm -3.81mm) (orientation down) (length 1.27mm))))
   (symbol Product:POWER_BASE
     (reference "#PWR") (value VCC) (power global)
+    (duplicate_pin_numbers_are_jumpers true) (jumper_group 1 2)
     (unit 1
-      (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm) (length 0mm))))
+      (pin 1 (name VCC) (electrical power_in) (at 0mm 0mm) (length 0mm))
+      (pin 2 (name VCC_AUX) (electrical power_in) (at 2.54mm 0mm) (length 0mm))))
   (symbol Product:VCC (extends POWER_BASE) (value VCC)
     (description "Positive supply")))
 )KDS";

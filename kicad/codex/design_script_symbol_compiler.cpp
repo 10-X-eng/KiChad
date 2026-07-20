@@ -518,7 +518,8 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
         { "inPosFiles", true }, { "hidePinNames", false }, { "hidePinNumbers", false },
         { "pinNamesOffsetNm", 0 }, { "properties", JSON::array() },
         { "units", JSON::array() }, { "power", "normal" }, { "extends", "" },
-        { "declaredFields", JSON::array() }
+        { "declaredFields", JSON::array() }, { "duplicatePinNumbersAreJumpers", false },
+        { "jumperGroups", JSON::array() }
     };
     std::set<std::string> fields;
     std::set<std::string> propertyNames;
@@ -528,6 +529,46 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
     {
         const size_t child = node.children[index];
         const std::string head = aDocument.ListHead( child );
+
+        if( head == "jumper_group" )
+        {
+            if( result.symbol["jumperGroups"].size() >= 256 )
+            {
+                diagnostic( result, "too_many_authored_symbol_jumper_groups",
+                            "a symbol may contain at most 256 jumper groups" );
+                continue;
+            }
+
+            const DOCUMENT::NODE& group = aDocument.Nodes().at( child );
+            JSON numbers = JSON::array();
+            std::set<std::string> unique;
+
+            for( size_t valueIndex = 1; valueIndex < group.children.size(); ++valueIndex )
+            {
+                std::string pinNumber;
+
+                if( !scalar( aDocument, group.children[valueIndex], pinNumber )
+                    || pinNumber.empty() || pinNumber.size() > 64
+                    || pinNumber.find( '\0' ) != std::string::npos
+                    || !unique.emplace( pinNumber ).second )
+                {
+                    diagnostic( result, "invalid_authored_symbol_jumper_group",
+                                "jumper_group requires at least two unique bounded pin numbers" );
+                    numbers = JSON::array();
+                    break;
+                }
+
+                numbers.push_back( pinNumber );
+            }
+
+            if( numbers.size() < 2 )
+                diagnostic( result, "invalid_authored_symbol_jumper_group",
+                            "jumper_group requires at least two unique bounded pin numbers" );
+            else
+                result.symbol["jumperGroups"].push_back( std::move( numbers ) );
+
+            continue;
+        }
 
         if( head == "unit" )
         {
@@ -666,6 +707,16 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
             else
                 result.symbol["extends"] = value;
         }
+        else if( head == "duplicate_pin_numbers_are_jumpers" )
+        {
+            bool parsed = false;
+
+            if( !boolean( value, parsed ) )
+                diagnostic( result, "invalid_authored_symbol_jumper_flag",
+                            "duplicate_pin_numbers_are_jumpers must be true or false" );
+            else
+                result.symbol["duplicatePinNumbersAreJumpers"] = parsed;
+        }
         else
         {
             diagnostic( result, "unknown_authored_symbol_field",
@@ -676,6 +727,7 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
 
     bool hasNumberedUnit = false;
     bool hasPowerInput = false;
+    std::set<std::string> availablePinNumbers;
 
     for( const JSON& unit : result.symbol["units"] )
     {
@@ -689,6 +741,9 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
                 hasPowerInput = hasPowerInput
                                 || ( item.value( "kind", "" ) == "pin"
                                      && item.value( "electrical", "" ) == "power_in" );
+
+                if( item.value( "kind", "" ) == "pin" )
+                    availablePinNumbers.insert( item.value( "number", "" ) );
             }
         }
     }
@@ -713,6 +768,10 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
         diagnostic( result, "derived_authored_symbol_power",
                     "derived symbol " + id + " inherits power semantics" );
 
+    if( derived && !result.symbol["jumperGroups"].empty() )
+        diagnostic( result, "derived_authored_symbol_jumper_groups",
+                    "derived symbol " + id + " inherits jumper groups" );
+
     if( derived )
     {
         static const std::set<std::string> derivedFields = {
@@ -724,6 +783,23 @@ DESIGN_SCRIPT_SYMBOL_COMPILER::RESULT DESIGN_SCRIPT_SYMBOL_COMPILER::Compile(
             if( !derivedFields.contains( field ) )
                 diagnostic( result, "unsupported_derived_authored_symbol_field",
                             "derived symbol " + id + " cannot override " + field );
+        }
+    }
+
+    std::set<std::string> groupedPins;
+
+    for( const JSON& group : result.symbol["jumperGroups"] )
+    {
+        for( const JSON& number : group )
+        {
+            const std::string pinNumber = number.get<std::string>();
+
+            if( !availablePinNumbers.contains( pinNumber ) )
+                diagnostic( result, "unknown_authored_symbol_jumper_pin",
+                            "jumper group references absent pin " + pinNumber );
+            else if( !groupedPins.emplace( pinNumber ).second )
+                diagnostic( result, "duplicate_authored_symbol_jumper_pin",
+                            "pin " + pinNumber + " occurs in more than one jumper group" );
         }
     }
 

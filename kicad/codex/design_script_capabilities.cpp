@@ -153,7 +153,7 @@ nlohmann::json DesignScriptCapabilities()
                                 { "Executable global symbol content is not resolved independently of host installation." } ),
                     capability( "symbols.authoring", "symbols", "partial", { "symbol" },
                                 "AI-native project symbol creation with metadata, custom fields, inclusion flags, numbered/common units, De Morgan body styles, global/local power semantics, checked same-library derived aliases, all native vector/text graphics, and fully typed pins with alternate functions lowered to current KiCad 10 native libraries.",
-                                { "Field layout, jumper pin groups, and publish workflows are not represented yet." } ),
+                                { "Field layout and publish workflows are not represented yet." } ),
                     capability( "symbols.library_management", "symbols", "partial", { "library", "symbol" },
                                 "Explicit whole-library KDS ownership, deterministic creation, project table generation, exact-byte journaling, atomic installation, native-loader validation, and rollback.",
                                 { "Rename, selective merge into unmanaged libraries, migrate, rescue, and publish workflows are absent." } ),

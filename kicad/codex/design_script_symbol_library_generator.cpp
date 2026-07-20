@@ -218,7 +218,9 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
         { "pinNamesOffsetNm", JSON::value_t::number_integer },
         { "properties", JSON::value_t::array }, { "units", JSON::value_t::array },
         { "power", JSON::value_t::string }, { "extends", JSON::value_t::string },
-        { "declaredFields", JSON::value_t::array }
+        { "declaredFields", JSON::value_t::array },
+        { "duplicatePinNumbersAreJumpers", JSON::value_t::boolean },
+        { "jumperGroups", JSON::value_t::array }
     };
 
     if( !aSymbol.is_object() )
@@ -307,7 +309,33 @@ bool renderSymbol( const JSON& aSymbol, std::string& aSource, RESULT& aResult )
                "\t\t(in_bom " + yesNo( aSymbol["inBom"].get<bool>() ) + ")\n"
                "\t\t(on_board " + yesNo( aSymbol["onBoard"].get<bool>() ) + ")\n"
                "\t\t(in_pos_files " + yesNo( aSymbol["inPosFiles"].get<bool>() ) + ")\n"
-               "\t\t(duplicate_pin_numbers_are_jumpers no)\n";
+               "\t\t(duplicate_pin_numbers_are_jumpers "
+               + yesNo( aSymbol["duplicatePinNumbersAreJumpers"].get<bool>() ) + ")\n";
+
+    if( !aSymbol["jumperGroups"].empty() )
+    {
+        aSource += "\t\t(jumper_pin_groups\n";
+
+        for( const JSON& group : aSymbol["jumperGroups"] )
+        {
+            if( !group.is_array() || group.size() < 2 )
+                return false;
+
+            aSource += "\t\t\t(";
+
+            for( const JSON& pinNumber : group )
+            {
+                if( !pinNumber.is_string() )
+                    return false;
+
+                aSource += quoted( pinNumber.get<std::string>() ) + " ";
+            }
+
+            aSource += ")\n";
+        }
+
+        aSource += "\t\t)\n";
+    }
 
     aSource += property( "Reference", aSymbol["reference"].get<std::string>(), false,
                          0, -2'540'000 );
