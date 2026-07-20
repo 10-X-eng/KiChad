@@ -1673,6 +1673,27 @@ unfilled, solid-stroked, and explicitly on `Edge.Cuts`, and lowers to KiCad 10's
 `BoardGraphicShape` API. The final DRC/fabrication gate remains responsible for whole-contour
 topology such as endpoint closure, self-intersections, and illegal nesting.
 
+The same primitives may appear directly inside `board` for general artwork on any supported board
+layer. One layer creates one native shape. A paired `F.Cu F.Mask` or `B.Cu B.Mask` declaration owns
+the copper shape plus its native solder-mask replication, with an optional local margin. Copper
+graphics may name a real schematic net:
+
+```scheme
+(circle shield_logo
+  (center 15mm 12mm) (radius 1mm)
+  (stroke 0.15mm solid)
+  (layers F.Cu F.Mask)
+  (fill none)
+  (net GND)
+  (solder_mask_margin 0.05mm)
+  (locked true))
+```
+
+Board graphics support physical, technical, sequential inner-copper, and `User.1` through
+`User.45` layers. Stroke style is `solid`, `dash`, `dash_dot`, `dash_dot_dot`, or `dot`; typed board
+fill is `none` or `solid`. Net ownership and mask expansion are carried by KiChad's extended
+`BoardGraphicShape` IPC message and round-trip through native `PCB_SHAPE` state.
+
 ### Board routing and via protection
 
 Routes are explicit line or three-point arc geometry with stable IDs, a real schematic net, copper

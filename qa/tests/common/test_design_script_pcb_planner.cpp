@@ -75,8 +75,11 @@ const std::string PCB_PROGRAM = R"KDS((kichad_design
               (control2 0.1mm 0.15mm) (end 0.2mm 0mm) (width 0.04mm))))
         (layer B.Cu (shape chamfered_rect) (size 0.8mm 0.7mm)
           (offset 0.05mm 0mm) (roundrect_radius 0.05mm)
-          (chamfer_ratio 0.2) (chamfer top_left bottom_right))))))
-)KDS";
+          (chamfer_ratio 0.2) (chamfer top_left bottom_right))))
+    (circle copper-logo (center 10mm 5mm) (radius 0.5mm)
+      (stroke 0.1mm solid) (layers F.Cu F.Mask) (fill none)
+      (net SIGNAL) (solder_mask_margin 0.05mm) (locked true)))
+))KDS";
 
 
 template<typename Message>
@@ -108,14 +111,15 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
             KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan( compiled.ir );
     BOOST_REQUIRE_MESSAGE( first.fullyLowered, first.diagnostics.dump() );
     BOOST_CHECK_EQUAL( first.operations.dump(), second.operations.dump() );
-    BOOST_REQUIRE_EQUAL( first.operations.size(), 5 );
-    BOOST_CHECK_EQUAL( first.counts["upserts"].get<int>(), 5 );
+    BOOST_REQUIRE_EQUAL( first.operations.size(), 6 );
+    BOOST_CHECK_EQUAL( first.counts["upserts"].get<int>(), 6 );
 
     checkProtobufJson<kiapi::board::types::BoardGraphicShape>( first.operations[0]["item"] );
     checkProtobufJson<kiapi::board::types::Track>( first.operations[1]["item"] );
     checkProtobufJson<kiapi::board::types::Arc>( first.operations[2]["item"] );
     checkProtobufJson<kiapi::board::types::Via>( first.operations[3]["item"] );
     checkProtobufJson<kiapi::board::types::Via>( first.operations[4]["item"] );
+    checkProtobufJson<kiapi::board::types::BoardGraphicShape>( first.operations[5]["item"] );
 
     BOOST_CHECK_EQUAL( first.operations[1]["item"]["width"]["valueNm"].get<std::string>(),
                        "250000" );
@@ -158,6 +162,13 @@ BOOST_AUTO_TEST_CASE( LowersTypedPhysicalIrIntoExactDeterministicProtobufJson )
     BOOST_CHECK( customShapes[4]["shape"].contains( "polygon" ) );
     BOOST_CHECK( customShapes[5]["shape"].contains( "bezier" ) );
     BOOST_CHECK_EQUAL( customStack["copperLayers"][1]["shape"], "PSS_CHAMFEREDRECT" );
+    const nlohmann::json& copperGraphic = first.operations[5]["item"];
+    BOOST_CHECK( copperGraphic["shape"].contains( "circle" ) );
+    BOOST_CHECK_EQUAL( copperGraphic["layer"], "BL_F_Cu" );
+    BOOST_CHECK_EQUAL( copperGraphic["net"]["name"], "SIGNAL" );
+    BOOST_CHECK_EQUAL( copperGraphic["hasSolderMask"], true );
+    BOOST_CHECK_EQUAL( copperGraphic["solderMaskSettings"]["solderMaskMargin"]["valueNm"],
+                       "50000" );
     BOOST_CHECK_CLOSE( customStack["copperLayers"][1]["cornerRoundingRatio"].get<double>(),
                        0.0714285714, 0.0001 );
     BOOST_CHECK( customStack["copperLayers"][1]["chamferedCorners"]["topLeft"]

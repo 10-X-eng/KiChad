@@ -11,6 +11,7 @@
 
 #include "design_script_board_compiler.h"
 
+#include "design_script_board_graphic_compiler.h"
 #include "design_script_board_outline_compiler.h"
 #include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
@@ -3255,7 +3256,8 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
     std::set<std::string>        singletonStatements;
     static const std::set<std::string> known = {
         "stackup", "outline", "place", "route", "via",
-        "zone", "text", "dimension", "keepout"
+        "zone", "text", "dimension", "keepout", "line", "rectangle", "arc", "circle",
+        "polygon", "bezier"
     };
 
     for( size_t i = 1; i < board.children.size(); ++i )
@@ -3315,6 +3317,31 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
         {
             result.statements.emplace_back(
                     compileKeepout( aDocument, child, result, logicalIds ) );
+        }
+        else if( KICHAD::DESIGN_SCRIPT_BOARD_GRAPHIC_COMPILER::IsGraphicHead( head ) )
+        {
+            KICHAD::DESIGN_SCRIPT_BOARD_GRAPHIC_COMPILER::RESULT compiled =
+                    KICHAD::DESIGN_SCRIPT_BOARD_GRAPHIC_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : compiled.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            const std::string logicalId = compiled.statement.value( "logicalId", "" );
+
+            if( !logicalId.empty() && !logicalIds.emplace( logicalId ).second )
+                diagnostic( result, "error", "duplicate_board_id",
+                            "board logical id " + logicalId + " occurs more than once" );
+
+            if( compiled.statement.is_object() && !logicalId.empty() )
+            {
+                const std::string net =
+                        compiled.statement["graphic"].value( "net", "" );
+
+                if( !net.empty() )
+                    result.netReferences.emplace_back( net );
+
+                result.statements.push_back( std::move( compiled.statement ) );
+            }
         }
         else
         {

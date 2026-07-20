@@ -538,6 +538,10 @@ DESIGN_SCRIPT_FOOTPRINT_COMPILER::RESULT DESIGN_SCRIPT_FOOTPRINT_COMPILER::Compi
 
             const std::string objectId = graphic.graphic.value( "id", "" );
 
+            if( !graphic.graphic.value( "net", "" ).empty() )
+                diagnostic( result, "invalid_authored_footprint_graphic_net",
+                            "library footprint graphics cannot own a board net" );
+
             if( !objectId.empty() && !objectIds.emplace( objectId ).second )
                 diagnostic( result, "duplicate_authored_footprint_object_id",
                             "footprint graphic/text logical ID " + objectId

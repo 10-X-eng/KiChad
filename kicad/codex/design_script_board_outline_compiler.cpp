@@ -11,7 +11,7 @@
 
 #include "design_script_board_outline_compiler.h"
 
-#include "design_script_footprint_graphic_compiler.h"
+#include "design_script_board_graphic_compiler.h"
 
 #include <string>
 
@@ -36,7 +36,7 @@ void normalizeDiagnostic( JSON& aDiagnostic )
     if( aDiagnostic.contains( "code" ) && aDiagnostic["code"].is_string() )
     {
         std::string code = aDiagnostic["code"].get<std::string>();
-        const std::string from = "footprint_graphic";
+        const std::string from = "board_graphic";
         const size_t position = code.find( from );
 
         if( position != std::string::npos )
@@ -49,7 +49,7 @@ void normalizeDiagnostic( JSON& aDiagnostic )
     {
         std::string message = aDiagnostic["message"].get<std::string>();
 
-        for( const std::string from : { "footprint graphic", "footprint " } )
+        for( const std::string from : { "board graphic" } )
         {
             size_t position = 0;
 
@@ -75,44 +75,50 @@ DESIGN_SCRIPT_BOARD_OUTLINE_COMPILER::Compile( const LOSSLESS_SEXPR_DOCUMENT& aD
                                                size_t aNode )
 {
     RESULT result;
-    DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER::RESULT graphic =
-            DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER::Compile( aDocument, aNode );
+    DESIGN_SCRIPT_BOARD_GRAPHIC_COMPILER::RESULT compiled =
+            DESIGN_SCRIPT_BOARD_GRAPHIC_COMPILER::Compile( aDocument, aNode );
 
-    for( JSON& entry : graphic.diagnostics )
+    for( JSON& entry : compiled.diagnostics )
     {
         normalizeDiagnostic( entry );
         result.diagnostics.push_back( std::move( entry ) );
     }
 
-    if( !graphic.graphic.is_object() || !graphic.graphic.contains( "id" ) )
+    if( !compiled.statement.is_object() || !compiled.statement.contains( "graphic" ) )
     {
         result.ok = false;
         return result;
     }
 
-    if( graphic.graphic.value( "layers", JSON::array() )
+    JSON graphic = std::move( compiled.statement["graphic"] );
+
+    if( graphic.value( "layers", JSON::array() )
         != JSON::array( { "Edge.Cuts" } ) )
     {
         diagnostic( result, "invalid_authored_board_outline_layer",
                     "every board outline primitive requires exactly (layers Edge.Cuts)" );
     }
 
-    if( graphic.graphic.value( "fill", "" ) != "none" )
+    if( graphic.value( "fill", "" ) != "none" )
         diagnostic( result, "invalid_authored_board_outline_fill",
                     "board outline primitives must use (fill none)" );
 
-    if( graphic.graphic.value( "stroke", JSON::object() ).value( "style", "" ) != "solid" )
+    if( graphic.value( "stroke", JSON::object() ).value( "style", "" ) != "solid" )
         diagnostic( result, "invalid_authored_board_outline_stroke",
                     "board outline primitives require a solid stroke" );
 
-    if( !graphic.graphic.value( "solderMaskMarginNm", JSON( nullptr ) ).is_null() )
+    if( !graphic.value( "solderMaskMarginNm", JSON( nullptr ) ).is_null() )
         diagnostic( result, "invalid_authored_board_outline_mask_margin",
                     "board outline primitives cannot declare a solder-mask margin" );
 
+    if( !graphic.value( "net", "" ).empty() )
+        diagnostic( result, "invalid_authored_board_outline_net",
+                    "board outline primitives cannot own an electrical net" );
+
     result.statement = {
         { "kind", "outline_shape" },
-        { "logicalId", graphic.graphic.at( "id" ) },
-        { "graphic", std::move( graphic.graphic ) },
+        { "logicalId", graphic.at( "id" ) },
+        { "graphic", std::move( graphic ) },
         { "typed", true }
     };
     result.ok = result.diagnostics.empty();

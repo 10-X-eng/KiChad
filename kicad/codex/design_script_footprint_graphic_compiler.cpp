@@ -202,6 +202,20 @@ bool userLayer( const std::string& aLayer )
 }
 
 
+bool innerCopperLayer( const std::string& aLayer )
+{
+    if( !aLayer.starts_with( "In" ) || !aLayer.ends_with( ".Cu" ) )
+        return false;
+
+    const std::string_view number( aLayer.data() + 2, aLayer.size() - 5 );
+    int index = 0;
+    const std::from_chars_result parsed =
+            std::from_chars( number.data(), number.data() + number.size(), index );
+    return parsed.ec == std::errc() && parsed.ptr == number.data() + number.size()
+           && index >= 1 && index <= 30;
+}
+
+
 bool compileLayers( const DOCUMENT& aDocument, size_t aNode, JSON& aLayers )
 {
     const DOCUMENT::NODE& node = aDocument.Nodes().at( aNode );
@@ -221,7 +235,8 @@ bool compileLayers( const DOCUMENT& aDocument, size_t aNode, JSON& aLayers )
         std::string layer;
 
         if( !scalar( aDocument, node.children[index], layer )
-            || ( !fixed.contains( layer ) && !userLayer( layer ) )
+            || ( !fixed.contains( layer ) && !userLayer( layer )
+                 && !innerCopperLayer( layer ) )
             || !unique.emplace( layer ).second )
         {
             return false;
@@ -308,7 +323,8 @@ DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER::Compile(
     result.graphic = {
         { "id", id }, { "kind", kind }, { "layers", JSON::array() },
         { "stroke", JSON::object() }, { "fill", "none" }, { "locked", false },
-        { "solderMaskMarginNm", nullptr }, { "radiusNm", 0 }, { "points", JSON::array() }
+        { "solderMaskMarginNm", nullptr }, { "net", "" }, { "radiusNm", 0 },
+        { "points", JSON::array() }
     };
     std::set<std::string> fields;
 
@@ -385,6 +401,19 @@ DESIGN_SCRIPT_FOOTPRINT_GRAPHIC_COMPILER::Compile(
                 diagnostic( result, "invalid_authored_footprint_graphic_mask_margin",
                             "solder mask margin requires inherit or a bounded distance" );
             }
+
+            continue;
+        }
+
+        if( head == "net" )
+        {
+            std::string net;
+
+            if( !oneValue( aDocument, child, net ) || net.size() > 128 )
+                diagnostic( result, "invalid_authored_footprint_graphic_net",
+                            "graphic net requires none or one bounded net name" );
+            else
+                result.graphic["net"] = net == "none" ? "" : net;
 
             continue;
         }

@@ -1490,7 +1490,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
 
             const std::string kind = statement["kind"].get<std::string>();
 
-            if( kind == "outline_shape" )
+            if( kind == "outline_shape" || kind == "board_graphic" )
             {
                 result.operations.emplace_back( planOutline( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();

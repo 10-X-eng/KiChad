@@ -512,6 +512,12 @@ message BoardGraphicShape
   Net net = 3;
   kiapi.common.types.KIID  id = 4;
   kiapi.common.types.LockedState locked = 5;
+
+  // Replicate this copper graphic onto its matching solder-mask layer.
+  bool has_solder_mask = 6;
+
+  // Optional local expansion/contraction for the replicated solder-mask geometry.
+  SolderMaskOverrides solder_mask_settings = 7;
 }
 
 enum BarcodeKind

@@ -131,6 +131,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_project.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_verify.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_graphic_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_graphic_proto_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_outline_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp

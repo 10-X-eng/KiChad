@@ -94,7 +94,13 @@ void PCB_SHAPE::Serialize( google::protobuf::Any &aContainer ) const
     EDA_SHAPE::Serialize( any );
     any.UnpackTo( msg.mutable_shape() );
 
-    // TODO m_hasSolderMask and m_solderMaskMargin
+    msg.set_has_solder_mask( m_hasSolderMask );
+
+    if( m_solderMaskMargin.has_value() )
+    {
+        msg.mutable_solder_mask_settings()->mutable_solder_mask_margin()->set_value_nm(
+                *m_solderMaskMargin );
+    }
 
     aContainer.PackFrom( msg );
 }
@@ -131,7 +137,18 @@ bool PCB_SHAPE::Deserialize( const google::protobuf::Any &aContainer )
     any.PackFrom( msg.shape() );
     EDA_SHAPE::Deserialize( any );
 
-    // TODO m_hasSolderMask and m_solderMaskMargin
+    m_hasSolderMask = msg.has_solder_mask();
+
+    if( msg.has_solder_mask_settings()
+        && msg.solder_mask_settings().has_solder_mask_margin() )
+    {
+        m_solderMaskMargin =
+                msg.solder_mask_settings().solder_mask_margin().value_nm();
+    }
+    else
+    {
+        m_solderMaskMargin = std::nullopt;
+    }
 
     return true;
 }

@@ -40,6 +40,20 @@ JSON vectorProto( const JSON& aPoint )
              { "yNm", std::to_string( aPoint["yNm"].get<int64_t>() ) } };
 }
 
+
+std::string layerEnum( const std::string& aLayer )
+{
+    std::string result = "BL_" + aLayer;
+
+    for( char& character : result )
+    {
+        if( character == '.' )
+            character = '_';
+    }
+
+    return result;
+}
+
 } // namespace
 
 
@@ -72,8 +86,10 @@ bool DESIGN_SCRIPT_BOARD_GRAPHIC_PROTO_GENERATOR::Render(
         || !aGraphic.contains( "fill" ) || !aGraphic["fill"].is_string()
         || ( aGraphic["fill"] != "none" && aGraphic["fill"] != "solid" )
         || !aGraphic.contains( "layers" ) || !aGraphic["layers"].is_array()
-        || aGraphic["layers"].size() != 1 || !aGraphic["layers"][0].is_string()
-        || !aGraphic.contains( "locked" ) || !aGraphic["locked"].is_boolean() )
+        || aGraphic["layers"].empty() || aGraphic["layers"].size() > 2
+        || !aGraphic.contains( "locked" ) || !aGraphic["locked"].is_boolean()
+        || !aGraphic.contains( "net" ) || !aGraphic["net"].is_string()
+        || !aGraphic.contains( "solderMaskMarginNm" ) )
     {
         return false;
     }
@@ -192,13 +208,53 @@ bool DESIGN_SCRIPT_BOARD_GRAPHIC_PROTO_GENERATOR::Render(
     }
 
     const std::string logicalId = aGraphic["id"].get<std::string>();
+    std::set<std::string> layers;
+
+    for( const JSON& layer : aGraphic["layers"] )
+    {
+        if( !layer.is_string() )
+            return false;
+
+        layers.emplace( layer.get<std::string>() );
+    }
+
+    const bool frontMask = layers == std::set<std::string>{ "F.Cu", "F.Mask" };
+    const bool backMask = layers == std::set<std::string>{ "B.Cu", "B.Mask" };
+
+    if( layers.size() != 1 && !frontMask && !backMask )
+        return false;
+
+    const std::string nativeLayer = frontMask ? "F.Cu" : backMask ? "B.Cu" : *layers.begin();
     aItem = {
         { "id", { { "value", DESIGN_SCRIPT_PCB_PLANNER::StableUuid(
                                     aProject, "shape", logicalId ) } } },
         { "shape", std::move( shape ) },
-        { "layer", "BL_Edge_Cuts" },
-        { "locked", aGraphic["locked"].get<bool>() ? "LS_LOCKED" : "LS_UNLOCKED" }
+        { "layer", layerEnum( nativeLayer ) },
+        { "locked", aGraphic["locked"].get<bool>() ? "LS_LOCKED" : "LS_UNLOCKED" },
+        { "hasSolderMask", frontMask || backMask }
     };
+
+    const std::string net = aGraphic["net"].get<std::string>();
+
+    if( !net.empty() )
+        aItem["net"] = { { "name", net } };
+
+    if( aGraphic["solderMaskMarginNm"].is_number_integer() )
+    {
+        if( !frontMask && !backMask )
+            return false;
+
+        aItem["solderMaskSettings"] = {
+            { "solderMaskMargin",
+              { { "valueNm", std::to_string(
+                        aGraphic["solderMaskMarginNm"].get<int64_t>() ) } } }
+        };
+    }
+    else if( !aGraphic["solderMaskMarginNm"].is_null() )
+    {
+        return false;
+    }
+
     return true;
 }
 
