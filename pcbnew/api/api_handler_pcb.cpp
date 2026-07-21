@@ -21,6 +21,7 @@
 #include <magic_enum.hpp>
 #include <properties/property.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -325,7 +326,33 @@ bool isManagedFootprintUpdateMask( const google::protobuf::FieldMask& aMask )
     static const std::set<std::string> allowed = {
         "position", "orientation", "layer", "locked", "value_field",
         "datasheet_field", "description_field", "attributes.do_not_populate",
-        "definition.items"
+        "definition.items",
+        "reference_field.visible", "reference_field.text.layer",
+        "reference_field.text.text.position",
+        "reference_field.text.text.attributes.size",
+        "reference_field.text.text.attributes.stroke_width",
+        "reference_field.text.text.attributes.angle",
+        "reference_field.text.text.attributes.horizontal_alignment",
+        "reference_field.text.text.attributes.vertical_alignment",
+        "reference_field.text.text.attributes.font_name",
+        "reference_field.text.text.attributes.bold",
+        "reference_field.text.text.attributes.italic",
+        "reference_field.text.text.attributes.underlined",
+        "reference_field.text.text.attributes.mirrored",
+        "reference_field.text.text.attributes.keep_upright",
+        "value_field.visible", "value_field.text.layer",
+        "value_field.text.text.position",
+        "value_field.text.text.attributes.size",
+        "value_field.text.text.attributes.stroke_width",
+        "value_field.text.text.attributes.angle",
+        "value_field.text.text.attributes.horizontal_alignment",
+        "value_field.text.text.attributes.vertical_alignment",
+        "value_field.text.text.attributes.font_name",
+        "value_field.text.text.attributes.bold",
+        "value_field.text.text.attributes.italic",
+        "value_field.text.text.attributes.underlined",
+        "value_field.text.text.attributes.mirrored",
+        "value_field.text.text.attributes.keep_upright"
     };
 
     if( aMask.paths().empty() )
@@ -338,6 +365,54 @@ bool isManagedFootprintUpdateMask( const google::protobuf::FieldMask& aMask )
     }
 
     return true;
+}
+
+
+bool isFootprintPresentationPath( const std::string& aPath )
+{
+    return aPath.starts_with( "reference_field." )
+           || aPath.starts_with( "value_field." );
+}
+
+
+bool validFootprintPresentationField( const board::types::Field& aField )
+{
+    using namespace common::types;
+
+    if( !aField.has_text() || !aField.text().has_text()
+        || aField.text().text().text().empty()
+        || aField.text().text().text().size() > 1024 )
+    {
+        return false;
+    }
+
+    const board::types::BoardLayer layer = aField.text().layer();
+
+    if( layer != board::types::BL_F_SilkS && layer != board::types::BL_B_SilkS
+        && layer != board::types::BL_F_Fab && layer != board::types::BL_B_Fab )
+    {
+        return false;
+    }
+
+    const Text& text = aField.text().text();
+    const TextAttributes& attributes = text.attributes();
+    const int64_t width = attributes.size().x_nm();
+    const int64_t height = attributes.size().y_nm();
+    const int64_t stroke = attributes.stroke_width().value_nm();
+
+    return text.position().x_nm() >= std::numeric_limits<int>::min()
+           && text.position().x_nm() <= std::numeric_limits<int>::max()
+           && text.position().y_nm() >= std::numeric_limits<int>::min()
+           && text.position().y_nm() <= std::numeric_limits<int>::max()
+           && width >= 1000 && width <= 250000000
+           && height >= 1000 && height <= 250000000
+           && stroke >= 0
+           && ( stroke == 0 || stroke <= std::min( width, height ) / 4 )
+           && std::isfinite( attributes.angle().value_degrees() )
+           && std::abs( attributes.angle().value_degrees() ) <= 360000.0
+           && attributes.horizontal_alignment() != HorizontalAlignment::HA_UNKNOWN
+           && attributes.vertical_alignment() != VerticalAlignment::VA_UNKNOWN
+           && attributes.font_name().size() <= 256;
 }
 
 
@@ -1069,6 +1144,36 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                     continue;
                 }
 
+                board::types::FootprintInstance mergedUpdate = update;
+                const bool presentationRequested = std::any_of(
+                        aHeader.field_mask().paths().begin(),
+                        aHeader.field_mask().paths().end(),
+                        []( const std::string& aPath )
+                        {
+                            return isFootprintPresentationPath( aPath );
+                        } );
+
+                if( presentationRequested )
+                {
+                    google::protobuf::Any existingItem;
+                    ( *optItem )->Serialize( existingItem );
+                    google::protobuf::Any mergedItem;
+                    std::string mergeError;
+
+                    if( !mergeItemUpdate( anyItem, existingItem, aHeader.field_mask(),
+                                          mergedItem, mergeError )
+                        || !mergedItem.UnpackTo( &mergedUpdate ) )
+                    {
+                        status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                        status.set_error_message(
+                                mergeError.empty()
+                                        ? "the footprint presentation could not be merged"
+                                        : mergeError );
+                        aItemHandler( status, anyItem );
+                        continue;
+                    }
+                }
+
                 bool valid = true;
                 std::map<std::string, std::string> requestedFields;
 
@@ -1142,6 +1247,10 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                             }
                         }
                     }
+                    else if( isFootprintPresentationPath( path ) )
+                    {
+                        valid = true;
+                    }
                     else
                     {
                         valid = false;
@@ -1149,6 +1258,31 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
 
                     if( !valid )
                         break;
+                }
+
+                if( valid && presentationRequested )
+                {
+                    const bool referenceRequested = std::any_of(
+                            aHeader.field_mask().paths().begin(),
+                            aHeader.field_mask().paths().end(),
+                            []( const std::string& aPath )
+                            {
+                                return aPath.starts_with( "reference_field." );
+                            } );
+                    const bool valueRequested = std::any_of(
+                            aHeader.field_mask().paths().begin(),
+                            aHeader.field_mask().paths().end(),
+                            []( const std::string& aPath )
+                            {
+                                return aPath.starts_with( "value_field." );
+                            } );
+
+                    valid = ( !referenceRequested
+                              || validFootprintPresentationField(
+                                      mergedUpdate.reference_field() ) )
+                            && ( !valueRequested
+                                 || validFootprintPresentationField(
+                                         mergedUpdate.value_field() ) );
                 }
 
                 if( !valid )
@@ -1258,6 +1392,38 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                         field->SetLayer( footprint->GetLayer() == F_Cu ? F_Fab : B_Fab );
                         field->SetPosition( footprint->GetPosition() );
                     }
+                }
+
+                const auto applyPresentation = [&]( const char* aPrefix,
+                                                     const board::types::Field& aField,
+                                                     PCB_FIELD& aNative )
+                {
+                    const bool requested = std::any_of(
+                            aHeader.field_mask().paths().begin(),
+                            aHeader.field_mask().paths().end(),
+                            [&]( const std::string& aPath )
+                            {
+                                return aPath.starts_with( std::string( aPrefix ) + "." );
+                            } );
+
+                    if( !requested )
+                        return true;
+
+                    google::protobuf::Any packed;
+                    packed.PackFrom( aField );
+                    return aNative.Deserialize( packed );
+                };
+
+                if( !applyPresentation( "reference_field", mergedUpdate.reference_field(),
+                                        footprint->Reference() )
+                    || !applyPresentation( "value_field", mergedUpdate.value_field(),
+                                           footprint->Value() ) )
+                {
+                    status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                    status.set_error_message(
+                            "the footprint presentation could not be applied" );
+                    aItemHandler( status, anyItem );
+                    continue;
                 }
 
                 status.set_code( ItemStatusCode::ISC_OK );
@@ -3176,6 +3342,22 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
             return tl::unexpected( error );
         }
 
+        if( aCtx.Request.field_mask().paths_size() > 0
+            && ( !isManagedFootprintUpdateMask( aCtx.Request.field_mask() )
+                 || std::any_of( aCtx.Request.field_mask().paths().begin(),
+                                 aCtx.Request.field_mask().paths().end(),
+                                 []( const std::string& aPath )
+                                 {
+                                     return !isFootprintPresentationPath( aPath );
+                                 } ) ) )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message(
+                    "parsed footprint field mask accepts only Reference/Value presentation" );
+            return tl::unexpected( error );
+        }
+
         for( const common::types::KIID& id : requested.symbol_path().path() )
         {
             if( !KIID::SniffTest( wxString::FromUTF8( id.value() ) ) )
@@ -3264,6 +3446,9 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
 
         footprint->SetFPID( libraryId );
         requestedId = requested.id().value();
+        const_cast<KIID&>( footprint->m_Uuid ) = requestedId.empty()
+                                                       ? KIID()
+                                                       : KIID( requestedId );
         footprint->SetReference(
                 wxString::FromUTF8( requested.reference_field().text().text().text() ) );
         footprint->SetValue(
@@ -3279,6 +3464,45 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
                                           requested.position().y_nm() ) );
         footprint->SetOrientationDegrees( requested.orientation().value_degrees() );
         footprint->SetLocked( requested.locked() == common::types::LockedState::LS_LOCKED );
+
+        if( aCtx.Request.field_mask().paths_size() > 0 )
+        {
+            google::protobuf::Any existingItem;
+            footprint->Serialize( existingItem );
+            google::protobuf::Any mergedItem;
+            std::string mergeError;
+            board::types::FootprintInstance merged;
+
+            if( !mergeItemUpdate( aCtx.Request.item(), existingItem,
+                                  aCtx.Request.field_mask(), mergedItem, mergeError )
+                || !mergedItem.UnpackTo( &merged )
+                || !validFootprintPresentationField( merged.reference_field() )
+                || !validFootprintPresentationField( merged.value_field() ) )
+            {
+                ApiResponseStatus error;
+                error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                error.set_error_message(
+                        mergeError.empty()
+                                ? "parsed footprint presentation is malformed"
+                                : mergeError );
+                return tl::unexpected( error );
+            }
+
+            google::protobuf::Any reference;
+            google::protobuf::Any value;
+            reference.PackFrom( merged.reference_field() );
+            value.PackFrom( merged.value_field() );
+
+            if( !footprint->Reference().Deserialize( reference )
+                || !footprint->Value().Deserialize( value ) )
+            {
+                ApiResponseStatus error;
+                error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                error.set_error_message(
+                        "parsed footprint presentation could not be applied" );
+                return tl::unexpected( error );
+            }
+        }
 
         for( const auto& [name, value] : footprintFields )
         {

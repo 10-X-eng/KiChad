@@ -19,9 +19,16 @@
         (soldermask B.Mask (thickness 10um) (material "LPI")
           (epsilon_r 3.5) (loss_tangent 0.025) (color "Green"))
         (solderpaste B.Paste)
-        (silkscreen B.SilkS (material "Epoxy ink") (color "White")))))
+        (silkscreen B.SilkS (material "Epoxy ink") (color "White"))))
+    (outline
+      (rectangle board-outline (start 0mm 0mm) (end 15mm 10mm)
+        (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
+    (layout
+      (board (maximum_width 15mm) (maximum_height 10mm))
+      (routing (defaults (geometry any) (maximum_vias 10)))))
   (check erc)
   (check drc)
+  (check layout)
   (check sourcing)
   (check fabrication)
   (output gerbers)

@@ -63,7 +63,7 @@ nlohmann::json InspectSpec()
     schema["properties"]["view"] =
             { { "type", "string" },
               { "enum", nlohmann::json::array(
-                                { "schematic", "pcb2d", "pcb3d" } ) },
+                                { "schematic", "pcb2d", "pcblayout", "pcb3d" } ) },
               { "description", "Native PNG view required by operation 'render'." } };
     schema["properties"]["page"] =
             { { "type", "integer" }, { "minimum", 1 }, { "maximum", 1000 },
@@ -74,8 +74,8 @@ nlohmann::json InspectSpec()
              { "description",
                "Inspect a KiCad 10 schematic, board, symbol library, or footprint without "
                "changing it. Use 'summary' for structural counts, 'find' for bounded raw "
-               "expressions, or 'render' to attach a native schematic, 2D PCB, or 3D PCB PNG "
-               "directly to the model for visual review." },
+               "expressions, or 'render' to attach a native schematic, production-layer PCB, "
+               "assembly-layout PCB, or 3D PCB PNG directly to the model for visual review." },
              { "inputSchema", std::move( schema ) } };
 }
 
@@ -172,13 +172,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleInspect(
         const bool board = resolved.GetExt() == wxS( "kicad_pcb" );
 
         if( ( view == "schematic" && !schematic )
-            || ( ( view == "pcb2d" || view == "pcb3d" ) && !board ) )
+            || ( ( view == "pcb2d" || view == "pcblayout" || view == "pcb3d" )
+                 && !board ) )
         {
             return failure( "invalid_path",
                             "the requested preview view does not match the KiCad file type" );
         }
 
-        if( view != "schematic" && view != "pcb2d" && view != "pcb3d" )
+        if( view != "schematic" && view != "pcb2d" && view != "pcblayout"
+            && view != "pcb3d" )
             return failure( "invalid_arguments", "inspect.view is not supported" );
 
         wxFileName previewDirectory = wxFileName::DirName( root );

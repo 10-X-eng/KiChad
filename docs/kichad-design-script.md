@@ -249,6 +249,7 @@ transaction order.
     (quantity 1))
   (check erc)
   (check drc)
+  (check layout)
   (check sourcing)
   (output gerbers)
   (output drill)
@@ -310,12 +311,13 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v16`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v17`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
 (check erc)
 (check drc)
+(check layout)
 (check sourcing)
 (check fabrication)
 (output gerbers)
@@ -1847,6 +1849,118 @@ constraints. It validates UTF-8, parses and compiles the complete document, inst
 reloads the live DRC engine, and reads it back byte-for-byte. Failure restores both the previous
 file and previous engine rules. KDS journals that exact prior state and restores it on a lost
 acknowledgement or any later pre-commit failure.
+
+### Footprint placement and field presentation
+
+`place` owns the native position, rotation, side, and lock state of a schematic-linked footprint.
+It can also own any selected presentation properties of that footprint's Reference and Value
+fields. The text itself continues to come from the component reference/value, so presentation
+changes cannot accidentally rename a component or alter its BOM identity.
+
+```scheme
+(place U2
+  (at 24mm 18mm)
+  (rotation 90deg)
+  (side front)
+  (locked false)
+  (reference
+    (visible true)
+    (layer F.SilkS)
+    (at 21mm 18mm)
+    (size 1mm 1mm)
+    (stroke 0.15mm)
+    (angle 90deg)
+    (justify center bottom)
+    (font stroke)
+    (bold false)
+    (italic false)
+    (underlined false)
+    (mirrored false)
+    (keep_upright true))
+  (value
+    (visible false)
+    (layer F.Fab)))
+```
+
+Every field setting is optional, but an included `reference` or `value` block must contain at
+least one setting. `at` is an absolute board coordinate, which stays unambiguous across footprint
+rotation and front/back flipping. Layers are limited to the front/back silkscreen and fabrication
+layers appropriate for assembly presentation. Sizes range from 1 um through 250 mm; a supplied
+stroke is positive and no greater than one quarter of the supplied smaller text dimension.
+
+Apply uses nested typed field masks, preserving every property the KDS did not name. The PCB
+Editor merges the request with the live footprint, applies it transactionally, and returns the
+native footprint for exact readback before KiChad reports success. This makes legible silkscreen
+and assembly drawings a reusable KDS property rather than a board-specific post-processing step.
+
+### Physical layout contract
+
+KDS carries physical acceptance intent in the same `board` form as the exact manufactured
+geometry. It is not a second layout file and it does not replace exact placement or copper. The
+contract gives an AI stable, semantic relationships to author and gives KiChad deterministic
+measurements with actionable failures instead of asking a model to judge pixels alone.
+
+```scheme
+(layout
+  (board
+    (maximum_width 100mm)
+    (maximum_height 80mm))
+  (placement
+    (near C7 U2 (maximum 5mm))
+    (align J1 J2 (axis y) (tolerance 0.5mm))
+    (edge J1 right (maximum 3mm))
+    (group motor_power
+      (members J1 C7 U2)
+      (maximum_span 25mm)))
+  (routing
+    (defaults
+      (geometry octilinear)
+      (maximum_vias 4))
+    (net VMOT
+      (maximum_vias 0)
+      (maximum_length 45mm))
+    (net RF_OUT
+      (geometry any)
+      (maximum_vias 2)
+      (maximum_length 30mm))
+    (bundle motor_phases
+      (nets M1A M1B M2A M2B)
+      (maximum_skew 5mm))))
+```
+
+`board` is required and declares positive maximum X/Y extents for the exact outline. Extents are
+measured over line, rounded-rectangle, polygon, circle, exact three-point arc, and cubic-Bezier
+outline geometry. A board can therefore be rectangular, curved, cut out, or an arbitrary closed
+profile without acquiring a different representation.
+
+Placement relationships use component references and their native footprint anchors:
+
+- `near` bounds Euclidean anchor distance.
+- `align` bounds X- or Y-axis anchor displacement.
+- `edge` bounds anchor distance from a named outline extent.
+- `group` bounds the greatest pairwise anchor distance among two or more functionally related
+  components.
+
+These forms are deliberately electrical-domain neutral. The same vocabulary describes a compact
+sensor, a rack backplane, an RF module, a motor controller, or a flex interconnect; no component or
+board-family templates are hidden in the compiler.
+
+`routing defaults` is required. `geometry` is `orthogonal`, `octilinear` (axis-aligned or exact
+45-degree straight segments), or `any` for designs that intentionally use arcs or arbitrary
+angles. `maximum_vias` applies independently to every routed net. A `net` form overrides any
+subset of the defaults and may add an exact maximum total copper length. A `bundle` bounds the
+difference between the longest and shortest named net. Arc length is measured from its exact
+three-point circle rather than its chord.
+
+`verify` with operation `layout` compiles the exact `.kicad_kds`, measures the contract, and
+returns complete counts plus bounded pageable issues. It never changes the board. Production
+intent requires both `(check layout)` and a clean layout result; fabrication planning also reports
+layout failures immediately, so ERC/DRC-clean geometry cannot by itself claim production
+readiness.
+
+The contract qualifies authored geometry; constraint-driven placement and obstacle-aware route
+synthesis remain separate implementation gaps. Exact `place`, `route`, `via`, and zone geometry
+therefore remain the canonical way to express designs beyond an automatic solver's reach.
 
 ### Board outline geometry
 

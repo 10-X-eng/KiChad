@@ -21,6 +21,7 @@
 #include <string_view>
 #include <api/common/commands/editor_commands.pb.h>
 #include <api/common/envelope.pb.h>
+#include <api/board/board_types.pb.h>
 #include <build_version.h>
 #include <filesystem>
 #include <fstream>
@@ -681,9 +682,17 @@ std::string productionKds( const std::string& aVerifiedOn )
         (soldermask B.Mask (thickness 10um) (material "LPI")
           (epsilon_r 3.5) (loss_tangent 0.025) (color "Green"))
         (solderpaste B.Paste)
-        (silkscreen B.SilkS (material "Epoxy ink") (color "White")))))
+        (silkscreen B.SilkS (material "Epoxy ink") (color "White"))))
+    (outline
+      (rectangle board-outline (start 5mm 5mm) (end 15mm 15mm)
+        (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
+    (place U1 (at 10mm 10mm) (rotation 0deg) (side front))
+    (layout
+      (board (maximum_width 10mm) (maximum_height 10mm))
+      (routing (defaults (geometry any) (maximum_vias 0)))))
   (check erc)
   (check drc)
+  (check layout)
   (check sourcing)
   (check fabrication)
   (output gerbers)
@@ -1393,7 +1402,7 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     BOOST_CHECK( data["productionReady"].get<bool>() );
     BOOST_CHECK( data["runningReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v16" );
+                       "kichad-production-10.0.4-v17" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
     BOOST_REQUIRE_EQUAL( data["jobs"].size(), 30 );
@@ -1918,6 +1927,39 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
             ipcClient.FindOpenPcb( project.GetFullPath(), boardPath.GetFullPath(),
                                    ipcTarget, ipcError ),
             ipcError );
+    kiapi::common::commands::GetItems footprintRequest;
+    footprintRequest.mutable_header()->mutable_document()->CopyFrom( ipcTarget.document );
+    footprintRequest.add_types( kiapi::common::types::KOT_PCB_FOOTPRINT );
+    kiapi::common::ApiResponse footprintResponse;
+    BOOST_REQUIRE_MESSAGE(
+            ipcClient.Call( ipcTarget, footprintRequest, footprintResponse, ipcError ),
+            ipcError );
+    kiapi::common::commands::GetItemsResponse footprintItems;
+    BOOST_REQUIRE( footprintResponse.message().UnpackTo( &footprintItems ) );
+    BOOST_REQUIRE_EQUAL( footprintItems.items_size(), 2 );
+
+    for( const google::protobuf::Any& packed : footprintItems.items() )
+    {
+        kiapi::board::types::FootprintInstance footprint;
+        BOOST_REQUIRE( packed.UnpackTo( &footprint ) );
+        const std::string reference = footprint.reference_field().text().text().text();
+        BOOST_CHECK( reference == "R1" || reference == "R2" );
+        BOOST_CHECK( footprint.reference_field().visible() );
+        BOOST_CHECK_EQUAL( footprint.reference_field().text().layer(),
+                           kiapi::board::types::BL_F_SilkS );
+        BOOST_CHECK_EQUAL( footprint.reference_field().text().text().position().y_nm(),
+                           1250000 );
+        BOOST_CHECK_EQUAL(
+                footprint.reference_field().text().text().attributes().size().x_nm(),
+                1000000 );
+        BOOST_CHECK_EQUAL(
+                footprint.reference_field().text().text().attributes().stroke_width().value_nm(),
+                150000 );
+        BOOST_CHECK( !footprint.value_field().visible() );
+        BOOST_CHECK_EQUAL( footprint.value_field().text().layer(),
+                           kiapi::board::types::BL_F_Fab );
+    }
+
     kiapi::common::commands::SaveDocument saveRequest;
     saveRequest.mutable_document()->CopyFrom( ipcTarget.document );
     kiapi::common::ApiResponse saveResponse;

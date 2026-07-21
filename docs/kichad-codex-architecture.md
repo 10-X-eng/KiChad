@@ -89,9 +89,10 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v16` profile requires explicit stackup and schematic
+sidecar. The fixed `kichad-production-10.0.4-v17` profile requires explicit stackup and schematic
 net-presentation intent, at least one reviewable wired path when nets exist, ERC, DRC,
-sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
+the canonical KDS physical-layout contract and layout qualification, sourcing, and fabrication
+checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
 outputs; STEP, STEPZ, BREP, GLB, STL, U3D, XAO, interactive 3D PDF, fabrication PDF, IPC-2581C XML,
 ODB++, front/back assembly SVG/DXF, GenCAD, VRML, and typed board statistics are optional
 declarations, as are native schematic BOM CSV, legacy BOM XML, and a lossless native 3D board-render

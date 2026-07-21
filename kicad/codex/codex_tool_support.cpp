@@ -13,6 +13,7 @@
 #include "board_render_artifact_validator.h"
 #include "board_ps_artifact_validator.h"
 #include "design_script_compiler.h"
+#include "design_script_layout_analyzer.h"
 #include "design_script_pcb_planner.h"
 #include "design_script_pcb_reconciler.h"
 #include "design_script_schematic_planner.h"
@@ -1550,6 +1551,14 @@ bool runNativeKiCadPreview( const std::string& aView, const wxFileName& aInput,
                       "--scale", "0", "--exclude-value", "--no-property-popups",
                       aInput.GetFullPath().ToStdString() };
     }
+    else if( aView == "pcblayout" )
+    {
+        arguments = { "pcb", "export", "pdf", "--output",
+                      pdf.GetFullPath().ToStdString(), "--layers",
+                      "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,B.Fab,F.CrtYd,B.CrtYd,Edge.Cuts",
+                      "--mode-single", "--scale", "0", "--no-property-popups",
+                      aInput.GetFullPath().ToStdString() };
+    }
     else
     {
         aError = "unsupported native preview view";
@@ -1912,7 +1921,7 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
 JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
 {
     static constexpr const char* CHECK_ORDER[] = {
-        "erc", "drc", "sourcing", "fabrication"
+        "erc", "drc", "layout", "sourcing", "fabrication"
     };
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
@@ -2005,6 +2014,12 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
                     "Declare (presentation wired) on same-sheet signal nets, apply the KDS, and "
                     "review the rendered schematic before release." } } );
     }
+
+    KICHAD::DESIGN_SCRIPT_LAYOUT_ANALYZER::RESULT layout =
+            KICHAD::DESIGN_SCRIPT_LAYOUT_ANALYZER::Analyze( aIr );
+
+    for( const JSON& layoutIssue : layout.issues )
+        issues.push_back( layoutIssue );
 
     const JSON* stackup = nullptr;
 
@@ -2273,7 +2288,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
                                      "A running-board release requires KDS firmware, programming, power, and bring-up intent" } } );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v16" },
+    return { { "profile", "kichad-production-10.0.4-v17" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
@@ -2281,8 +2296,9 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
              { "issues", std::move( issues ) },
              { "runningIssues", std::move( runningIssues ) },
              { "schematicPresentation",
-               { { "wiredNets", wiredNetCount }, { "labelNets", labelNetCount },
-                 { "implicitNets", implicitPresentationNets.size() } } },
+                 { { "wiredNets", wiredNetCount }, { "labelNets", labelNetCount },
+                   { "implicitNets", implicitPresentationNets.size() } } },
+             { "layout", std::move( layout.summary ) },
              { "productionPlan", std::move( productionPlan ) },
              { "expectedBomReferences", bomReferences },
              { "expectedPlacementReferences", placementReferences },
@@ -5599,6 +5615,17 @@ bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
 }
 
 
+kiapi::board::types::BoardLayer footprintPresentationLayer( const std::string& aLayer );
+
+void populateFootprintPresentationRequest(
+        const nlohmann::json& aPresentation,
+        kiapi::board::types::FootprintInstance& aRequested,
+        google::protobuf::FieldMask& aFieldMask );
+
+bool footprintFieldMatches( const kiapi::board::types::Field& aField,
+                            const nlohmann::json& aPresentation );
+
+
 bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
                                 const KICHAD_IPC_TARGET& aTarget,
                                 const nlohmann::json& aAction,
@@ -5650,6 +5677,14 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
     requested.set_locked( aAction.at( "locked" ).get<bool>()
                                   ? kiapi::common::types::LS_LOCKED
                                   : kiapi::common::types::LS_UNLOCKED );
+    google::protobuf::FieldMask presentationMask;
+
+    if( aAction.contains( "presentation" )
+        && !aAction.at( "presentation" ).empty() )
+    {
+        populateFootprintPresentationRequest( aAction.at( "presentation" ), requested,
+                                              presentationMask );
+    }
 
     for( auto net = instance.at( "padNets" ).begin();
          net != instance.at( "padNets" ).end(); ++net )
@@ -5675,6 +5710,7 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
     parse.mutable_document()->CopyFrom( aTarget.document );
     parse.set_contents( aFootprintSources[libraryId].get<std::string>() );
     parse.mutable_item()->PackFrom( requested );
+    parse.mutable_field_mask()->CopyFrom( presentationMask );
     kiapi::common::ApiResponse parseResponse;
 
     if( !aClient.Call( aTarget, parse, parseResponse, aError ) )
@@ -5706,7 +5742,17 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
         || footprint.symbol_path().path_size() != requested.symbol_path().path_size()
         || footprint.position().x_nm() != requested.position().x_nm()
         || footprint.position().y_nm() != requested.position().y_nm()
-        || footprint.layer() != requested.layer() )
+        || footprint.layer() != requested.layer()
+        || ( aAction.contains( "presentation" )
+             && aAction.at( "presentation" ).contains( "reference" )
+             && !footprintFieldMatches(
+                     footprint.reference_field(),
+                     aAction.at( "presentation" ).at( "reference" ) ) )
+        || ( aAction.contains( "presentation" )
+             && aAction.at( "presentation" ).contains( "value" )
+             && !footprintFieldMatches(
+                     footprint.value_field(),
+                     aAction.at( "presentation" ).at( "value" ) ) ) )
     {
         aError = "KiCad returned a mismatched parsed footprint instance";
         return false;
@@ -5825,6 +5871,419 @@ bool updateFootprintMetadata( const KICHAD_IPC_CLIENT& aClient,
 }
 
 
+kiapi::board::types::BoardLayer footprintPresentationLayer( const std::string& aLayer )
+{
+    using kiapi::board::types::BoardLayer;
+
+    if( aLayer == "F.SilkS" )
+        return BoardLayer::BL_F_SilkS;
+
+    if( aLayer == "B.SilkS" )
+        return BoardLayer::BL_B_SilkS;
+
+    if( aLayer == "F.Fab" )
+        return BoardLayer::BL_F_Fab;
+
+    return BoardLayer::BL_B_Fab;
+}
+
+
+void populateFootprintPresentationRequest(
+        const nlohmann::json& aPresentation,
+        kiapi::board::types::FootprintInstance& aRequested,
+        google::protobuf::FieldMask& aFieldMask )
+{
+    using namespace kiapi;
+    const auto populate = [&]( const char* aName, board::types::Field* aField )
+    {
+        const nlohmann::json& source = aPresentation.at( aName );
+        const std::string prefix = aName == std::string( "reference" )
+                                           ? "reference_field"
+                                           : "value_field";
+        common::types::TextAttributes* attributes =
+                aField->mutable_text()->mutable_text()->mutable_attributes();
+
+        if( source.contains( "visible" ) )
+        {
+            aField->set_visible( source.at( "visible" ).get<bool>() );
+            aFieldMask.add_paths( prefix + ".visible" );
+        }
+
+        if( source.contains( "layer" ) )
+        {
+            aField->mutable_text()->set_layer( footprintPresentationLayer(
+                    source.at( "layer" ).get<std::string>() ) );
+            aFieldMask.add_paths( prefix + ".text.layer" );
+        }
+
+        if( source.contains( "position" ) )
+        {
+            common::types::Vector2* position =
+                    aField->mutable_text()->mutable_text()->mutable_position();
+            position->set_x_nm( source.at( "position" ).at( "xNm" ).get<int64_t>() );
+            position->set_y_nm( source.at( "position" ).at( "yNm" ).get<int64_t>() );
+            aFieldMask.add_paths( prefix + ".text.text.position" );
+        }
+
+        if( source.contains( "size" ) )
+        {
+            attributes->mutable_size()->set_x_nm(
+                    source.at( "size" ).at( "xNm" ).get<int64_t>() );
+            attributes->mutable_size()->set_y_nm(
+                    source.at( "size" ).at( "yNm" ).get<int64_t>() );
+            aFieldMask.add_paths( prefix + ".text.text.attributes.size" );
+        }
+
+        if( source.contains( "strokeNm" ) )
+        {
+            attributes->mutable_stroke_width()->set_value_nm(
+                    source.at( "strokeNm" ).get<int64_t>() );
+            aFieldMask.add_paths( prefix + ".text.text.attributes.stroke_width" );
+        }
+
+        if( source.contains( "angleDegrees" ) )
+        {
+            attributes->mutable_angle()->set_value_degrees(
+                    source.at( "angleDegrees" ).get<double>() );
+            aFieldMask.add_paths( prefix + ".text.text.attributes.angle" );
+        }
+
+        if( source.contains( "horizontalJustification" ) )
+        {
+            const std::string value = source.at( "horizontalJustification" )
+                                              .get<std::string>();
+            attributes->set_horizontal_alignment(
+                    value == "left" ? common::types::HA_LEFT
+                    : value == "right" ? common::types::HA_RIGHT
+                                         : common::types::HA_CENTER );
+            aFieldMask.add_paths(
+                    prefix + ".text.text.attributes.horizontal_alignment" );
+        }
+
+        if( source.contains( "verticalJustification" ) )
+        {
+            const std::string value = source.at( "verticalJustification" )
+                                              .get<std::string>();
+            attributes->set_vertical_alignment(
+                    value == "top" ? common::types::VA_TOP
+                    : value == "bottom" ? common::types::VA_BOTTOM
+                                          : common::types::VA_CENTER );
+            aFieldMask.add_paths(
+                    prefix + ".text.text.attributes.vertical_alignment" );
+        }
+
+        if( source.contains( "fontName" ) )
+        {
+            attributes->set_font_name( source.at( "fontName" ).get<std::string>() );
+            aFieldMask.add_paths( prefix + ".text.text.attributes.font_name" );
+        }
+
+        for( const auto& [sourceName, protoName] :
+             { std::pair{ "bold", "bold" }, std::pair{ "italic", "italic" },
+               std::pair{ "underlined", "underlined" },
+               std::pair{ "mirrored", "mirrored" },
+               std::pair{ "keepUpright", "keep_upright" } } )
+        {
+            if( !source.contains( sourceName ) )
+                continue;
+
+            const bool value = source.at( sourceName ).get<bool>();
+
+            if( sourceName == std::string( "bold" ) )
+                attributes->set_bold( value );
+            else if( sourceName == std::string( "italic" ) )
+                attributes->set_italic( value );
+            else if( sourceName == std::string( "underlined" ) )
+                attributes->set_underlined( value );
+            else if( sourceName == std::string( "mirrored" ) )
+                attributes->set_mirrored( value );
+            else
+                attributes->set_keep_upright( value );
+
+            aFieldMask.add_paths( prefix + ".text.text.attributes." + protoName );
+        }
+    };
+
+    if( aPresentation.contains( "reference" ) )
+        populate( "reference", aRequested.mutable_reference_field() );
+
+    if( aPresentation.contains( "value" ) )
+        populate( "value", aRequested.mutable_value_field() );
+}
+
+
+bool footprintFieldMatches( const kiapi::board::types::Field& aField,
+                            const nlohmann::json& aPresentation )
+{
+    using namespace kiapi::common::types;
+    const TextAttributes& attributes = aField.text().text().attributes();
+
+    if( aPresentation.contains( "visible" )
+        && aField.visible() != aPresentation.at( "visible" ).get<bool>() )
+    {
+        return false;
+    }
+
+    if( aPresentation.contains( "layer" )
+        && aField.text().layer()
+                   != footprintPresentationLayer(
+                           aPresentation.at( "layer" ).get<std::string>() ) )
+    {
+        return false;
+    }
+
+    if( aPresentation.contains( "position" )
+        && ( aField.text().text().position().x_nm()
+                     != aPresentation.at( "position" ).at( "xNm" ).get<int64_t>()
+             || aField.text().text().position().y_nm()
+                        != aPresentation.at( "position" ).at( "yNm" ).get<int64_t>() ) )
+    {
+        return false;
+    }
+
+    if( aPresentation.contains( "size" )
+        && ( attributes.size().x_nm()
+                     != aPresentation.at( "size" ).at( "xNm" ).get<int64_t>()
+             || attributes.size().y_nm()
+                        != aPresentation.at( "size" ).at( "yNm" ).get<int64_t>() ) )
+    {
+        return false;
+    }
+
+    if( aPresentation.contains( "strokeNm" )
+        && attributes.stroke_width().value_nm()
+                   != aPresentation.at( "strokeNm" ).get<int64_t>() )
+    {
+        return false;
+    }
+
+    if( aPresentation.contains( "angleDegrees" )
+        && attributes.angle().value_degrees()
+                   != aPresentation.at( "angleDegrees" ).get<double>() )
+    {
+        return false;
+    }
+
+    if( aPresentation.contains( "horizontalJustification" ) )
+    {
+        const std::string value = aPresentation.at( "horizontalJustification" )
+                                          .get<std::string>();
+        const HorizontalAlignment expected =
+                value == "left" ? HorizontalAlignment::HA_LEFT
+                : value == "right" ? HorizontalAlignment::HA_RIGHT
+                                     : HorizontalAlignment::HA_CENTER;
+
+        if( attributes.horizontal_alignment() != expected )
+            return false;
+    }
+
+    if( aPresentation.contains( "verticalJustification" ) )
+    {
+        const std::string value = aPresentation.at( "verticalJustification" )
+                                          .get<std::string>();
+        const VerticalAlignment expected =
+                value == "top" ? VerticalAlignment::VA_TOP
+                : value == "bottom" ? VerticalAlignment::VA_BOTTOM
+                                      : VerticalAlignment::VA_CENTER;
+
+        if( attributes.vertical_alignment() != expected )
+            return false;
+    }
+
+    for( const auto& [name, active] :
+         { std::pair{ "bold", attributes.bold() },
+           std::pair{ "italic", attributes.italic() },
+           std::pair{ "underlined", attributes.underlined() },
+           std::pair{ "mirrored", attributes.mirrored() },
+           std::pair{ "keepUpright", attributes.keep_upright() } } )
+    {
+        if( aPresentation.contains( name )
+            && active != aPresentation.at( name ).get<bool>() )
+        {
+            return false;
+        }
+    }
+
+    return !aPresentation.contains( "fontName" )
+           || attributes.font_name()
+                      == aPresentation.at( "fontName" ).get<std::string>();
+}
+
+
+bool updateFootprintPresentation( const KICHAD_IPC_CLIENT& aClient,
+                                  const KICHAD_IPC_TARGET& aTarget,
+                                  const nlohmann::json& aAction, std::string& aError )
+{
+    using namespace kiapi;
+    const nlohmann::json& presentation = aAction.at( "presentation" );
+    board::types::FootprintInstance requested;
+    requested.mutable_id()->set_value( aAction.at( "itemId" ).get<std::string>() );
+    common::commands::UpdateItems request;
+    request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+
+    const auto populate = [&]( const char* aName, board::types::Field* aField )
+    {
+        const nlohmann::json& source = presentation.at( aName );
+        const std::string prefix = std::string( aName == std::string( "reference" )
+                                                       ? "reference_field"
+                                                       : "value_field" );
+        common::types::TextAttributes* attributes =
+                aField->mutable_text()->mutable_text()->mutable_attributes();
+
+        if( source.contains( "visible" ) )
+        {
+            aField->set_visible( source.at( "visible" ).get<bool>() );
+            request.mutable_header()->mutable_field_mask()->add_paths( prefix + ".visible" );
+        }
+
+        if( source.contains( "layer" ) )
+        {
+            aField->mutable_text()->set_layer( footprintPresentationLayer(
+                    source.at( "layer" ).get<std::string>() ) );
+            request.mutable_header()->mutable_field_mask()->add_paths( prefix + ".text.layer" );
+        }
+
+        if( source.contains( "position" ) )
+        {
+            common::types::Vector2* position =
+                    aField->mutable_text()->mutable_text()->mutable_position();
+            position->set_x_nm( source.at( "position" ).at( "xNm" ).get<int64_t>() );
+            position->set_y_nm( source.at( "position" ).at( "yNm" ).get<int64_t>() );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.position" );
+        }
+
+        if( source.contains( "size" ) )
+        {
+            attributes->mutable_size()->set_x_nm(
+                    source.at( "size" ).at( "xNm" ).get<int64_t>() );
+            attributes->mutable_size()->set_y_nm(
+                    source.at( "size" ).at( "yNm" ).get<int64_t>() );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes.size" );
+        }
+
+        if( source.contains( "strokeNm" ) )
+        {
+            attributes->mutable_stroke_width()->set_value_nm(
+                    source.at( "strokeNm" ).get<int64_t>() );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes.stroke_width" );
+        }
+
+        if( source.contains( "angleDegrees" ) )
+        {
+            attributes->mutable_angle()->set_value_degrees(
+                    source.at( "angleDegrees" ).get<double>() );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes.angle" );
+        }
+
+        if( source.contains( "horizontalJustification" ) )
+        {
+            const std::string value = source.at( "horizontalJustification" )
+                                              .get<std::string>();
+            attributes->set_horizontal_alignment(
+                    value == "left" ? common::types::HA_LEFT
+                    : value == "right" ? common::types::HA_RIGHT
+                                         : common::types::HA_CENTER );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes.horizontal_alignment" );
+        }
+
+        if( source.contains( "verticalJustification" ) )
+        {
+            const std::string value = source.at( "verticalJustification" )
+                                              .get<std::string>();
+            attributes->set_vertical_alignment(
+                    value == "top" ? common::types::VA_TOP
+                    : value == "bottom" ? common::types::VA_BOTTOM
+                                          : common::types::VA_CENTER );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes.vertical_alignment" );
+        }
+
+        if( source.contains( "fontName" ) )
+        {
+            attributes->set_font_name( source.at( "fontName" ).get<std::string>() );
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes.font_name" );
+        }
+
+        for( const auto& [sourceName, protoName] :
+             { std::pair{ "bold", "bold" }, std::pair{ "italic", "italic" },
+               std::pair{ "underlined", "underlined" },
+               std::pair{ "mirrored", "mirrored" },
+               std::pair{ "keepUpright", "keep_upright" } } )
+        {
+            if( !source.contains( sourceName ) )
+                continue;
+
+            const bool value = source.at( sourceName ).get<bool>();
+
+            if( sourceName == std::string( "bold" ) )
+                attributes->set_bold( value );
+            else if( sourceName == std::string( "italic" ) )
+                attributes->set_italic( value );
+            else if( sourceName == std::string( "underlined" ) )
+                attributes->set_underlined( value );
+            else if( sourceName == std::string( "mirrored" ) )
+                attributes->set_mirrored( value );
+            else
+                attributes->set_keep_upright( value );
+
+            request.mutable_header()->mutable_field_mask()->add_paths(
+                    prefix + ".text.text.attributes." + protoName );
+        }
+    };
+
+    if( presentation.contains( "reference" ) )
+        populate( "reference", requested.mutable_reference_field() );
+
+    if( presentation.contains( "value" ) )
+        populate( "value", requested.mutable_value_field() );
+
+    request.add_items()->PackFrom( requested );
+    common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    common::commands::UpdateItemsResponse updated;
+
+    if( !response.message().UnpackTo( &updated )
+        || updated.status() != common::types::IRS_OK
+        || updated.updated_items_size() != 1
+        || updated.updated_items( 0 ).status().code()
+                   != common::commands::ISC_OK )
+    {
+        if( updated.updated_items_size() == 1 )
+            aError = updated.updated_items( 0 ).status().error_message();
+
+        if( aError.empty() )
+            aError = "KiCad rejected the managed footprint presentation";
+
+        return false;
+    }
+
+    board::types::FootprintInstance active;
+
+    if( !updated.updated_items( 0 ).item().UnpackTo( &active )
+        || active.id().value() != requested.id().value()
+        || ( presentation.contains( "reference" )
+             && !footprintFieldMatches( active.reference_field(),
+                                        presentation.at( "reference" ) ) )
+        || ( presentation.contains( "value" )
+             && !footprintFieldMatches( active.value_field(), presentation.at( "value" ) ) ) )
+    {
+        aError = "KiCad footprint presentation readback did not match KDS";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
                         const nlohmann::json& aActions,
                         const nlohmann::json& aFootprintSources, std::string& aError )
@@ -5832,6 +6291,7 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
     std::vector<const nlohmann::json*> creates;
     std::vector<const nlohmann::json*> footprintCreates;
     std::vector<const nlohmann::json*> footprintMetadataUpdates;
+    std::vector<const nlohmann::json*> footprintPresentationUpdates;
     std::map<std::pair<std::string, std::string>,
              std::vector<const nlohmann::json*>> updates;
     std::vector<const nlohmann::json*> deletes;
@@ -5846,6 +6306,8 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
             footprintCreates.emplace_back( &action );
         else if( kind == "update_footprint_metadata" )
             footprintMetadataUpdates.emplace_back( &action );
+        else if( kind == "update_footprint_presentation" )
+            footprintPresentationUpdates.emplace_back( &action );
         else if( kind == "update" )
             updates[{ action.at( "itemType" ).get<std::string>(),
                       action.at( "fieldMask" ).dump() }].emplace_back( &action );
@@ -5947,6 +6409,12 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
                 return false;
             }
         }
+    }
+
+    for( const nlohmann::json* action : footprintPresentationUpdates )
+    {
+        if( !updateFootprintPresentation( aClient, aTarget, *action, aError ) )
+            return false;
     }
 
     for( const nlohmann::json* action : footprintMetadataUpdates )

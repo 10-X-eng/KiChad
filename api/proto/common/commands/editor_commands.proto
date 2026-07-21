@@ -26,6 +26,7 @@ syntax = "proto3";
 package kiapi.common.commands;
 
 import "google/protobuf/any.proto";
+import "google/protobuf/field_mask.proto";
 import "common/types/base_types.proto";
 import "common/types/enums.proto";
 
@@ -450,4 +451,9 @@ message ParseAndCreateItemsFromString
   // instance fields, and minimal Pad entries (number and net) so parsing, schematic linking, and
   // placement remain one atomic creation.
   google.protobuf.Any item = 3;
+
+  // Optional nested instance fields to merge onto the parsed item before insertion.  The PCB
+  // editor confines this to Reference/Value presentation so library geometry and identity cannot
+  // be replaced through the parsing endpoint.
+  google.protobuf.FieldMask field_mask = 4;
 }

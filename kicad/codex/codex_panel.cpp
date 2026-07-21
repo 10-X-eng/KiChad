@@ -102,7 +102,7 @@ const char* agentInstructions()
            "power, or cross-sheet connectivity. Wired nets lower to deterministic orthogonal "
            "paths anchored at resolved native pin connection points; do not substitute detached "
            "decorative wire primitives for semantic connectivity. After every apply, use "
-           "inspect render on the schematic and both useful PCB views, review the attached images, "
+           "inspect render on the schematic, pcb2d, pcblayout, and pcb3d views, review the attached images, "
            "then run ERC and DRC against the saved files. Repair KDS geometry, labeling, placement, "
            "routing, and connectivity until the visual review and declared checks are clean. "
            "When the user asks for a running product rather than fabrication files alone, author "

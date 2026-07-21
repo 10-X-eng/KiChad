@@ -343,9 +343,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
     JSON checks = JSON::object();
 
     for( const auto& [kind, path] :
-        std::array<std::pair<const char*, std::string>, 3>{
+        std::array<std::pair<const char*, std::string>, 4>{
                  std::pair{ "erc", schematicRelativePath },
                  std::pair{ "drc", boardRelativePath },
+                 std::pair{ "layout", sourceRelativePath },
                  std::pair{ "sourcing", sourceRelativePath } } )
     {
         JSON result = handleVerify( { { "operation", kind }, { "path", path } },
@@ -356,7 +357,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
         if( !decodeResult( result, data, checkError ) )
             return failure( std::string( kind ) + "_check_failed", checkError );
 
-        if( kind == std::string_view( "sourcing" )
+        if( ( kind == std::string_view( "layout" )
+              || kind == std::string_view( "sourcing" ) )
             && data.value( "sourceSha256", "" ) != compiled.sourceSha256 )
         {
             return failure( "stale_source", "sourcing gate checked a different KDS revision" );
@@ -514,7 +516,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
     }
 
     const bool waiversPresent = checks["erc"].value( "waiversPresent", false )
-                                || checks["drc"].value( "waiversPresent", false );
+                                || checks["drc"].value( "waiversPresent", false )
+                                || checks["layout"].value( "waiversPresent", false );
     JSON manifest = {
         { "schema", "kichad.fabrication-manifest.v3" },
         { "manifestVersion", 3 },

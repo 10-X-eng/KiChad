@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -209,6 +210,7 @@ struct PLACEMENT
     std::string side;
     bool        locked = false;
     JSON        instance;
+    JSON        presentation = JSON::object();
 };
 
 
@@ -217,6 +219,111 @@ struct LIVE_FOOTPRINT
     std::string itemId;
     bool        schematicLinked = false;
 };
+
+
+bool readFieldPresentation( const JSON& aJson )
+{
+    static const std::set<std::string> allowed = {
+        "visible", "layer", "position", "size", "strokeNm", "angleDegrees",
+        "horizontalJustification", "verticalJustification", "fontName", "bold",
+        "italic", "underlined", "mirrored", "keepUpright"
+    };
+
+    if( !aJson.is_object() || aJson.empty() || aJson.size() > allowed.size() )
+        return false;
+
+    for( auto field = aJson.begin(); field != aJson.end(); ++field )
+    {
+        if( !allowed.contains( field.key() ) )
+            return false;
+    }
+
+    for( const char* name :
+         { "visible", "bold", "italic", "underlined", "mirrored", "keepUpright" } )
+    {
+        if( aJson.contains( name ) && !aJson[name].is_boolean() )
+            return false;
+    }
+
+    if( aJson.contains( "layer" )
+        && ( !aJson["layer"].is_string()
+             || ( aJson["layer"] != "F.SilkS" && aJson["layer"] != "B.SilkS"
+                  && aJson["layer"] != "F.Fab" && aJson["layer"] != "B.Fab" ) ) )
+    {
+        return false;
+    }
+
+    const auto vector = [&]( const char* aName, int64_t aMinimum, int64_t aMaximum )
+    {
+        if( !aJson.contains( aName ) )
+            return true;
+
+        const JSON& value = aJson[aName];
+        return value.is_object() && value.size() == 2
+               && value.contains( "xNm" ) && value["xNm"].is_number_integer()
+               && value.contains( "yNm" ) && value["yNm"].is_number_integer()
+               && value["xNm"].get<int64_t>() >= aMinimum
+               && value["xNm"].get<int64_t>() <= aMaximum
+               && value["yNm"].get<int64_t>() >= aMinimum
+               && value["yNm"].get<int64_t>() <= aMaximum;
+    };
+
+    if( !vector( "position", std::numeric_limits<int>::min(),
+                 std::numeric_limits<int>::max() )
+        || !vector( "size", 1000, 250000000 ) )
+    {
+        return false;
+    }
+
+    if( aJson.contains( "strokeNm" ) )
+    {
+        if( !aJson["strokeNm"].is_number_integer() )
+            return false;
+
+        const int64_t stroke = aJson["strokeNm"].get<int64_t>();
+        int64_t maximum = 250000000;
+
+        if( aJson.contains( "size" ) )
+        {
+            maximum = std::min( aJson["size"]["xNm"].get<int64_t>(),
+                                aJson["size"]["yNm"].get<int64_t>() )
+                      / 4;
+        }
+
+        if( stroke <= 0 || stroke > maximum )
+            return false;
+    }
+
+    if( aJson.contains( "angleDegrees" )
+        && ( !aJson["angleDegrees"].is_number()
+             || !std::isfinite( aJson["angleDegrees"].get<double>() )
+             || std::abs( aJson["angleDegrees"].get<double>() ) > 360000.0 ) )
+    {
+        return false;
+    }
+
+    if( aJson.contains( "horizontalJustification" )
+        && ( !aJson["horizontalJustification"].is_string()
+             || ( aJson["horizontalJustification"] != "left"
+                  && aJson["horizontalJustification"] != "center"
+                  && aJson["horizontalJustification"] != "right" ) ) )
+    {
+        return false;
+    }
+
+    if( aJson.contains( "verticalJustification" )
+        && ( !aJson["verticalJustification"].is_string()
+             || ( aJson["verticalJustification"] != "top"
+                  && aJson["verticalJustification"] != "center"
+                  && aJson["verticalJustification"] != "bottom" ) ) )
+    {
+        return false;
+    }
+
+    return !aJson.contains( "fontName" )
+           || ( aJson["fontName"].is_string()
+                && aJson["fontName"].get<std::string>().size() <= 256 );
+}
 
 
 bool readPlacement( const JSON& aJson, PLACEMENT& aPlacement, RESULT& aResult )
@@ -243,15 +350,30 @@ bool readPlacement( const JSON& aJson, PLACEMENT& aPlacement, RESULT& aResult )
     aPlacement.rotationDegrees = aJson["rotationDegrees"].get<double>();
     aPlacement.side = aJson["side"].get<std::string>();
     aPlacement.locked = aJson["locked"].get<bool>();
+    aPlacement.presentation = aJson.value( "presentation", JSON::object() );
 
     if( !componentReference( aPlacement.component )
         || !std::isfinite( aPlacement.rotationDegrees )
         || std::abs( aPlacement.rotationDegrees ) > 360000.0
-        || ( aPlacement.side != "front" && aPlacement.side != "back" ) )
+        || ( aPlacement.side != "front" && aPlacement.side != "back" )
+        || !aPlacement.presentation.is_object()
+        || aPlacement.presentation.size() > 2 )
     {
         diagnostic( aResult, "invalid_placement",
                     "planned component placement contains an invalid value" );
         return false;
+    }
+
+    for( auto field = aPlacement.presentation.begin();
+         field != aPlacement.presentation.end(); ++field )
+    {
+        if( ( field.key() != "reference" && field.key() != "value" )
+            || !readFieldPresentation( field.value() ) )
+        {
+            diagnostic( aResult, "invalid_placement",
+                        "planned footprint presentation contains an invalid value" );
+            return false;
+        }
     }
 
     if( !aJson.contains( "instance" ) )
@@ -485,7 +607,8 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
     RESULT result;
     result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
                       { "placement", 0 }, { "footprintCreate", 0 },
-                      { "footprintDelete", 0 }, { "footprintMetadata", 0 } };
+                      { "footprintDelete", 0 }, { "footprintMetadata", 0 },
+                      { "footprintPresentation", 0 } };
     validateContext( aContext, result );
 
     std::map<std::string, MANAGED_ITEM> previous;
@@ -752,7 +875,12 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
                                         { "yNm", placement.yNm } } },
                       { "rotationDegrees", placement.rotationDegrees },
                       { "side", placement.side },
-                      { "locked", placement.locked } } );
+                      { "locked", placement.locked },
+                      { "presentation", placement.presentation } } );
+
+            if( !placement.presentation.empty() )
+                ++result.counts["footprintPresentation"].get_ref<int64_t&>();
+
             retainFootprintOwnership( component, managedId );
             ++result.counts["placement"].get_ref<int64_t&>();
             ++result.counts["footprintCreate"].get_ref<int64_t&>();
@@ -809,6 +937,17 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
                   { "fieldMask", JSON::array( { "position", "orientation", "layer", "locked" } ) },
                   { "item", std::move( item ) } } );
 
+        if( !placement.presentation.empty() )
+        {
+            result.actions.push_back(
+                    { { "action", "update_footprint_presentation" },
+                      { "component", component },
+                      { "itemType", "footprint" },
+                      { "itemId", footprint.itemId },
+                      { "presentation", placement.presentation } } );
+            ++result.counts["footprintPresentation"].get_ref<int64_t&>();
+        }
+
         if( placement.instance.is_object() )
         {
             result.actions.push_back(
@@ -854,7 +993,8 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
         result.actions = JSON::array();
         result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
                           { "placement", 0 }, { "footprintCreate", 0 },
-                          { "footprintDelete", 0 }, { "footprintMetadata", 0 } };
+                          { "footprintDelete", 0 }, { "footprintMetadata", 0 },
+                          { "footprintPresentation", 0 } };
         return result;
     }
 

@@ -21,6 +21,7 @@
 
 #include <kicad/codex/design_script_compiler.h>
 #include <kicad/codex/design_script_context_builder.h>
+#include <kicad/codex/design_script_layout_analyzer.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 
@@ -1357,6 +1358,125 @@ BOOST_AUTO_TEST_CASE( RejectsAmbiguousAndUnsupportedFacetDeclarations )
                               "unknown_board_statement", "duplicate_rules", "duplicate_source",
                               "invalid_check",
                               "invalid_output", "unresolved_component", "unresolved_net" } )
+    {
+        BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesAndMeasuresGeneralPhysicalLayoutContract )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project physical_contract)
+  (component U1 (symbol "Connector_Generic:Conn_01x02") (value "Controller")
+    (footprint "Local:Controller"))
+  (component C1 (symbol "Device:C") (value "100n") (footprint "Local:C"))
+  (component J1 (symbol "Connector_Generic:Conn_01x02") (value "Input")
+    (footprint "Local:Input"))
+  (component J2 (symbol "Connector_Generic:Conn_01x02") (value "Output")
+    (footprint "Local:Output"))
+  (net N1 (pin U1 1 1) (pin C1 1 1))
+  (net N2 (pin J1 1 1) (pin J2 1 1))
+  (board
+    (outline
+      (rectangle perimeter (start 0mm 0mm) (end 40mm 20mm)
+        (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
+    (layout
+      (board (maximum_width 40mm) (maximum_height 20mm))
+      (placement
+        (near C1 U1 (maximum 3mm))
+        (align C1 U1 (axis y) (tolerance 0mm))
+        (edge J1 right (maximum 1mm))
+        (group control (members C1 U1) (maximum_span 3mm)))
+      (routing
+        (defaults (geometry octilinear) (maximum_vias 2))
+        (net N1 (maximum_vias 1) (maximum_length 15mm))
+        (bundle pair (nets N1 N2) (maximum_skew 0mm))))
+    (place U1 (at 12mm 10mm))
+    (place C1 (at 10mm 10mm))
+    (place J1 (at 39mm 5mm))
+    (place J2 (at 39mm 15mm))
+    (route N1 (id n1) (from 0mm 0mm) (to 10mm 0mm)
+      (width 0.2mm) (layer F.Cu))
+    (route N2 (id n2) (from 0mm 1mm) (to 10mm 1mm)
+      (width 0.2mm) (layer F.Cu))
+    (via N1 (id n1-via) (at 5mm 0mm) (diameter 0.6mm) (drill 0.3mm)
+      (layers F.Cu B.Cu) (type through)))
+  (check layout)))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    auto found = std::find_if( compiled.ir["pcb"].begin(), compiled.ir["pcb"].end(),
+                               []( const nlohmann::json& aStatement )
+                               {
+                                   return aStatement.value( "kind", "" ) == "layout";
+                               } );
+    BOOST_REQUIRE( found != compiled.ir["pcb"].end() );
+    BOOST_CHECK_EQUAL( ( *found )["placement"].size(), 4 );
+    BOOST_CHECK_EQUAL( ( *found )["routing"]["nets"].size(), 1 );
+    BOOST_CHECK_EQUAL( ( *found )["routing"]["bundles"].size(), 1 );
+    KICHAD::DESIGN_SCRIPT_LAYOUT_ANALYZER::RESULT analyzed =
+            KICHAD::DESIGN_SCRIPT_LAYOUT_ANALYZER::Analyze( compiled.ir );
+    BOOST_CHECK_MESSAGE( analyzed.clean, analyzed.issues.dump() );
+    BOOST_CHECK_EQUAL( analyzed.summary["board"]["widthNm"].get<int64_t>(), 40000000 );
+    BOOST_REQUIRE_EQUAL( analyzed.summary["nets"].size(), 2 );
+
+    std::string violated = source;
+    const size_t width = violated.find( "(maximum_width 40mm)" );
+    BOOST_REQUIRE_NE( width, std::string::npos );
+    violated.replace( width, std::string( "(maximum_width 40mm)" ).size(),
+                      "(maximum_width 30mm)" );
+    const size_t geometry = violated.find( "(geometry octilinear)" );
+    BOOST_REQUIRE_NE( geometry, std::string::npos );
+    violated.replace( geometry, std::string( "(geometry octilinear)" ).size(),
+                      "(geometry orthogonal)" );
+    const size_t end = violated.find( "(to 10mm 0mm)" );
+    BOOST_REQUIRE_NE( end, std::string::npos );
+    violated.replace( end, std::string( "(to 10mm 0mm)" ).size(), "(to 10mm 5mm)" );
+    compiled = KICHAD::DESIGN_SCRIPT_COMPILER::Compile( violated );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    analyzed = KICHAD::DESIGN_SCRIPT_LAYOUT_ANALYZER::Analyze( compiled.ir );
+    BOOST_CHECK( !analyzed.clean );
+    const std::string issues = analyzed.issues.dump();
+    BOOST_CHECK_NE( issues.find( "board_width_exceeded" ), std::string::npos );
+    BOOST_CHECK_NE( issues.find( "net_geometry_violation" ), std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( RejectsMalformedPhysicalLayoutContract )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project invalid_layout)
+  (component U1 (symbol "Device:R") (value "1k") (footprint "Local:R"))
+  (component U2 (symbol "Device:R") (value "1k") (footprint "Local:R"))
+  (net N1 (pin U1 1 1) (pin U2 1 1))
+  (board
+    (layout
+      (board (maximum_width 0mm) (maximum_height wide))
+      (placement
+        (near U1 U1 (maximum -1mm))
+        (align U1 U2 (axis z) (tolerance invalid))
+        (edge U1 diagonal (maximum 1mm))
+        (group bad (members U1 U1) (maximum_span 0mm)))
+      (routing
+        (defaults (geometry curved) (maximum_vias -1))
+        (net N1)
+        (bundle bad (nets N1 N1) (maximum_skew bad))))
+    (place U1 (at 1mm 1mm))
+    (place U2 (at 2mm 2mm))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_CHECK( !compiled.ok );
+    const std::string diagnostics = compiled.diagnostics.dump();
+
+    for( const char* code : { "invalid_layout_board_limit", "invalid_layout_near",
+                              "invalid_layout_align", "invalid_layout_edge",
+                              "invalid_layout_group", "invalid_layout_routing_geometry",
+                              "invalid_layout_routing_vias", "empty_layout_net_policy",
+                              "invalid_layout_bundle" } )
     {
         BOOST_CHECK_NE( diagnostics.find( code ), std::string::npos );
     }

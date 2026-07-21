@@ -1850,7 +1850,9 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan(
                                    { "position", statement.at( "position" ) },
                                    { "rotationDegrees", statement.at( "rotationDegrees" ) },
                                    { "side", statement.at( "side" ) },
-                                   { "locked", statement.at( "locked" ) } };
+                                   { "locked", statement.at( "locked" ) },
+                                   { "presentation",
+                                     statement.value( "presentation", JSON::object() ) } };
                 JSON instance = planFootprintInstance( aCompilerIr, aResolvedSymbols,
                                                        project, reference );
 
@@ -1859,6 +1861,11 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan(
 
                 result.operations.emplace_back( std::move( operation ) );
                 ++result.counts["placements"].get_ref<int64_t&>();
+            }
+            else if( kind == "layout" )
+            {
+                // Layout is executable acceptance intent.  It is evaluated by verify.layout and
+                // the fabrication gate; it does not itself create a native PCB item.
             }
             else
             {

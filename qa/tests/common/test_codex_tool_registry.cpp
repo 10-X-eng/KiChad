@@ -253,16 +253,18 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( inspectOperations[2].get<std::string>(), "render" );
     const JSON& designOperations =
             specs[2]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( designOperations.size(), 6 );
-    BOOST_CHECK_EQUAL( designOperations[1].get<std::string>(), "read" );
-    BOOST_CHECK_EQUAL( designOperations[3].get<std::string>(), "preview" );
-    BOOST_CHECK_EQUAL( designOperations[5].get<std::string>(), "apply" );
+    BOOST_REQUIRE_EQUAL( designOperations.size(), 7 );
+    BOOST_CHECK_EQUAL( designOperations[1].get<std::string>(), "context" );
+    BOOST_CHECK_EQUAL( designOperations[2].get<std::string>(), "read" );
+    BOOST_CHECK_EQUAL( designOperations[4].get<std::string>(), "preview" );
+    BOOST_CHECK_EQUAL( designOperations[6].get<std::string>(), "apply" );
     const JSON& verifyOperations =
             specs[4]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 3 );
+    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 4 );
     BOOST_CHECK_EQUAL( verifyOperations[0].get<std::string>(), "erc" );
     BOOST_CHECK_EQUAL( verifyOperations[1].get<std::string>(), "drc" );
-    BOOST_CHECK_EQUAL( verifyOperations[2].get<std::string>(), "sourcing" );
+    BOOST_CHECK_EQUAL( verifyOperations[2].get<std::string>(), "layout" );
+    BOOST_CHECK_EQUAL( verifyOperations[3].get<std::string>(), "sourcing" );
     const JSON& fabricationOperations =
             specs[5]["inputSchema"]["properties"]["operation"]["enum"];
     BOOST_REQUIRE_EQUAL( fabricationOperations.size(), 2 );
@@ -639,6 +641,56 @@ BOOST_AUTO_TEST_CASE( VerifiesSingleRepresentationSourcingEvidence )
     BOOST_CHECK_EQUAL( futureData["counts"]["errors"].get<int>(), 1 );
     BOOST_CHECK_EQUAL( futureData["violations"][0]["type"].get<std::string>(),
                        "future_evidence" );
+}
+
+
+BOOST_AUTO_TEST_CASE( VerifiesCanonicalPhysicalLayoutContract )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    const auto writeSidecar = [&]( const char* aMaximumWidth )
+    {
+        const std::string source =
+                "(kichad_design\n"
+                "  (version 1)\n"
+                "  (project layout_verify)\n"
+                "  (component U1 (symbol \"Device:R\") (value \"1k\") "
+                "(footprint \"Resistor:R_0603\"))\n"
+                "  (board\n"
+                "    (outline (rectangle edge (start 0mm 0mm) (end 10mm 8mm) "
+                "(stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))\n"
+                "    (place U1 (at 5mm 4mm))\n"
+                "    (layout (board (maximum_width "
+                + std::string( aMaximumWidth )
+                + ") (maximum_height 8mm)) "
+                  "(routing (defaults (geometry any) (maximum_vias 0)))))\n"
+                  "  (check layout))\n";
+        wxFFile file( wxFileName( fixture.Root(), wxS( "layout.kicad_kds" ) )
+                              .GetFullPath(),
+                      wxS( "wb" ) );
+        BOOST_REQUIRE( file.IsOpened() );
+        BOOST_REQUIRE_EQUAL( file.Write( source.data(), source.size() ), source.size() );
+    };
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); } );
+    writeSidecar( "10mm" );
+    JSON clean = registry.Handle(
+            "verify", { { "operation", "layout" }, { "path", "layout.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( clean.at( "success" ).get<bool>(), clean.dump() );
+    JSON cleanData = envelope( clean )["data"];
+    BOOST_CHECK( cleanData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( cleanData["counts"]["total"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( cleanData["layout"]["board"]["widthNm"].get<int64_t>(),
+                       10000000 );
+
+    writeSidecar( "9mm" );
+    JSON failed = registry.Handle(
+            "verify", { { "operation", "layout" }, { "path", "layout.kicad_kds" },
+                         { "limit", 1 } } );
+    BOOST_REQUIRE_MESSAGE( failed.at( "success" ).get<bool>(), failed.dump() );
+    JSON failedData = envelope( failed )["data"];
+    BOOST_CHECK( !failedData["clean"].get<bool>() );
+    BOOST_CHECK_EQUAL( failedData["counts"]["errors"].get<int>(), 1 );
+    BOOST_CHECK_EQUAL( failedData["violations"][0]["type"].get<std::string>(),
+                       "board_width_exceeded" );
 }
 
 

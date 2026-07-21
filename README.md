@@ -45,19 +45,26 @@ are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architec
 submitted turn first snapshots the project through KiCad's local-history system, and the panel can
 restore that complete pre-turn state.  The initial native `project` and `inspect` calls expose
 project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation.
-`inspect.render` uses the matching native KiCad backend to attach a cropped schematic, 2D board, or
-3D board PNG directly to the Codex tool result, so the model can review actual generated documents
+`inspect.render` uses the matching native KiCad backend to attach a cropped schematic, production
+PCB (`pcb2d`), assembly/layout PCB (`pcblayout`, including Fab fields and courtyards), or 3D board
+PNG directly to the Codex tool result, so the model can review actual generated documents
 while iterating; these images are derived previews under `.kichad/previews/`, not another design
-representation. The Ubuntu bootstrap installs Poppler for the bounded PDF-to-PNG stage. The
+representation. KDS `place` declarations can independently control each footprint Reference and
+Value field's visibility, absolute position, presentation layer, size, stroke, angle,
+justification, and font styling. The Ubuntu bootstrap installs Poppler for the bounded PDF-to-PNG
+stage. The
 `design` call returns bounded paged semantic context, reads exact source, compiles, previews,
 atomically saves, and transactionally
 applies reusable `.kicad_kds` project sidecars, and the `pcb` call exposes the exact protobuf field
 schema and connects directly to the open PCB Editor through KiCad 10's protobuf IPC API for bounded
 live reads and snapshot-gated, native undoable transactions. A successful `design.apply` saves the
 live board but explicitly reports verification as `not_run`; Codex must render the affected views
-and then repair KDS until ERC and DRC are clean. The read-only `verify` call runs the
+and then repair KDS until ERC, DRC, and physical-layout acceptance are clean. The read-only `verify` call runs the
 matching sibling KiCad 10.0.4 ERC or DRC engine (including DRC schematic parity), rejects reports
 from any other KiCad version, and returns complete counts plus bounded pageable violations. Its
+`layout` operation evaluates the single KDS file's maximum board dimensions, semantic component
+relationships, routing geometry, per-net via/length limits, and bundle skew with measured failure
+details; the same result gates fabrication readiness. Its
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
 
@@ -67,9 +74,9 @@ details when available, whether project state may have changed, retryability, an
 steps. The Codex transcript displays the same error message and recovery summary so a user can see
 why a turn is still running or what blocked it.
 
-The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v16` release
+The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v17` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
-the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
+the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, layout, sourcing, fabrication,
 Gerber, drill, IPC-D-356 electrical-test, placement, and BOM intent plus an explicit physical
 stackup. Every schematic net must explicitly select `wired` or `labels` presentation, and a design
 with electrical connectivity cannot pass the release plan as an implicit or entirely label-only

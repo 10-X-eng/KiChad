@@ -92,6 +92,7 @@ private:
                     std::chrono::milliseconds aIpcTimeout,
                     const RUNTIME_DEPENDENCY_RESOLVER& aDependencyResolver ) const;
     JSON handleVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
+    JSON handleLayoutVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON handleSourcingVerify( const JSON& aArguments, const wxString& aProjectPath ) const;
     JSON handleFabricate( const JSON& aArguments, const wxString& aProjectPath,
                           bool aMutationAvailable, bool aFinalActionApproved ) const;

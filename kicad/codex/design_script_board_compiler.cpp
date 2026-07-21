@@ -16,6 +16,7 @@
 #include "design_script_board_outline_compiler.h"
 #include "design_script_board_text_box_compiler.h"
 #include "design_script_board_table_compiler.h"
+#include "design_script_layout_compiler.h"
 #include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
 #include "design_script_via_padstack_compiler.h"
@@ -851,6 +852,193 @@ void compileOutline( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
 }
 
 
+JSON compileFootprintFieldPresentation( const DOCUMENT& aDocument, size_t aNode,
+                                        RESULT& aResult, const std::string& aName )
+{
+    std::map<std::string, size_t> fields;
+    collectFields( aDocument, aNode, 1,
+                   { "visible", "layer", "at", "size", "stroke", "angle", "justify",
+                     "font", "bold", "italic", "underlined", "mirrored", "keep_upright" },
+                   fields, aResult, "footprint " + aName + " field" );
+    JSON result = JSON::object();
+
+    if( fields.empty() )
+    {
+        diagnostic( aResult, "error", "empty_footprint_field_presentation",
+                    "footprint " + aName + " presentation requires at least one setting" );
+        return result;
+    }
+
+    if( fields.contains( "visible" ) )
+    {
+        bool visible = false;
+
+        if( !parseBooleanForm( aDocument, fields["visible"], visible ) )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_visibility",
+                        "footprint " + aName + " visible must be true or false" );
+        }
+        else
+        {
+            result["visible"] = visible;
+        }
+    }
+
+    if( fields.contains( "layer" ) )
+    {
+        std::string layer;
+
+        if( !parseScalarForm( aDocument, fields["layer"], layer )
+            || ( layer != "F.SilkS" && layer != "B.SilkS"
+                 && layer != "F.Fab" && layer != "B.Fab" ) )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_layer",
+                        "footprint " + aName
+                                + " layer must be F.SilkS, B.SilkS, F.Fab, or B.Fab" );
+        }
+        else
+        {
+            result["layer"] = std::move( layer );
+        }
+    }
+
+    if( fields.contains( "at" ) )
+    {
+        JSON position;
+
+        if( !parseVectorForm( aDocument, fields["at"], position )
+            || !internalVector( position ) )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_position",
+                        "footprint " + aName
+                                + " at requires bounded absolute coordinates with physical units" );
+        }
+        else
+        {
+            result["position"] = std::move( position );
+        }
+    }
+
+    int64_t width = 0;
+    int64_t height = 0;
+
+    if( fields.contains( "size" ) )
+    {
+        JSON size;
+
+        if( !parseVectorForm( aDocument, fields["size"], size )
+            || ( width = size.value( "xNm", int64_t( 0 ) ) ) < 1000
+            || width > 250000000
+            || ( height = size.value( "yNm", int64_t( 0 ) ) ) < 1000
+            || height > 250000000 )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_size",
+                        "footprint " + aName
+                                + " size requires width and height from 1um through 250mm" );
+        }
+        else
+        {
+            result["size"] = std::move( size );
+        }
+    }
+
+    if( fields.contains( "stroke" ) )
+    {
+        int64_t stroke = 0;
+        const int64_t maximum = width > 0 && height > 0
+                                        ? std::min( width, height ) / 4
+                                        : 250000000;
+
+        if( !parseDistanceForm( aDocument, fields["stroke"], stroke )
+            || stroke <= 0 || stroke > maximum )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_stroke",
+                        "footprint " + aName
+                                + " stroke must be positive and no more than one quarter of its supplied size" );
+        }
+        else
+        {
+            result["strokeNm"] = stroke;
+        }
+    }
+
+    if( fields.contains( "angle" ) )
+    {
+        double angle = 0.0;
+
+        if( !parseAngleForm( aDocument, fields["angle"], angle ) )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_angle",
+                        "footprint " + aName + " angle must use an explicit deg suffix" );
+        }
+        else
+        {
+            result["angleDegrees"] = angle;
+        }
+    }
+
+    if( fields.contains( "justify" ) )
+    {
+        const DOCUMENT::NODE& justify = aDocument.Nodes()[fields["justify"]];
+        std::string horizontal;
+        std::string vertical;
+
+        if( justify.children.size() != 3
+            || !scalarText( aDocument, justify.children[1], horizontal )
+            || !scalarText( aDocument, justify.children[2], vertical )
+            || ( horizontal != "left" && horizontal != "center" && horizontal != "right" )
+            || ( vertical != "top" && vertical != "center" && vertical != "bottom" ) )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_justification",
+                        "footprint " + aName
+                                + " justify requires left|center|right and top|center|bottom" );
+        }
+        else
+        {
+            result["horizontalJustification"] = std::move( horizontal );
+            result["verticalJustification"] = std::move( vertical );
+        }
+    }
+
+    if( fields.contains( "font" ) )
+    {
+        std::string font;
+
+        if( !parseScalarForm( aDocument, fields["font"], font ) || font.empty()
+            || font.size() > MAX_FONT_NAME_BYTES )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_font",
+                        "footprint " + aName
+                                + " font must be stroke or a font name of at most 256 UTF-8 bytes" );
+        }
+        else
+        {
+            result["fontName"] = font == "stroke" ? "" : font;
+        }
+    }
+
+    for( const char* field : { "bold", "italic", "underlined", "mirrored", "keep_upright" } )
+    {
+        if( !fields.contains( field ) )
+            continue;
+
+        bool value = false;
+
+        if( !parseBooleanForm( aDocument, fields[field], value ) )
+        {
+            diagnostic( aResult, "error", "invalid_footprint_field_boolean",
+                        "footprint " + aName + " " + field + " must be true or false" );
+        }
+        else
+        {
+            result[field == std::string( "keep_upright" ) ? "keepUpright" : field] = value;
+        }
+    }
+
+    return result;
+}
+
+
 JSON compilePlace( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
                    std::set<std::string>& aPlacedComponents )
 {
@@ -865,12 +1053,14 @@ JSON compilePlace( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
     }
 
     std::map<std::string, size_t> fields;
-    collectFields( aDocument, aNode, 2, { "at", "rotation", "side", "locked" }, fields,
+    collectFields( aDocument, aNode, 2,
+                   { "at", "rotation", "side", "locked", "reference", "value" }, fields,
                    aResult, "place" );
     JSON        position = JSON::object();
     double      rotation = 0.0;
     std::string side = "front";
     bool        locked = false;
+    JSON        presentation = JSON::object();
 
     if( !fields.contains( "at" ) || !parseVectorForm( aDocument, fields["at"], position ) )
     {
@@ -900,6 +1090,15 @@ JSON compilePlace( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
                     "place locked must be true or false" );
     }
 
+    for( const char* field : { "reference", "value" } )
+    {
+        if( fields.contains( field ) )
+        {
+            presentation[field] = compileFootprintFieldPresentation(
+                    aDocument, fields[field], aResult, field );
+        }
+    }
+
     if( validIdentifier( reference ) )
     {
         if( !aPlacedComponents.emplace( reference ).second )
@@ -917,6 +1116,7 @@ JSON compilePlace( const DOCUMENT& aDocument, size_t aNode, RESULT& aResult,
              { "rotationDegrees", rotation },
              { "side", side },
              { "locked", locked },
+             { "presentation", std::move( presentation ) },
              { "typed", true } };
 }
 
@@ -3258,7 +3458,7 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
     std::set<std::string>        placedComponents;
     std::set<std::string>        singletonStatements;
     static const std::set<std::string> known = {
-        "stackup", "outline", "place", "route", "via",
+        "stackup", "outline", "layout", "place", "route", "via",
         "zone", "text", "text_box", "table", "dimension", "keepout", "image", "barcode",
         "line", "rectangle", "arc", "circle", "polygon", "bezier"
     };
@@ -3275,7 +3475,7 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
             continue;
         }
 
-        if( ( head == "stackup" || head == "outline" )
+        if( ( head == "stackup" || head == "outline" || head == "layout" )
             && !singletonStatements.emplace( head ).second )
         {
             diagnostic( result, "error", "duplicate_board_statement",
@@ -3289,6 +3489,24 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
         else if( head == "outline" )
         {
             compileOutline( aDocument, child, result, logicalIds );
+        }
+        else if( head == "layout" )
+        {
+            KICHAD::DESIGN_SCRIPT_LAYOUT_COMPILER::RESULT compiled =
+                    KICHAD::DESIGN_SCRIPT_LAYOUT_COMPILER::Compile( aDocument, child );
+
+            for( JSON& entry : compiled.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.componentReferences.insert( result.componentReferences.end(),
+                                                compiled.componentReferences.begin(),
+                                                compiled.componentReferences.end() );
+            result.netReferences.insert( result.netReferences.end(),
+                                          compiled.netReferences.begin(),
+                                          compiled.netReferences.end() );
+
+            if( compiled.layout.is_object() )
+                result.statements.push_back( std::move( compiled.layout ) );
         }
         else if( head == "place" )
         {

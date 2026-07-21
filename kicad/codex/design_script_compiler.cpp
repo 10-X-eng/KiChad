@@ -1584,6 +1584,9 @@ JSON compileNet( const DOCUMENT& aDocument, size_t aNode,
                         "net " + name
                                 + " accepts one (presentation wired|labels) field and endpoints "
                                   "using (pin COMPONENT UNIT PIN_NUMBER)" );
+            diagnostic( aResult, "error", "invalid_pin",
+                        "net " + name
+                                + " pin endpoints require component, unit 1 through 256, and a bounded pin number" );
             continue;
         }
 
@@ -5721,6 +5724,13 @@ JSON compileRules( const DOCUMENT& aDocument, size_t aNode,
                     "minimum_via_diameter cannot satisfy the drill and annular-width constraints" );
     }
 
+    if( rules["minimumMicroviaDiameterNm"].get<int64_t>()
+        < rules["minimumMicroviaDrillNm"].get<int64_t>() + 2 * annular )
+    {
+        diagnostic( aResult, "error", "inconsistent_rules_microvia_geometry",
+                    "minimum_microvia_diameter cannot satisfy the drill and annular-width constraints" );
+    }
+
     return rules;
 }
 
@@ -7168,7 +7178,22 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(board (stackup ...) (outline "
                       "(line|rectangle|arc|circle|polygon|bezier ID ... "
                       "(stroke WIDTH solid) (layers Edge.Cuts) (fill none)) ...) "
-                      "(place REF (at X Y) ...) (route NET (id ID) (from X Y) (to X Y) ...) "
+                      "(layout (board (maximum_width D) (maximum_height D)) "
+                      "[(placement (near REF REF (maximum D)) "
+                      "(align REF REF (axis x|y) (tolerance D)) "
+                      "(edge REF left|right|top|bottom (maximum D)) "
+                      "(group ID (members REF...) (maximum_span D)) ...)] "
+                      "(routing (defaults (geometry any|orthogonal|octilinear) "
+                      "(maximum_vias UINT)) "
+                      "[(net NET [(geometry ...)] [(maximum_vias UINT)] "
+                      "[(maximum_length D)]) ...] "
+                      "[(bundle ID (nets NET...) (maximum_skew D)) ...]))) "
+                      "(place REF (at X Y) [(rotation A)] [(side front|back)] [(locked BOOL)] "
+                      "[(reference|value [(visible BOOL)] [(layer F.SilkS|B.SilkS|F.Fab|B.Fab)] "
+                      "[(at X Y)] [(size W H)] [(stroke D)] [(angle A)] "
+                      "[(justify H V)] [(font stroke|NAME)] [(bold BOOL)] [(italic BOOL)] "
+                      "[(underlined BOOL)] [(mirrored BOOL)] [(keep_upright BOOL)])]) "
+                      "(route NET (id ID) (from X Y) (to X Y) ...) "
                       "(line|rectangle|arc|circle|polygon|bezier ID ... "
                       "(stroke WIDTH STYLE) (layers LAYER...) (fill none|solid) "
                       "[(net none|NET)] [(solder_mask_margin inherit|DISTANCE)] "
@@ -7309,7 +7334,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(testpoint REF)] [(power ID)] [(program ID)] "
                       "(after_ms N) (timeout_ms N) (required true) "
                       "[(procedure TEXT)]) ... )" } },
-                  { { "form", "(check erc|drc|sourcing|footprints|fabrication)" } },
+                  { { "form", "(check erc|drc|layout|sourcing|footprints|fabrication)" } },
                   { { "form",
                       "(output gerbers|drill|ipcd356|netlist|ipc2581|odbpp|pick_place|bom|step|"
                       "stepz|brep|glb|stl|u3d|xao|3d_pdf|pdf|board_ps|"
@@ -7319,8 +7344,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
           } ) },
         { "compilerPasses",
           JSON::array( { "parse", "typecheck", "resolve", "plan", "snapshot", "schematic",
-                         "libraries", "pcb", "sourcing", "production_handoff", "erc", "drc",
-                         "fabrication" } ) },
+                         "libraries", "pcb", "layout", "sourcing", "production_handoff", "erc",
+                         "drc", "fabrication" } ) },
         { "example",
           "(kichad_design\n"
           "  (version 1)\n"
@@ -7885,7 +7910,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "check" )
         {
             static const std::set<std::string> allowed = {
-                "erc", "drc", "sourcing", "footprints", "fabrication"
+                "erc", "drc", "layout", "sourcing", "footprints", "fabrication"
             };
             JSON check = compileEnumeratedFacet( *document, formNode, "check", allowed, result );
             const std::string kind = check.value( "kind", "" );

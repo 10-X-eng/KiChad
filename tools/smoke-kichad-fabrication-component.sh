@@ -40,6 +40,7 @@ require_native_version() {
 
 require_native_version "${base_fixture}/fabrication_clean.kicad_pcb" 20260206
 require_native_version "${base_fixture}/fabrication_clean.kicad_sch" 20260306
+require_native_version "${component_fixture}/fabrication_component.kicad_pcb" 20260206
 require_native_version "${library_fixture}/Device.kicad_sym" 20251024
 require_native_version \
     "${library_fixture}/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod" 20260206
@@ -63,7 +64,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p -- "$project_dir" "$config_dir"
-cp -- "${base_fixture}/fabrication_clean.kicad_pcb" \
+cp -- "${component_fixture}/fabrication_component.kicad_pcb" \
     "${project_dir}/fabrication_component.kicad_pcb"
 cp -- "${base_fixture}/fabrication_clean.kicad_sch" \
     "${project_dir}/fabrication_component.kicad_sch"

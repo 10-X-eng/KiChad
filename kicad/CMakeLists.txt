@@ -74,6 +74,8 @@ set( KICAD_SRCS
     codex/design_script_footprint_variant_generator.cpp
     codex/design_script_footprint_zone_compiler.cpp
     codex/design_script_footprint_zone_generator.cpp
+    codex/design_script_layout_analyzer.cpp
+    codex/design_script_layout_compiler.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
     codex/design_script_production_compiler.cpp

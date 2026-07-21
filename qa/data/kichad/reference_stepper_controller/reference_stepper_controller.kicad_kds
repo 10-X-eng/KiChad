@@ -340,6 +340,17 @@
         (silkscreen B.SilkS (material "Epoxy ink") (color "White"))))
     (outline (rectangle board_outline (start 20mm 20mm) (end 95mm 75mm)
       (stroke 0.2mm solid) (layers Edge.Cuts) (fill none)))
+    (layout
+      (board (maximum_width 75mm) (maximum_height 55mm))
+      (placement
+        (near C1 J1 (maximum 15mm))
+        (near C1 A1 (maximum 20mm))
+        (edge J1 top (maximum 8mm))
+        (edge J2 right (maximum 8mm))
+        (group motor_interface (members A1 J2) (maximum_span 20mm)))
+      (routing
+        (defaults (geometry any) (maximum_vias 0))
+        (bundle motor_phases (nets M1A M1B M2A M2B) (maximum_skew 3mm))))
     (place U1 (at 38mm 47mm) (rotation 0deg) (side front) (locked false))
     (place A1 (at 68mm 47mm) (rotation 0deg) (side front) (locked false))
     (place J1 (at 86mm 28mm) (rotation 0deg) (side front) (locked false))
@@ -544,7 +555,7 @@
       (timeout_ms 15000)
       (required true)
       (procedure "Connect the fixture motor, send ENABLE then MOVE 200, require one forward revolution and OK MOVE, then require the driver disabled.")))
-  (check sourcing) (check erc) (check drc) (check footprints) (check fabrication)
+  (check sourcing) (check erc) (check drc) (check layout) (check footprints) (check fabrication)
   (output bom) (output gerbers) (output drill) (output ipcd356)
   (output pick_place) (output netlist) (output ipc2581) (output odbpp)
   (output schematic_pdf) (output schematic_svg) (output schematic_dxf)

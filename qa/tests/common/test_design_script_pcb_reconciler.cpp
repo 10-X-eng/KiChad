@@ -348,6 +348,48 @@ BOOST_FIXTURE_TEST_CASE( RefusesMissingAmbiguousAndUnlinkedFootprintPlacements, 
 }
 
 
+BOOST_FIXTURE_TEST_CASE( ReconcilesFootprintFieldPresentationByReference, FIXTURE )
+{
+    const std::string footprintId = "11111111-1111-8111-8111-111111111111";
+    JSON placement = { { "action", "place_by_reference" }, { "component", "U1" },
+                       { "position", { { "xNm", 10000000 }, { "yNm", 8000000 } } },
+                       { "rotationDegrees", 0.0 }, { "side", "front" },
+                       { "locked", false } };
+    placement["presentation"] = {
+        { "reference",
+          { { "visible", true }, { "layer", "F.SilkS" },
+            { "position", { { "xNm", 10000000 }, { "yNm", 6000000 } } },
+            { "size", { { "xNm", 1000000 }, { "yNm", 1000000 } } },
+            { "strokeNm", 150000 }, { "angleDegrees", 0.0 },
+            { "horizontalJustification", "center" },
+            { "verticalJustification", "bottom" }, { "keepUpright", true } } },
+        { "value", { { "visible", false }, { "layer", "F.Fab" } } }
+    };
+    JSON desired = JSON::array( { std::move( placement ) } );
+    JSON inventory = JSON::array( {
+            { { "itemId", footprintId }, { "itemType", "footprint" },
+              { "reference", "U1" }, { "schematicLinked", true } }
+    } );
+    RECONCILER::RESULT reconciled =
+            RECONCILER::Reconcile( desired, nullptr, inventory, Context() );
+    BOOST_REQUIRE_MESSAGE( reconciled.ok, reconciled.diagnostics.dump() );
+    BOOST_REQUIRE_EQUAL( reconciled.actions.size(), 2 );
+    BOOST_CHECK_EQUAL( reconciled.counts["footprintPresentation"].get<int>(), 1 );
+    const auto action = std::find_if(
+            reconciled.actions.begin(), reconciled.actions.end(),
+            []( const JSON& aCandidate )
+            {
+                return aCandidate.value( "action", "" )
+                       == "update_footprint_presentation";
+            } );
+    BOOST_REQUIRE( action != reconciled.actions.end() );
+    BOOST_CHECK_EQUAL( ( *action )["itemId"].get<std::string>(), footprintId );
+    BOOST_CHECK_EQUAL( ( *action )["presentation"]["reference"]["strokeNm"].get<int64_t>(),
+                       150000 );
+    BOOST_CHECK( !( *action )["presentation"]["value"]["visible"].get<bool>() );
+}
+
+
 BOOST_FIXTURE_TEST_CASE( CreatesMissingFootprintFromExecutableSchematicInstance, FIXTURE )
 {
     JSON placement = JSON::array( {
