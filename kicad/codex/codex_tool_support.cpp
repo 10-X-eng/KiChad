@@ -5781,6 +5781,10 @@ bool updateFootprintMetadata( const KICHAD_IPC_CLIENT& aClient,
     requested.mutable_description_field()->mutable_text()->mutable_text()->set_text(
             fields.value( "Description", "" ) );
     requested.mutable_attributes()->set_do_not_populate( instance.at( "dnp" ).get<bool>() );
+    // definition.items is replacement semantics.  Preserve the message presence even when KDS
+    // declares no custom fields so the native handler can distinguish "clear the list" from a
+    // malformed request that omitted the replacement value.
+    requested.mutable_definition();
     std::map<std::string, std::string> expectedFields;
 
     for( auto field = fields.begin(); field != fields.end(); ++field )

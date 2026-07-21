@@ -1919,6 +1919,19 @@ BOOST_AUTO_TEST_CASE( AppliesSavesAndFabricatesSourcedComponentWhenExplicitlyReq
     BOOST_CHECK( applyData["stackupApplied"].get<bool>() );
     BOOST_CHECK_EQUAL( applyData["libraryTablesApplied"].get<int>(), 2 );
 
+    // Reapplying the same design exercises existing-footprint metadata replacement.  These
+    // components intentionally have no custom fields, so definition.items must be encoded as a
+    // present empty replacement rather than omitted as if the request were malformed.
+    JSON reapplied = registry.Handle( "design", { { "operation", "apply" },
+                                                    { "path", sourceName.ToStdString() },
+                                                    { "boardPath", boardName.ToStdString() },
+                                                    { "expectedSha256", hash } } );
+    BOOST_REQUIRE_MESSAGE( reapplied.at( "success" ).get<bool>(), reapplied.dump() );
+    JSON reapplyData = envelope( reapplied )["data"];
+    BOOST_CHECK_EQUAL( reapplyData["transaction"].get<std::string>(), "committed" );
+    BOOST_CHECK_EQUAL( reapplyData["counts"]["footprintCreate"].get<int>(), 0 );
+    BOOST_CHECK_EQUAL( reapplyData["counts"]["footprintMetadata"].get<int>(), 2 );
+
     KICHAD_IPC_CLIENT ipcClient( "org.kichad.codex.qa.fabrication-component",
                                 socketDirectory );
     KICHAD_IPC_TARGET ipcTarget;

@@ -1175,6 +1175,7 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                 }
 
                 bool valid = true;
+                std::string invalidPath;
                 std::map<std::string, std::string> requestedFields;
 
                 for( const std::string& path : aHeader.field_mask().paths() )
@@ -1257,7 +1258,10 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                     }
 
                     if( !valid )
+                    {
+                        invalidPath = path;
                         break;
+                    }
                 }
 
                 if( valid && presentationRequested )
@@ -1277,19 +1281,30 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                                 return aPath.starts_with( "value_field." );
                             } );
 
-                    valid = ( !referenceRequested
-                              || validFootprintPresentationField(
-                                      mergedUpdate.reference_field() ) )
-                            && ( !valueRequested
-                                 || validFootprintPresentationField(
-                                         mergedUpdate.value_field() ) );
+                    if( referenceRequested
+                        && !validFootprintPresentationField(
+                                mergedUpdate.reference_field() ) )
+                    {
+                        valid = false;
+                        invalidPath = "reference_field";
+                    }
+                    else if( valueRequested
+                             && !validFootprintPresentationField(
+                                     mergedUpdate.value_field() ) )
+                    {
+                        valid = false;
+                        invalidPath = "value_field";
+                    }
                 }
 
                 if( !valid )
                 {
                     status.set_code( ItemStatusCode::ISC_INVALID_DATA );
                     status.set_error_message(
-                            "the managed footprint update contains a missing or invalid field" );
+                            fmt::format(
+                                    "managed footprint {} contains a missing or invalid field: {}",
+                                    update.id().value(),
+                                    invalidPath.empty() ? "unknown" : invalidPath ) );
                     aItemHandler( status, anyItem );
                     continue;
                 }
