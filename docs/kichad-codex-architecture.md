@@ -89,7 +89,8 @@ independently attest third-party web content.
 
 `fabricate` has a read-only `plan` operation and a permission-gated `export` operation. Both bind a
 project-confined current-format board and root schematic to the exact SHA-256 of a compiled KDS
-sidecar. The fixed `kichad-production-10.0.4-v12` profile requires explicit stackup intent, ERC, DRC,
+sidecar. The fixed `kichad-production-10.0.4-v16` profile requires explicit stackup and schematic
+net-presentation intent, at least one reviewable wired path when nets exist, ERC, DRC,
 sourcing, and fabrication checks, plus Gerber, drill, IPC-D-356 electrical-test, placement, and BOM
 outputs; STEP, STEPZ, BREP, GLB, STL, U3D, XAO, interactive 3D PDF, fabrication PDF, IPC-2581C XML,
 ODB++, front/back assembly SVG/DXF, GenCAD, VRML, and typed board statistics are optional
@@ -115,6 +116,11 @@ reruns native ERC/DRC and KDS sourcing there, and
 rejects errors, warnings, stale input, or unapproved ignored-check/exclusion state. It then invokes
 only the exact sibling `kicad-cli`, creates the KDS-sourced BOM, validates expected artifact counts,
 paths, sizes, signatures, Gerber-job structure, and SHA-256 values, and writes a structured manifest.
+The same private snapshot is copied into a bounded, digest-verified `design/` release tree: exactly
+one KDS source plus current native board/schematic hierarchy, project settings, library tables,
+project symbols/footprints, rules, worksheet, and confined local models. Local UI preference files
+and history are excluded. Manifest source entries name both their original project-relative path and
+portable package path.
 The validated staging directory atomically replaces only `fabrication/`; installation failure rolls
 the prior directory back. Private snapshots, logs, and staging are removed on every tested success
 and failure path; a backup-cleanup failure is surfaced as `backupRetained` after a verified install

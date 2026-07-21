@@ -37,8 +37,10 @@ BOOST_AUTO_TEST_CASE( ResolvesExactProjectSymbolCacheAndPinsDeterministically )
     (in_bom no)
     (on_board no)
     (in_pos_files no)
-    (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
-    (property "Value" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Reference" "R" (at -5 2 0) (do_not_autoplace yes)
+      (effects (font (size 1.27 1.27))))
+    (property "Value" "R" (at 5 -2 0) (hide yes) (show_name yes)
+      (effects (font (size 1.27 1.27))))
     (symbol "R_1_1"
       (pin passive line (at 0 3.81 270) (length 1.27)
         (name "" (effects (font (size 1.27 1.27))))
@@ -63,10 +65,22 @@ BOOST_AUTO_TEST_CASE( ResolvesExactProjectSymbolCacheAndPinsDeterministically )
     BOOST_REQUIRE_EQUAL( first.symbols["Local:R"]["units"]["1"].size(), 2 );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["units"]["1"][0]["number"], "1" );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["units"]["1"][0]["yNm"], 3810000 );
+    BOOST_CHECK_EQUAL(
+            first.symbols["Local:R"]["units"]["1"][0]["rotationDegrees"], 270 );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["excludeFromSim"], true );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["inBom"], false );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["onBoard"], false );
     BOOST_CHECK_EQUAL( first.symbols["Local:R"]["flags"]["inPosFiles"], false );
+    const nlohmann::json& referenceLayout =
+            first.symbols["Local:R"]["propertyLayouts"]["Reference"];
+    BOOST_CHECK_EQUAL( referenceLayout["position"]["xNm"], -5000000 );
+    BOOST_CHECK_EQUAL( referenceLayout["position"]["yNm"], 2000000 );
+    BOOST_CHECK( referenceLayout["visible"].get<bool>() );
+    BOOST_CHECK( !referenceLayout["autoplace"].get<bool>() );
+    const nlohmann::json& valueLayout =
+            first.symbols["Local:R"]["propertyLayouts"]["Value"];
+    BOOST_CHECK( !valueLayout["visible"].get<bool>() );
+    BOOST_CHECK( valueLayout["showName"].get<bool>() );
 
     std::string malformedFlags = library;
     const size_t inBom = malformedFlags.find( "(in_bom no)" );

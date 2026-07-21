@@ -24,18 +24,23 @@ saved or dispatched to a KiChad compiler pass.
 - Compatibility: unknown top-level forms are errors; newer syntax requires a new language version
 
 The project manager recognizes the extension, displays sidecars in the project tree, and opens them
-as text. The native `design` tool supports `describe`, exact `read`, inline or file-backed `compile`,
-read-only `preview`, `save`, and snapshot-gated `apply`. Read returns the original bounded UTF-8
-source plus its revision metadata, never a generated context projection. Loading a sidecar never
+as text. The native `design` tool supports `describe`, paged `context`, exact `read`, inline or
+file-backed `compile`, read-only `preview`, `save`, and snapshot-gated `apply`. Read returns the
+original bounded UTF-8 source plus its revision metadata. `context` compiles that same source into
+a bounded, queryable semantic inventory across project, library, schematic, PCB, and manufacturing
+domains; base64 and oversized text payloads are replaced with size/digest metadata, and page output
+is capped before it reaches the model. This is ephemeral compiler introspection, not an authored
+projection. Loading a sidecar never
 rewrites it. Saving preserves the supplied source byte-for-byte after the compiler accepts it.
 Preview reports KDS logical IDs, deterministic target UUIDs, counts, and unsupported-backend
 diagnostics without connecting to or changing the PCB Editor. Internal compiler IR and KiCad
 protobuf payloads are not exposed as a second design representation.
 
-KDS itself is the AI context and the only external design representation. Its names are explicit,
+KDS itself is the authoritative AI context and the only external design representation. Its names are explicit,
 physical values retain readable engineering units, references resolve locally, and every generated
-object has a stable authored logical ID. A model reads, reviews, edits, imports, and exports this
-same source; it never needs to reconstruct design intent from KiCad serialization or backend JSON.
+object has a stable authored logical ID. A model first queries semantic `context`, then reads,
+reviews, edits, imports, and exports this same exact source; it never needs to reconstruct design
+intent from KiCad serialization or treat compiler JSON as another design file.
 
 Project title-block metadata has one canonical representation inside `project`. `title`, `company`,
 `revision`, and `date` may occur once; KiCad's nine comment slots use the indexed
@@ -305,7 +310,7 @@ refresh the form with live web search before treating stale evidence as producti
 ### Fabrication export
 
 KDS output declarations feed one production implementation profile,
-`kichad-production-10.0.4-v12`; there is no second job-file or output-profile representation. A
+`kichad-production-10.0.4-v16`; there is no second job-file or output-profile representation. A
 production-ready plan requires all of the following declarations in the same sidecar:
 
 ```scheme
@@ -403,6 +408,157 @@ SHA-256 values and installs the complete directory atomically. A gate, exporter,
 stale-input, manifest, or installation failure leaves the previous fabrication directory intact.
 Native KiCad creation timestamps are preserved, so separate exports may have different artifact
 hashes even when their KDS and native design inputs are equal.
+
+### Firmware, programming, and bring-up
+
+A manufacturable package is not automatically a running product. KDS therefore carries the
+firmware and physical bring-up handoff in the same source as the circuit and board:
+
+```scheme
+(production
+  (assembly
+    (acceptance ipc-a-610-class-2)
+    (process lead_free_reflow)
+    (solder_alloy "SAC305")
+    (stencil top)
+    (stencil_thickness_um 120)
+    (cleaning no_clean)
+    (coating none)
+    (instruction mcu-orientation
+      (scope component U1)
+      (text "Install U1 with its pin-one mark aligned to the assembly drawing.")))
+  (firmware controller
+    (path "firmware/controller.hex")
+    (format ihex)
+    (sha256 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    (bytes 32768)
+    (version "1.0.0")
+    (target U1)
+    (device_code
+      (toolchain cmake)
+      (toolchain_version "3.28.3")
+      (target "stm32g0-production")
+      (entry "src/main.c")
+      (file "src/main.c"
+        (language c)
+        (sha256 "86004d65c4f387c95467c6cee92bc1f1f8cb04d6650be09fbd1e359834a56766")
+        (data_base64 "aW50IG1haW4odm9pZCl7cmV0dXJuIDA7fQo="))))
+  (program controller
+    (firmware controller)
+    (target U1)
+    (interface swd)
+    (connector J3)
+    (device "STM32G0B1CBT6")
+    (voltage 3.3)
+    (speed_khz 1000)
+    (erase chip)
+    (reset run)
+    (verify true)
+    (signal swdio 2)
+    (signal swclk 4)
+    (signal reset 6)
+    (signal ground 3))
+  (power main
+    (connector J1)
+    (positive_pin 1)
+    (return_pin 2)
+    (voltage 12)
+    (current_limit 0.25)
+    (settle_ms 250))
+  (test input-not-shorted
+    (stage unpowered)
+    (method resistance)
+    (instrument dmm)
+    (target net VIN)
+    (range 1000 1000000 ohm)
+    (after_ms 0)
+    (timeout_ms 5000)
+    (required true))
+  (test rail-3v3
+    (stage power_on)
+    (method voltage)
+    (instrument dmm)
+    (target net +3V3)
+    (range 3.20 3.40 V)
+    (testpoint TP1)
+    (power main)
+    (after_ms 250)
+    (timeout_ms 5000)
+    (required true))
+  (test firmware-response
+    (stage functional)
+    (method functional)
+    (instrument fixture)
+    (target component U1)
+    (expected pass)
+    (power main)
+    (program controller)
+    (after_ms 0)
+    (timeout_ms 5000)
+    (required true)
+    (procedure "Require the expected signed firmware response.")))
+```
+
+Each firmware image has exactly one source: a confined project-relative regular `path`, or up to
+8 MiB of self-contained `(data_base64 DATA)` stored directly in the KDS. Path format and extension
+must agree; embedded data is decoded during compilation. The exact byte count and lowercase
+SHA-256 are mandatory in both cases. Programming is protocol data rather than a
+shell command: it names the firmware, target, physical connector signal map, device, electrical
+level, clock, erase/reset behavior, and mandatory readback verification. Power profiles identify
+the physical connector pins, supply voltage, hard current limit, and settling time. Every
+programming and power pin must exist in the KDS schematic connectivity and every firmware target,
+programming target/connector, test point, and component-scoped assembly instruction must resolve to
+a physical footprint. Protocols also require their actual semantic signal set: SWD requires
+`swdio/swclk/gnd`, JTAG requires `tms/tck/tdi/tdo/gnd`, ISP requires
+`mosi/miso/sck/reset/vcc/gnd`, and the UPDI, PDI, debugWIRE, UART bootloader, USB DFU, and CAN
+bootloader adapters have corresponding checked signal sets. Two logical signals cannot silently
+share one connector pin.
+
+Optional `device_code` keeps maintainable firmware source in the same authored representation.
+It names a supported trusted-adapter family (`arduino_cli`, `platformio`, `zephyr_west`, `esp_idf`,
+`pico_sdk`, `cmake`, or `cargo_embedded`), its exact version, target, and one bundled entry path.
+Each of at most 128 source/configuration files is strict UTF-8, base64 encoded, independently
+SHA-256 bound, limited to 1 MiB, and placed under
+`fabrication/production/source/FIRMWARE_ID/`. Locked dependencies use
+`(dependency NAME VERSION SHA256)`. The complete source bundle is limited to 8 MiB. Generated
+`production-plan.json` retains file hashes, sizes, languages, toolchain, target, entry, and
+dependency locks but removes base64 payloads, keeping fixture input concise. At this stage the
+release package proves source and binary identities but does not claim it reproduced the binary
+from source; trusted in-process build adapters remain an explicit capability gap.
+
+The required `assembly` block makes the contract-manufacturer handoff explicit: IPC-A-610
+acceptance class, lead-free/leaded/hand/mixed process, solder alloy, stencil sides and thickness,
+cleaning, coating, and ordered special instructions scoped either to the whole board or a resolved
+component reference. A stencil thickness is required exactly when at least one stencil side is
+selected. This process intent is packaged beside the BOM, placement data, and assembly drawings.
+
+Bring-up tests remain in source order. Numeric voltage, current, resistance, and frequency tests
+require an accepted range with the matching physical unit. Continuity, logic, visual, and
+functional tests require an explicit result; visual and functional checks also require a bounded
+procedure. Every release test is required. Targets are semantic nets, components, or component
+pins, and an accessible testpoint may be named separately. A running-board contract contains at
+least one unpowered test, one current-limited `power_on` test, and one `programmed` or `functional`
+acceptance test. Powered tests name one or more ordered supply profiles as
+`(power LOGIC MOTOR ...)`; programmed and functional tests likewise
+name one or more ordered steps as `(program CONTROLLER SENSOR ...)`, so a fixture never guesses
+which complete electrical or firmware state a measurement assumes. The compiler enforces monotonic
+`unpowered` → `power_on` →
+`programmed` → `functional` ordering; a later line cannot move a production traveler back into an
+earlier electrical state.
+
+`fabricate.plan` now reports two distinct facts: `productionReady` means the PCB manufacturing
+package has all required checks/outputs, while `runningReady` additionally requires this complete
+production handoff. Export snapshots each declared firmware input, validates its size and digest,
+and copies it under `fabrication/production/firmware/`. The deterministic
+`fabrication/production/production-plan.json` is a compiler artifact for programming fixtures and
+test stations; it is not a second authored representation. Firmware and plan digests are recorded
+with all KiCad artifacts in `manifest.json`. The same package carries a digest-checked `design/`
+tree containing the exact KDS, current board and schematic hierarchy, project tables/settings,
+project-local libraries/rules/worksheet, and confined local models; UI preferences and local
+history are deliberately excluded. This makes the KDS sidecar and the native files it materialized
+portable together. KDS intentionally cannot execute arbitrary commands.
+Hardware programmer/test-station execution and signed per-unit result ingestion remain explicit
+capability gaps rather than being falsely reported as complete.
 
 ### Schematic hierarchy
 
@@ -544,14 +700,46 @@ defaults; malformed or duplicate flags abort before planning. This keeps virtual
 out of downstream artifacts whenever their actual library definition requires it, without adding
 KDS-only policy fields.
 
-Each placed unit, pin instance, global-net endpoint, and explicit no-connect marker receives a
-stable UUIDv8 identity. A KDS net is project-global and lowers to native global labels attached at
-the resolved, rotation- and mirror-transformed pin coordinates, so connectivity works across the
-declared hierarchy. Repeated physical pins with the same number receive labels at every resolved
-location. A missing unit or pin aborts before mutation. Native `kicad-cli sch export netlist`
-validation proves the final files load and that the expected component references and net nodes are
-present. Cached library symbols are reconciled by library ID inside `lib_symbols`; unmanaged cache
-entries are preserved, and a same-ID unmanaged collision is rejected rather than overwritten.
+Each placed unit, pin instance, generated wire segment, global-net endpoint, and explicit
+no-connect marker receives a stable UUIDv8 identity. Every KDS net declares its review
+presentation in the same semantic form as its connectivity:
+
+```scheme
+(net SENSOR_OUT
+  (presentation wired)
+  (pin U1 1 1)
+  (pin R4 1 1))
+
+(net GND
+  (presentation labels)
+  (pin U1 1 4)
+  (pin C2 1 2)
+  (pin J1 1 2))
+```
+
+`wired` resolves the rotation- and mirror-transformed native connection point of every named pin
+and creates a deterministic orthogonal tree on one sheet. The router honors each pin's outward
+direction, uses a single trunk for branches, adds junctions at internal branch points, and unions
+touching or overlapping collinear intervals before splitting them at every pin, branch, and name
+anchor and assigning stable segment identities. That normalization matches KiCad's own
+collinear-wire behavior without allowing a pin to disappear into the interior of a merged segment.
+Two inset global name anchors preserve the exact unqualified PCB net name, satisfy KiCad's
+single-global-label ERC rule, and leave the visible wire—not detached per-pin stubs—as the
+reviewable connection. A wired net spanning multiple sheets is rejected with steering to use
+labels or hierarchical pins.
+
+`labels` deliberately lowers to global labels attached by short wire stubs at every resolved pin;
+it is appropriate for power rails, intentional global connectivity, and cross-sheet nets. Omitting
+`presentation` retains label behavior for backward-compatible compilation, but fabrication
+readiness rejects the implicit choice. A production design must explicitly classify every net and
+must contain at least one wired net when it contains electrical connectivity. This prevents an
+electrically valid but visually unreviewable label-only drawing from being called production-ready.
+
+Repeated physical pins with the same number receive connectivity at every resolved location. A
+missing unit or pin aborts before mutation. Native `kicad-cli sch export netlist` validation proves
+the final files load and that the expected component references and net nodes are present. Cached
+library symbols are reconciled by library ID inside `lib_symbols`; unmanaged cache entries are
+preserved, and a same-ID unmanaged collision is rejected rather than overwritten.
 
 Schematic electrical drawing primitives are top-level, stable-ID KDS forms with explicit sheet
 ownership. A wire or bus is one native segment, and a bus entry uses the same endpoint spelling;
@@ -1518,7 +1706,13 @@ declaration:
   (minimum_copper_to_edge_clearance legacy)
   (use_height_for_length_calculations true)
   (maximum_error 0.005mm)
-  (allow_fillets_outside_zone_outline false))
+  (allow_fillets_outside_zone_outline false)
+  (drc_severities
+    (default error)
+    (check lib_footprint_mismatch warning))
+  (erc_severities
+    (check single_global_label error)
+    (check footprint_filter error)))
 ```
 
 Every field is required when `rules` is present, so a design never inherits an accidental local
@@ -1530,6 +1724,15 @@ tolerance, while `allow_fillets_outside_zone_outline` controls KiCad's external 
 The former generic top-level `(rule NAME ...)` form is invalid; global constraints have this one
 representation. Conditional custom rules are a separate KiCad concept and use the non-overlapping
 `custom_rules` form below.
+
+`drc_severities` is optional, but when present it owns the complete native DRC policy: exactly one
+`default` is required and named `check` entries override it. KiChad validates every check key
+against the checks registered by the pinned KiCad build, replaces the native severity map through
+typed PCB IPC, reads it back exactly, and journals it for rollback. `erc_severities` is also
+optional and contains named `check` overrides; omitted ERC checks retain KiCad's pinned native
+defaults. Both forms accept only `error`, `warning`, or `ignore`, reject duplicate or malformed
+keys, persist in the project file, and are rerun by the release gate. Remaining ignored checks are
+reported explicitly and block fabrication unless the release request carries a visible waiver.
 
 ### Net classes form
 
@@ -1936,6 +2139,51 @@ bounded to one 2048-byte line. The rectangle or polygon, margins, stroke style, 
 round-trip through the extended KiCad 10 protobuf instead of being reconstructed from a bounding
 box. Board tables and table cells deliberately remain a separate KDS implementation.
 
+### Board reference-image and barcode forms
+
+KDS owns reference-image bytes directly. The image is portable with the sidecar, bounded to 8 MiB,
+checked against its declared file signature, and bound by SHA-256 before KiChad will plan a board
+mutation:
+
+```scheme
+(image assembly-reference
+  (at 90mm 70mm)
+  (origin_offset 0mm 0mm)
+  (layer Dwgs.User)
+  (scale 1)
+  (locked true)
+  (media_type image/png)
+  (sha256 431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460)
+  (description "Digest-owned assembly reference image")
+  (data_base64 "..."))
+```
+
+The position, transform-origin offset, scale, board layer, lock state, and exact decoded bytes lower
+to KiCad's native `ReferenceImage`. `description` and `media_type` remain AI-readable ownership
+metadata; the native object preserves the decoded image rather than an external path.
+
+Native barcodes are semantic objects, not pre-rendered artwork:
+
+```scheme
+(barcode board-identity
+  (text "KICHAD-STEPPER-1.0.0")
+  (kind code_39|code_128|data_matrix|qr_code|micro_qr_code)
+  (error_correction L|M|Q|H)
+  (at 55mm 67mm)
+  (rotation 0deg)
+  (layer F.SilkS)
+  (size 10mm 10mm)
+  (show_text false)
+  (text_height 1.2mm)
+  (knockout false)
+  (knockout_margin 0.5mm 0.5mm)
+  (locked true))
+```
+
+All fields are explicit and bounded. Both forms receive stable project-derived UUIDs, participate in
+the managed-state ownership manifest, use typed create/update/delete operations, and are read back
+through the same PCB tool as every other managed board item.
+
 ### Board table form
 
 Board tables reuse the same 1-based, row/column AI-native grid model as schematic tables, adding
@@ -2054,7 +2302,8 @@ KiCad `Dimension` protobuf type and uses the authored style as its single geomet
 7. Compile live board state through the official KiCad 10 protobuf IPC transaction API.
 8. Record live-search sourcing evidence in the canonical KDS source forms.
 9. Run ERC, DRC, connectivity, sourcing, and manufacturability checks.
-10. Generate and validate requested fabrication outputs.
+10. Package and validate exact firmware plus the programming/power/bring-up handoff.
+11. Generate and validate requested fabrication outputs.
 
 Compilation and planning are read-only. Apply requires the exact previewed source SHA-256, the
 pre-turn project snapshot, and the target board open in PCB Editor. Managed PCB ownership is
@@ -2070,7 +2319,7 @@ global-net connectivity, explicit no-connect state, native local/global labels, 
 schematic rule areas, free text, bus aliases, wires/junctions/buses/bus entries, complete native project
 symbol/footprint tables, physical
 board stackups, the complete global Board Setup
-constraint set, complete net-class tables, all 35 conditional custom-rule types, rectangular
+constraint and DRC severity set, named ERC severity overrides, complete net-class tables, all 35 conditional custom-rule types, rectangular
 outlines, component placement, straight traces, arcs, vias, copper zones, keepout rule areas,
 native board text, and all five native dimension styles. Stackup apply
 uses KiCad's native protobuf stackup message and editor
@@ -2080,6 +2329,8 @@ disabled. Removing a non-empty copper layer is rejected. The pre-apply stack is 
 apply journal and restored if a later settings or transactional item mutation fails. Global rules
 use a typed native protobuf endpoint, validate every field and physical cross-constraint before
 mutation, and are journaled and restored together with the stackup on any pre-commit failure. A
+named ERC severity map uses a typed project endpoint, is saved durably with exact readback, and is
+journaled and restored before later project and board mutations. A
 complete net-class table uses a typed native project endpoint, is persisted with the project, and
 is journaled and restored after the global rules. Custom rules use a bounded native board endpoint,
 are compiled by KiCad's real DRC parser and engine, and are journaled and restored after net classes
@@ -2097,8 +2348,11 @@ Keepouts use a separate deterministic ownership type and exact `rule_area_settin
 their unfilled state is never confused with a failed copper refill.
 
 Placement resolves exactly one schematic component by reference. If its footprint is already on the
-board, KDS updates only position, rotation, front/back side, and lock state in place; footprint UUID,
-symbol path, fields, pads, and child UUIDs remain unchanged. If it is absent, a declared
+board, KDS updates position, rotation, front/back side, lock state, Value, DNP, Datasheet,
+Description, and the exact component-property field set in place. Footprint UUID, symbol path,
+pads, graphics, models, and child UUIDs remain unchanged. Metadata replacement uses the same live
+transaction and exact protobuf readback as geometry, so rollback restores the prior footprint on
+failure. If the footprint is absent, a declared
 project-local `.pretty` library may supply the exact `.kicad_mod`: KiChad parses it with KiCad's
 native parser and atomically creates a footprint instance with the component reference, value,
 DNP flag, deterministic root UUID and hierarchical symbol path, sheet metadata, placement, and pad

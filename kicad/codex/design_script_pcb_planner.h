@@ -32,7 +32,8 @@ public:
         JSON counts = JSON::object();
     };
 
-    static RESULT Plan( const JSON& aCompilerIr );
+    static RESULT Plan( const JSON& aCompilerIr,
+                        const JSON& aResolvedSymbols = JSON::object() );
 
     /** RFC 9562 UUIDv8 identity used by both lowering and managed-state validation. */
     static std::string StableUuid( const std::string& aProject, const std::string& aKind,

@@ -627,7 +627,6 @@ bool ValidateNative( const wxFileName& aPath, std::string& aError )
         bp::environment childEnvironment = boost::this_process::environment();
         childEnvironment["KICAD_CONFIG_HOME"] = temporaryRoot.GetFullPath().ToStdString();
         childEnvironment["KICAD_CONFIG_HOME_IS_QA"] = "1";
-        childEnvironment["KICAD_RUN_FROM_BUILD_DIR"] = "1";
         bp::child process(
                 cli.GetFullPath().ToStdString(),
                 bp::args( std::vector<std::string>{ "fp", "upgrade", "--force", "--output",

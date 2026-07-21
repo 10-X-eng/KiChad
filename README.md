@@ -23,9 +23,15 @@ On Ubuntu 24.04 or KDE neon, the repeatable local build is:
 Build products stay in `build/`, and the runnable installation is written to `build/install/`.
 Rerun `tools/build-kichad.sh` after source changes; it uses the tracked CMake preset, defaults to
 one build job per CPU, and accepts `KICHAD_BUILD_JOBS` when you need to cap parallelism.
+The same full build pins, builds, and installs the official symbol, footprint, 3D-model, and
+template repositories at `.kichad-base-version`; it never combines the stable application with
+the libraries' moving development branch. Run `./tools/check-kichad-libraries.sh` to make KiCad
+parse representative installed standard assets independently of the GUI.
 After a successful build, run `./tools/run-kichad.sh` (or `build/install/bin/kichad`) and use
 `build/install/bin/kichad-cli version` for a headless check; both launchers set the local runtime
-library path without changing the system installation.
+and standard-library paths without changing the system installation. The install keeps the native
+executables at `build/install/bin/_kicad` and `build/install/bin/_kicad-cli`; the public names are
+small launchers and never resolve back to themselves.
 
 The project manager includes a native docked Codex panel with ChatGPT sign-in, a dynamic account
 model catalog, reasoning selection, streaming conversations, and visible app-server status.
@@ -38,11 +44,18 @@ when you intentionally want a different state location.  The design-tool boundar
 are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).  Each
 submitted turn first snapshots the project through KiCad's local-history system, and the panel can
 restore that complete pre-turn state.  The initial native `project` and `inspect` calls expose
-project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation;
-the `design` call reads exact source, compiles, previews, atomically saves, and transactionally
+project context and bounded, read-only KiCad 10 design inspection without shell or GUI automation.
+`inspect.render` uses the matching native KiCad backend to attach a cropped schematic, 2D board, or
+3D board PNG directly to the Codex tool result, so the model can review actual generated documents
+while iterating; these images are derived previews under `.kichad/previews/`, not another design
+representation. The Ubuntu bootstrap installs Poppler for the bounded PDF-to-PNG stage. The
+`design` call returns bounded paged semantic context, reads exact source, compiles, previews,
+atomically saves, and transactionally
 applies reusable `.kicad_kds` project sidecars, and the `pcb` call exposes the exact protobuf field
 schema and connects directly to the open PCB Editor through KiCad 10's protobuf IPC API for bounded
-live reads and snapshot-gated, native undoable transactions. The read-only `verify` call runs the
+live reads and snapshot-gated, native undoable transactions. A successful `design.apply` saves the
+live board but explicitly reports verification as `not_run`; Codex must render the affected views
+and then repair KDS until ERC and DRC are clean. The read-only `verify` call runs the
 matching sibling KiCad 10.0.4 ERC or DRC engine (including DRC schematic parity), rejects reports
 from any other KiCad version, and returns complete counts plus bounded pageable violations. Its
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
@@ -54,15 +67,22 @@ details when available, whether project state may have changed, retryability, an
 steps. The Codex transcript displays the same error message and recovery summary so a user can see
 why a turn is still running or what blocked it.
 
-The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v12` release
+The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v16` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
 the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, sourcing, fabrication,
 Gerber, drill, IPC-D-356 electrical-test, placement, and BOM intent plus an explicit physical
-stackup. Export reruns the gates and the matching sibling `kicad-cli` from a private bounded project
+stackup. Every schematic net must explicitly select `wired` or `labels` presentation, and a design
+with electrical connectivity cannot pass the release plan as an implicit or entirely label-only
+drawing. Wired nets compile into real orthogonal KiCad paths anchored to resolved native pins,
+with deterministic lane separation, junctions, collinear normalization, and exact global net-name
+anchors for schematic/PCB parity. Export reruns the gates and the matching sibling `kicad-cli` from a private bounded project
 snapshot, so KiCad cannot rewrite live local settings while checking or plotting. The snapshot
 includes project-local symbol and footprint libraries referenced by its native tables. A visible
-final-action confirmation is
-mandatory; ignored checks or exclusions also require explicit waiver approval. The native board's
+final-action confirmation is mandatory; ignored checks or exclusions also require explicit waiver
+approval. Every installed package includes a digest-checked `design/` tree containing the exact KDS
+sidecar, current board and complete schematic hierarchy, project tables/libraries/rules, project
+file, worksheet, and confined local 3D models. The release can therefore be reopened or imported
+without reaching back into the original working directory. The native board's
 schematic-footprint reference/library-ID inventory must exactly match KDS, and the completed BOM and
 placement reference sets must exactly match the compiled physical and non-DNP component sets.
 KiChad validates every native artifact, writes a hash manifest, and atomically replaces only
@@ -101,8 +121,10 @@ text. KDS is the single external design representation: Codex reads and writes t
 self-describing source that is exported with the project, while compiler IR and protobuf messages
 remain private implementation details. Physical board statements use explicit units and stable
 logical IDs; preview reports their deterministic target identities without changing the board. The
-sidecar declares libraries, components, nets, board intent, rules, sourcing, checks, and fabrication
-outputs, while ordinary KiCad files remain the compiler artifacts. The format, grammar, safety rules,
+sidecar declares libraries, components, nets, board intent, rules, sourcing, checks, fabrication
+outputs, assembly process/acceptance, self-contained device code, exact firmware, programming, current-limited power-up, and measured bring-up intent, while
+ordinary KiCad and release-package files remain compiler artifacts. `fabricate.plan` distinguishes a
+manufacturable `productionReady` board from a complete `runningReady` handoff. The format, grammar, safety rules,
 and production support criteria are documented in
 [docs/kichad-design-script.md](docs/kichad-design-script.md).
 Double-clicking a `.kicad_kds` file in the project tree opens KiChad's integrated KDS source tab
@@ -125,6 +147,13 @@ then run `tools/smoke-kichad-live-ipc.sh --allow-mutation PROJECT_DIRECTORY BOAR
 test creates, field-mask updates, and deletes one temporary trace through the official KiCad 10 IPC
 transaction API; it is never run implicitly by the build.
 
+`tools/smoke-kichad-stepper-reference.sh --allow-mutation` is the end-to-end running-board proof.
+It opens only a disposable current-format project, compiles and applies the committed
+`reference_stepper_controller.kicad_kds`, generates its managed symbols/footprints and routed board,
+requires clean native ERC/DRC, then installs the complete fabrication, portable design, exact Nano
+firmware/source, programming, dual-supply, and bring-up package. Set
+`KICHAD_KEEP_REFERENCE_OUTPUT=1` to retain that disposable package for inspection.
+
 For the self-contained KDS transaction proof, run
 `tools/smoke-kichad-kds-apply.sh --allow-mutation`. It launches a disposable build-tree PCB Editor
 with an isolated configuration and project copy, applies the committed KDS fixture, and proves that
@@ -139,7 +168,7 @@ places a real derived virtual `GND` power symbol with the canonical `(footprint 
 flattens its inheritance into the native cache, preserves each symbol's native
 BOM/board/position/simulation flags, attaches project-global signal and power
 nets to resolved pin coordinates, and checks their exact nodes in the exported netlist. The native schematic proof also
-reconciles net-derived local/global labels, a name-owned bus alias, plus stable-ID wires, junctions,
+reconciles explicit label presentation and generated reviewable wired-net paths, a name-owned bus alias, plus stable-ID wires, junctions,
 buses, diagonal bus entries, net-targeted directive flags, and polygonal schematic rule areas with
 border-attached directives, plus stable multiline free text and text boxes with complete geometry,
 border/fill, typography, and hyperlink state, and all native schematic polyline, rounded-rectangle,

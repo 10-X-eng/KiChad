@@ -41,6 +41,7 @@
 #include <pad.h>
 #include <pcb_edit_frame.h>
 #include <pcb_group.h>
+#include <pcb_field.h>
 #include <pcb_reference_image.h>
 #include <pcb_shape.h>
 #include <pcb_text.h>
@@ -319,10 +320,12 @@ bool mergeItemUpdate( const google::protobuf::Any& aUpdate,
 }
 
 
-bool isFootprintTransformMask( const google::protobuf::FieldMask& aMask )
+bool isManagedFootprintUpdateMask( const google::protobuf::FieldMask& aMask )
 {
     static const std::set<std::string> allowed = {
-        "position", "orientation", "layer", "locked"
+        "position", "orientation", "layer", "locked", "value_field",
+        "datasheet_field", "description_field", "attributes.do_not_populate",
+        "definition.items"
     };
 
     if( aMask.paths().empty() )
@@ -359,7 +362,36 @@ struct NATIVE_BOARD_RULES
     bool useHeightForLengthCalculations;
     int  maximumError;
     bool allowFilletsOutsideZoneOutline;
+    std::map<int, SEVERITY> ruleSeverities;
 };
+
+
+kiapi::board::BoardRuleSeverity encodeBoardRuleSeverity( SEVERITY aSeverity )
+{
+    if( aSeverity == RPT_SEVERITY_WARNING )
+        return kiapi::board::BRS_WARNING;
+
+    if( aSeverity == RPT_SEVERITY_IGNORE )
+        return kiapi::board::BRS_IGNORE;
+
+    return kiapi::board::BRS_ERROR;
+}
+
+
+bool decodeBoardRuleSeverity( kiapi::board::BoardRuleSeverity aSeverity,
+                              SEVERITY& aDecoded )
+{
+    if( aSeverity == kiapi::board::BRS_ERROR )
+        aDecoded = RPT_SEVERITY_ERROR;
+    else if( aSeverity == kiapi::board::BRS_WARNING )
+        aDecoded = RPT_SEVERITY_WARNING;
+    else if( aSeverity == kiapi::board::BRS_IGNORE )
+        aDecoded = RPT_SEVERITY_IGNORE;
+    else
+        return false;
+
+    return true;
+}
 
 
 kiapi::board::BoardDesignRules encodeBoardDesignRules( const BOARD_DESIGN_SETTINGS& aSettings )
@@ -398,6 +430,19 @@ kiapi::board::BoardDesignRules encodeBoardDesignRules( const BOARD_DESIGN_SETTIN
     rules.set_use_height_for_length_calculations( aSettings.m_UseHeightForLengthCalcs );
     rules.mutable_maximum_error()->set_value_nm( aSettings.m_MaxError );
     rules.set_allow_fillets_outside_zone_outline( aSettings.m_ZoneKeepExternalFillets );
+
+    for( const RC_ITEM& item : DRC_ITEM::GetItemsWithSeverities() )
+    {
+        const wxString key = item.GetSettingsKey();
+
+        if( key.IsEmpty() || !aSettings.m_DRCSeverities.contains( item.GetErrorCode() ) )
+            continue;
+
+        ( *rules.mutable_rule_severities() )[key.ToStdString()] =
+                encodeBoardRuleSeverity(
+                        aSettings.m_DRCSeverities.at( item.GetErrorCode() ) );
+    }
+
     return rules;
 }
 
@@ -491,6 +536,57 @@ bool decodeBoardDesignRules( const kiapi::board::BoardDesignRules& aRules,
     aDecoded.allowFilletsOutsideZoneOutline =
             aRules.allow_fillets_outside_zone_outline();
 
+    std::map<std::string, int> knownRuleKeys;
+
+    for( const RC_ITEM& item : DRC_ITEM::GetItemsWithSeverities() )
+    {
+        const wxString key = item.GetSettingsKey();
+
+        if( !key.IsEmpty() )
+            knownRuleKeys.emplace( key.ToStdString(), item.GetErrorCode() );
+    }
+
+    if( aRules.has_default_rule_severity() )
+    {
+        SEVERITY defaultSeverity;
+
+        if( !decodeBoardRuleSeverity( aRules.default_rule_severity(), defaultSeverity ) )
+        {
+            aError = "default_rule_severity must be error, warning, or ignore";
+            return false;
+        }
+
+        for( const auto& [key, code] : knownRuleKeys )
+            aDecoded.ruleSeverities[code] = defaultSeverity;
+    }
+    else if( static_cast<size_t>( aRules.rule_severities_size() )
+             != knownRuleKeys.size() )
+    {
+        aError = "rule_severities must be complete when default_rule_severity is absent";
+        return false;
+    }
+
+    for( const auto& [key, severity] : aRules.rule_severities() )
+    {
+        auto known = knownRuleKeys.find( key );
+        SEVERITY decodedSeverity;
+
+        if( known == knownRuleKeys.end()
+            || !decodeBoardRuleSeverity( severity, decodedSeverity ) )
+        {
+            aError = "rule_severities contains an unknown check or invalid severity: " + key;
+            return false;
+        }
+
+        aDecoded.ruleSeverities[known->second] = decodedSeverity;
+    }
+
+    if( aDecoded.ruleSeverities.size() != knownRuleKeys.size() )
+    {
+        aError = "rule_severities did not resolve every registered DRC check";
+        return false;
+    }
+
     if( !aRules.has_minimum_copper_to_edge_clearance() )
     {
         aError = "minimum_copper_to_edge_clearance must be explicitly set";
@@ -525,18 +621,9 @@ bool decodeBoardDesignRules( const kiapi::board::BoardDesignRules& aRules,
     const int64_t minimumViaDiameter =
             static_cast<int64_t>( aDecoded.minimumThroughHoleDiameter )
             + 2LL * aDecoded.minimumViaAnnularWidth;
-    const int64_t minimumMicroviaDiameter = static_cast<int64_t>( aDecoded.minimumMicroviaDrill )
-                                            + 2LL * aDecoded.minimumViaAnnularWidth;
-
     if( aDecoded.minimumViaDiameter < minimumViaDiameter )
     {
         aError = "minimum_via_diameter cannot satisfy the drill and annular-width constraints";
-        return false;
-    }
-
-    if( aDecoded.minimumMicroviaDiameter < minimumMicroviaDiameter )
-    {
-        aError = "minimum_microvia_diameter cannot satisfy the drill and annular-width constraints";
         return false;
     }
 
@@ -960,7 +1047,8 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                 continue;
             }
 
-            if( *type == PCB_FOOTPRINT_T && isFootprintTransformMask( aHeader.field_mask() ) )
+            if( *type == PCB_FOOTPRINT_T
+                && isManagedFootprintUpdateMask( aHeader.field_mask() ) )
             {
                 if( ( *optItem )->Type() != PCB_FOOTPRINT_T )
                 {
@@ -982,6 +1070,7 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                 }
 
                 bool valid = true;
+                std::map<std::string, std::string> requestedFields;
 
                 for( const std::string& path : aHeader.field_mask().paths() )
                 {
@@ -1009,6 +1098,54 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                         valid = update.locked() == common::types::LockedState::LS_LOCKED
                                 || update.locked() == common::types::LockedState::LS_UNLOCKED;
                     }
+                    else if( path == "value_field" )
+                    {
+                        valid = update.has_value_field()
+                                && !update.value_field().text().text().text().empty()
+                                && update.value_field().text().text().text().size() <= 1024;
+                    }
+                    else if( path == "datasheet_field" )
+                    {
+                        valid = update.has_datasheet_field()
+                                && update.datasheet_field().text().text().text().size() <= 4096;
+                    }
+                    else if( path == "description_field" )
+                    {
+                        valid = update.has_description_field()
+                                && update.description_field().text().text().text().size() <= 4096;
+                    }
+                    else if( path == "attributes.do_not_populate" )
+                    {
+                        valid = update.has_attributes();
+                    }
+                    else if( path == "definition.items" )
+                    {
+                        valid = update.has_definition()
+                                && update.definition().items_size() <= 1024;
+                        static const std::set<std::string> mandatory = {
+                            "Reference", "Value", "Footprint", "Datasheet", "Description"
+                        };
+
+                        for( const google::protobuf::Any& packed : update.definition().items() )
+                        {
+                            board::types::Field field;
+
+                            if( !valid || !packed.UnpackTo( &field ) || field.name().empty()
+                                || field.name().size() > 128 || mandatory.contains( field.name() )
+                                || !field.has_text()
+                                || field.text().text().text().size() > 4096
+                                || !requestedFields.emplace(
+                                           field.name(), field.text().text().text() ).second )
+                            {
+                                valid = false;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        valid = false;
+                    }
 
                     if( !valid )
                         break;
@@ -1018,7 +1155,7 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                 {
                     status.set_code( ItemStatusCode::ISC_INVALID_DATA );
                     status.set_error_message(
-                            "the footprint transform contains a missing or invalid field" );
+                            "the managed footprint update contains a missing or invalid field" );
                     aItemHandler( status, anyItem );
                     continue;
                 }
@@ -1052,6 +1189,75 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_PCB::handleCreateUpdateItemsIntern
                 {
                     footprint->SetLocked(
                             update.locked() == common::types::LockedState::LS_LOCKED );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "value_field", aHeader.field_mask() ) )
+                {
+                    footprint->SetValue( wxString::FromUTF8(
+                            update.value_field().text().text().text() ) );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "datasheet_field", aHeader.field_mask() ) )
+                {
+                    footprint->GetField( FIELD_T::DATASHEET )->SetText(
+                            wxString::FromUTF8(
+                                    update.datasheet_field().text().text().text() ) );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "description_field", aHeader.field_mask() ) )
+                {
+                    footprint->GetField( FIELD_T::DESCRIPTION )->SetText(
+                            wxString::FromUTF8(
+                                    update.description_field().text().text().text() ) );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "attributes.do_not_populate", aHeader.field_mask() ) )
+                {
+                    footprint->SetDNP( update.attributes().do_not_populate() );
+                }
+
+                if( google::protobuf::util::FieldMaskUtil::IsPathInFieldMask(
+                            "definition.items", aHeader.field_mask() ) )
+                {
+                    std::vector<PCB_FIELD*> existingFields;
+                    footprint->GetFields( existingFields, false );
+
+                    for( PCB_FIELD* field : existingFields )
+                    {
+                        if( field->IsMandatory()
+                            || requestedFields.contains(
+                                    std::string( field->GetName().ToUTF8() ) ) )
+                        {
+                            continue;
+                        }
+
+                        footprint->Remove( field );
+                        delete field;
+                    }
+
+                    for( const auto& [name, value] : requestedFields )
+                    {
+                        const wxString nativeName = wxString::FromUTF8( name );
+                        PCB_FIELD* field = footprint->HasField( nativeName )
+                                                   ? footprint->GetField( nativeName )
+                                                   : new PCB_FIELD( footprint, FIELD_T::USER,
+                                                                    nativeName );
+
+                        if( !footprint->HasField( nativeName ) )
+                        {
+                            footprint->Add( field );
+                            field->StyleFromSettings( frame()->GetDesignSettings(), true );
+                        }
+
+                        field->SetText( wxString::FromUTF8( value ) );
+                        field->SetVisible( false );
+                        field->SetLayer( footprint->GetLayer() == F_Cu ? F_Fab : B_Fab );
+                        field->SetPosition( footprint->GetPosition() );
+                    }
                 }
 
                 status.set_code( ItemStatusCode::ISC_OK );
@@ -1624,35 +1830,9 @@ HANDLER_RESULT<BoardStackupResponse> API_HANDLER_PCB::handleUpdateStackup(
     LSET   enabled = previousEnabled & ~BOARD_STACKUP::StackupAllowedBrdLayers();
     int    copperLayerCount = 0;
 
-    for( const board::BoardStackupLayer& layer : aCtx.Request.stackup().layers() )
-    {
-        if( layer.type() == board::BoardStackupLayerType::BSLT_DIELECTRIC
-            || layer.user_name().empty() )
-        {
-            continue;
-        }
-
-        PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
-
-        if( id == UNDEFINED_LAYER )
-        {
-            ApiResponseStatus error;
-            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
-            error.set_error_message( "stackup user_name is read-only; use the layer-name API" );
-            return tl::unexpected( error );
-        }
-
-        const wxScopedCharBuffer currentName = pcbBoard->GetLayerName( id ).ToUTF8();
-        const std::string currentNameUtf8( currentName.data(), currentName.length() );
-
-        if( layer.user_name() != currentNameUtf8 )
-        {
-            ApiResponseStatus error;
-            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
-            error.set_error_message( "stackup user_name is read-only; use the layer-name API" );
-            return tl::unexpected( error );
-        }
-    }
+    // user_name is authoritative response context, not stackup mutation input.  Ignore it here so
+    // an exact GetBoardStackup response can always be used as a transactional rollback snapshot;
+    // the normalized response below exposes the board's actual names after the update.
 
     for( const BOARD_STACKUP_ITEM* item : requested.GetList() )
     {
@@ -1776,7 +1956,8 @@ HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleUpdateBoardDesig
             || settings.m_CopperEdgeClearance != decoded.minimumCopperToEdgeClearance
             || settings.m_UseHeightForLengthCalcs != decoded.useHeightForLengthCalculations
             || settings.m_MaxError != decoded.maximumError
-            || settings.m_ZoneKeepExternalFillets != decoded.allowFilletsOutsideZoneOutline;
+            || settings.m_ZoneKeepExternalFillets != decoded.allowFilletsOutsideZoneOutline
+            || settings.m_DRCSeverities != decoded.ruleSeverities;
 
     if( modified )
     {
@@ -1799,6 +1980,7 @@ HANDLER_RESULT<BoardDesignRulesResponse> API_HANDLER_PCB::handleUpdateBoardDesig
         settings.m_UseHeightForLengthCalcs = decoded.useHeightForLengthCalculations;
         settings.m_MaxError = decoded.maximumError;
         settings.m_ZoneKeepExternalFillets = decoded.allowFilletsOutsideZoneOutline;
+        settings.m_DRCSeverities = decoded.ruleSeverities;
         frame()->UpdateUserInterface();
         frame()->OnModify();
         frame()->Refresh();
@@ -3006,22 +3188,52 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
         }
 
         std::map<wxString, wxString> padNets;
+        std::map<wxString, wxString> footprintFields;
 
         for( const google::protobuf::Any& packed : requested.definition().items() )
         {
             board::types::Pad pad;
+            board::types::Field field;
 
-            if( !packed.UnpackTo( &pad ) || pad.number().empty() || pad.number().size() > 64
-                || pad.net().name().empty() || pad.net().name().size() > 1024
-                || !pad.id().value().empty()
-                || !padNets.emplace( wxString::FromUTF8( pad.number() ),
-                                     wxString::FromUTF8( pad.net().name() ) ).second )
+            if( packed.UnpackTo( &pad ) )
             {
-                ApiResponseStatus error;
-                error.set_status( ApiStatusCode::AS_BAD_REQUEST );
-                error.set_error_message( "parsed footprint pad-to-net mapping is malformed" );
-                return tl::unexpected( error );
+                if( pad.number().empty() || pad.number().size() > 64
+                    || pad.net().name().empty() || pad.net().name().size() > 1024
+                    || !pad.id().value().empty()
+                    || !padNets.emplace( wxString::FromUTF8( pad.number() ),
+                                         wxString::FromUTF8( pad.net().name() ) ).second )
+                {
+                    ApiResponseStatus error;
+                    error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                    error.set_error_message(
+                            "parsed footprint pad-to-net mapping is malformed" );
+                    return tl::unexpected( error );
+                }
+
+                continue;
             }
+
+            if( packed.UnpackTo( &field ) )
+            {
+                if( field.name().empty() || field.name().size() > 128
+                    || !field.has_text() || field.text().text().text().size() > 4096
+                    || !footprintFields.emplace(
+                               wxString::FromUTF8( field.name() ),
+                               wxString::FromUTF8( field.text().text().text() ) ).second )
+                {
+                    ApiResponseStatus error;
+                    error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                    error.set_error_message( "parsed footprint field mapping is malformed" );
+                    return tl::unexpected( error );
+                }
+
+                continue;
+            }
+
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "parsed footprint instance item has an unsupported type" );
+            return tl::unexpected( error );
         }
 
         std::set<wxString> foundPads;
@@ -3067,6 +3279,25 @@ HANDLER_RESULT<CreateItemsResponse> API_HANDLER_PCB::handleParseAndCreateItemsFr
                                           requested.position().y_nm() ) );
         footprint->SetOrientationDegrees( requested.orientation().value_degrees() );
         footprint->SetLocked( requested.locked() == common::types::LockedState::LS_LOCKED );
+
+        for( const auto& [name, value] : footprintFields )
+        {
+            PCB_FIELD* field = footprint->HasField( name )
+                                       ? footprint->GetField( name )
+                                       : new PCB_FIELD( footprint, FIELD_T::USER, name );
+
+            if( !footprint->HasField( name ) )
+                footprint->Add( field );
+
+            field->SetText( value );
+            field->SetVisible( false );
+            field->SetLayer( requested.layer() == board::types::BoardLayer::BL_F_Cu
+                                     ? F_Fab
+                                     : B_Fab );
+            field->SetPosition( footprint->GetPosition() );
+            field->Rotate( footprint->GetPosition(), footprint->GetOrientation() );
+            field->StyleFromSettings( frame()->GetDesignSettings(), true );
+        }
 
         for( PAD* pad : footprint->Pads() )
         {

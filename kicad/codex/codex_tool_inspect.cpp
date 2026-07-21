@@ -23,6 +23,9 @@
 
 #include <wx/file.h>
 #include <wx/filename.h>
+#include <wx/base64.h>
+
+#include <picosha2.h>
 
 
 namespace
@@ -32,6 +35,7 @@ constexpr wxFileOffset MAX_INSPECTION_BYTES = 16 * 1024 * 1024;
 constexpr size_t       MAX_EXPRESSION_BYTES = 32 * 1024;
 constexpr size_t       MAX_RESULT_BYTES = 256 * 1024;
 constexpr size_t       MAX_DISTINCT_HEADS = 512;
+constexpr wxFileOffset MAX_INLINE_PREVIEW_BYTES = 8 * 1024 * 1024;
 
 } // namespace
 
@@ -46,7 +50,7 @@ nlohmann::json InspectSpec()
                               { "required", nlohmann::json::array( { "operation", "path" } ) } };
     schema["properties"]["operation"] =
             { { "type", "string" },
-              { "enum", nlohmann::json::array( { "summary", "find" } ) } };
+              { "enum", nlohmann::json::array( { "summary", "find", "render" } ) } };
     schema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative KiCad design file path." } };
@@ -56,13 +60,22 @@ nlohmann::json InspectSpec()
     schema["properties"]["limit"] =
             { { "type", "integer" }, { "minimum", 1 }, { "maximum", 50 },
               { "description", "Maximum matches returned; defaults to 20." } };
+    schema["properties"]["view"] =
+            { { "type", "string" },
+              { "enum", nlohmann::json::array(
+                                { "schematic", "pcb2d", "pcb3d" } ) },
+              { "description", "Native PNG view required by operation 'render'." } };
+    schema["properties"]["page"] =
+            { { "type", "integer" }, { "minimum", 1 }, { "maximum", 1000 },
+              { "description", "One-based schematic page; defaults to 1." } };
 
     return { { "type", "function" },
              { "name", "inspect" },
              { "description",
                "Inspect a KiCad 10 schematic, board, symbol library, or footprint without "
-               "changing it. Use 'summary' for structural counts or 'find' for bounded raw "
-               "expressions with a particular list head." },
+               "changing it. Use 'summary' for structural counts, 'find' for bounded raw "
+               "expressions, or 'render' to attach a native schematic, 2D PCB, or 3D PCB PNG "
+               "directly to the model for visual review." },
              { "inputSchema", std::move( schema ) } };
 }
 
@@ -84,8 +97,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleInspect(
     const std::string operation = aArguments["operation"].get<std::string>();
     const std::string relativePath = aArguments["path"].get<std::string>();
 
-    if( operation != "summary" && operation != "find" )
-        return failure( "invalid_arguments", "inspect.operation must be 'summary' or 'find'" );
+    if( operation != "summary" && operation != "find" && operation != "render" )
+    {
+        return failure( "invalid_arguments",
+                        "inspect.operation must be 'summary', 'find', or 'render'" );
+    }
 
     wxString root = aProjectPath;
 
@@ -132,6 +148,97 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleInspect(
                      { "path", relativePath },
                      { "bytes", static_cast<uint64_t>( length ) },
                      { "rootHead", rootHead } };
+
+    if( operation == "render" )
+    {
+        if( !aArguments.contains( "view" ) || !aArguments["view"].is_string() )
+            return failure( "invalid_arguments", "inspect.view is required for render" );
+
+        const std::string view = aArguments["view"].get<std::string>();
+        int page = 1;
+
+        if( aArguments.contains( "page" ) )
+        {
+            if( !aArguments["page"].is_number_integer() )
+                return failure( "invalid_arguments", "inspect.page must be an integer" );
+
+            page = aArguments["page"].get<int>();
+
+            if( page < 1 || page > 1000 )
+                return failure( "invalid_arguments", "inspect.page must be between 1 and 1000" );
+        }
+
+        const bool schematic = resolved.GetExt() == wxS( "kicad_sch" );
+        const bool board = resolved.GetExt() == wxS( "kicad_pcb" );
+
+        if( ( view == "schematic" && !schematic )
+            || ( ( view == "pcb2d" || view == "pcb3d" ) && !board ) )
+        {
+            return failure( "invalid_path",
+                            "the requested preview view does not match the KiCad file type" );
+        }
+
+        if( view != "schematic" && view != "pcb2d" && view != "pcb3d" )
+            return failure( "invalid_arguments", "inspect.view is not supported" );
+
+        wxFileName previewDirectory = wxFileName::DirName( root );
+        previewDirectory.AppendDir( wxS( ".kichad" ) );
+        previewDirectory.AppendDir( wxS( "previews" ) );
+
+        if( !previewDirectory.DirExists()
+            && !wxFileName::Mkdir( previewDirectory.GetFullPath(), 0700,
+                                  wxPATH_MKDIR_FULL ) )
+        {
+            return failure( "preview_failed", "could not create the derived preview directory" );
+        }
+
+        const std::string identity = relativePath + ":" + view + ":" + std::to_string( page );
+        const std::string digest = picosha2::hash256_hex_string( identity ).substr( 0, 16 );
+        const wxString filename = wxString::FromUTF8(
+                "preview-" + digest + "-" + view + ".png" );
+        wxFileName preview( previewDirectory.GetFullPath(), filename );
+
+        const bool rendered = m_nativePreviewRunner
+                                      ? m_nativePreviewRunner(
+                                                view, resolved, preview, page, pathError )
+                                      : KICHAD::CODEX_TOOLS::RunNativeKiCadPreview(
+                                                view, resolved, preview, page, pathError );
+
+        if( !rendered )
+        {
+            return failure( "preview_failed", pathError );
+        }
+
+        wxFile previewFile( preview.GetFullPath(), wxFile::read );
+        const wxFileOffset previewBytes = previewFile.IsOpened()
+                                                  ? previewFile.Length()
+                                                  : wxInvalidOffset;
+
+        if( previewBytes <= 0 || previewBytes > MAX_INLINE_PREVIEW_BYTES )
+        {
+            return failure( "preview_failed",
+                            "native preview must contain 1 byte through 8 MiB" );
+        }
+
+        std::string png( static_cast<size_t>( previewBytes ), '\0' );
+
+        if( previewFile.Read( png.data(), png.size() ) != previewBytes )
+            return failure( "preview_failed", "could not read the complete native preview" );
+
+        const std::string previewRelative = ".kichad/previews/"
+                                            + filename.ToStdString();
+        payload["view"] = view;
+        payload["page"] = page;
+        payload["previewPath"] = previewRelative;
+        payload["previewBytes"] = static_cast<uint64_t>( previewBytes );
+        payload["derived"] = true;
+        JSON result = success( payload );
+        const std::string encoded = wxBase64Encode( png.data(), png.size() ).ToStdString();
+        result["contentItems"].push_back(
+                { { "type", "inputImage" },
+                  { "imageUrl", "data:image/png;base64," + encoded } } );
+        return result;
+    }
 
     if( operation == "summary" )
     {

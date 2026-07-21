@@ -17,6 +17,7 @@
 #include <set>
 #include <array>
 #include <filesystem>
+#include <vector>
 
 #include <import_export.h>
 #include <api/board/board.pb.h>
@@ -152,11 +153,14 @@ bool ExecutePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
                         const nlohmann::json& aFootprintSources, std::string& aError );
 bool RunNativeKiCadCheck( const std::string& aCheck, const wxFileName& aInput,
                           std::string& aReport, std::string& aError );
+bool RunNativeKiCadPreview( const std::string& aView, const wxFileName& aInput,
+                            const wxFileName& aOutput, int aPage, std::string& aError );
 bool CanonicalizeExisting( wxFileName& aPath, bool aDirectory = false );
 bool CreateFabricationVerificationSnapshot(
         const wxFileName& aProjectRoot, const wxFileName& aBoard,
         const wxFileName& aSchematic, const wxFileName& aSidecar,
         const std::array<std::string, 3>& aRelativePaths,
+        const std::vector<std::string>& aAdditionalRelativePaths,
         PRIVATE_TEMPORARY_DIRECTORY& aSnapshot, std::string& aError );
 nlohmann::json BuildFabricationPlan( const nlohmann::json& aIr,
                                      const std::string& aFileStem );

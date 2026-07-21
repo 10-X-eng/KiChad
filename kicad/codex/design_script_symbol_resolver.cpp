@@ -13,6 +13,8 @@
 
 #include "lossless_sexpr_document.h"
 
+#include <string_utils.h>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -124,7 +126,11 @@ struct DIRECT_PROPERTY
     std::string value;
     std::string source;
     size_t      node;
+    JSON        layout;
 };
+
+
+bool directPropertyLayout( const DOCUMENT& aDocument, size_t aProperty, JSON& aLayout );
 
 
 bool directProperties( const DOCUMENT& aDocument, size_t aSymbol,
@@ -161,9 +167,15 @@ bool directProperties( const DOCUMENT& aDocument, size_t aSymbol,
             return false;
         }
 
+        JSON layout;
+
+        if( !directPropertyLayout( aDocument, property, layout ) )
+            return false;
+
         DIRECT_PROPERTY parsed = { aDocument.AtomText( node.children[nameIndex] ),
                                    aDocument.AtomText( node.children[valueIndex] ),
-                                   aDocument.RawText( property ), property };
+                                   aDocument.RawText( property ), property,
+                                   std::move( layout ) };
 
         if( parsed.name.empty() || parsed.name.size() > 256
             || !names.emplace( parsed.name ).second )
@@ -218,6 +230,71 @@ bool millimetresToNanometres( const std::string& aText, int64_t& aValue )
 }
 
 
+bool directPropertyLayout( const DOCUMENT& aDocument, size_t aProperty, JSON& aLayout )
+{
+    const std::vector<size_t> positions = directLists( aDocument, aProperty, "at" );
+
+    if( positions.size() != 1 )
+        return false;
+
+    const DOCUMENT::NODE& position = aDocument.Nodes().at( positions.front() );
+    std::string xText;
+    std::string yText;
+    int64_t x = 0;
+    int64_t y = 0;
+    double angle = 0.0;
+
+    if( ( position.children.size() != 3 && position.children.size() != 4 )
+        || aDocument.Nodes().at( position.children[1] ).kind == DOCUMENT::NODE_KIND::LIST
+        || aDocument.Nodes().at( position.children[2] ).kind == DOCUMENT::NODE_KIND::LIST )
+    {
+        return false;
+    }
+
+    xText = aDocument.AtomText( position.children[1] );
+    yText = aDocument.AtomText( position.children[2] );
+
+    if( !millimetresToNanometres( xText, x ) || !millimetresToNanometres( yText, y ) )
+        return false;
+
+    if( position.children.size() == 4 )
+    {
+        if( aDocument.Nodes().at( position.children[3] ).kind == DOCUMENT::NODE_KIND::LIST )
+            return false;
+
+        const std::string angleText = aDocument.AtomText( position.children[3] );
+        const char* begin = angleText.data();
+        const char* end = begin + angleText.size();
+        const std::from_chars_result converted = std::from_chars( begin, end, angle );
+
+        if( converted.ec != std::errc() || converted.ptr != end || !std::isfinite( angle )
+            || angle < 0.0 || angle >= 360.0 )
+        {
+            return false;
+        }
+    }
+
+    bool hidden = false;
+    bool showName = false;
+    bool doNotAutoplace = false;
+
+    if( !optionalNativeBool( aDocument, aProperty, "hide", false, hidden )
+        || !optionalNativeBool( aDocument, aProperty, "show_name", false, showName )
+        || !optionalNativeBool( aDocument, aProperty, "do_not_autoplace", false,
+                                doNotAutoplace ) )
+    {
+        return false;
+    }
+
+    aLayout = { { "position", { { "xNm", x }, { "yNm", y } } },
+                { "rotationDegrees", angle },
+                { "visible", !hidden },
+                { "showName", showName },
+                { "autoplace", !doNotAutoplace } };
+    return true;
+}
+
+
 bool unitIdentity( const std::string& aName, int64_t& aUnit, int64_t& aBodyStyle )
 {
     const size_t bodySeparator = aName.rfind( '_' );
@@ -245,9 +322,11 @@ bool unitIdentity( const std::string& aName, int64_t& aUnit, int64_t& aBodyStyle
 bool pinMetadata( const DOCUMENT& aDocument, size_t aPin, JSON& aPinJson )
 {
     std::string number;
+    std::string name;
     const std::vector<size_t> at = directLists( aDocument, aPin, "at" );
 
     if( !directScalar( aDocument, aPin, "number", number ) || number.empty()
+        || !directScalar( aDocument, aPin, "name", name )
         || number.size() > 64 || at.size() != 1 )
     {
         return false;
@@ -258,6 +337,7 @@ bool pinMetadata( const DOCUMENT& aDocument, size_t aPin, JSON& aPinJson )
     std::string yText;
     int64_t x = 0;
     int64_t y = 0;
+    int angle = 0;
 
     if( position.children.size() < 3
         || aDocument.Nodes().at( position.children[1] ).kind == DOCUMENT::NODE_KIND::LIST
@@ -272,7 +352,35 @@ bool pinMetadata( const DOCUMENT& aDocument, size_t aPin, JSON& aPinJson )
     if( !millimetresToNanometres( xText, x ) || !millimetresToNanometres( yText, y ) )
         return false;
 
-    aPinJson = { { "number", number }, { "xNm", x }, { "yNm", y } };
+    if( position.children.size() >= 4 )
+    {
+        const DOCUMENT::NODE& angleNode = aDocument.Nodes().at( position.children[3] );
+
+        if( angleNode.kind == DOCUMENT::NODE_KIND::LIST )
+            return false;
+
+        const std::string angleText = aDocument.AtomText( position.children[3] );
+        const char* begin = angleText.data();
+        const char* end = begin + angleText.size();
+        std::from_chars_result converted = std::from_chars( begin, end, angle );
+
+        if( converted.ec != std::errc() || converted.ptr != end
+            || ( angle != 0 && angle != 90 && angle != 180 && angle != 270 ) )
+        {
+            return false;
+        }
+    }
+
+    bool validStackedNumber = false;
+    const std::vector<wxString> logicalNumbers = ExpandStackedPinNotation(
+            wxString::FromUTF8( number ), &validStackedNumber );
+    const std::string effectivePadNumber = validStackedNumber && !logicalNumbers.empty()
+                                                   ? logicalNumbers.front().ToStdString()
+                                                   : number;
+
+    aPinJson = { { "number", number }, { "name", name },
+                 { "effectivePadNumber", effectivePadNumber },
+                 { "xNm", x }, { "yNm", y }, { "rotationDegrees", angle } };
     return true;
 }
 
@@ -296,7 +404,8 @@ bool splitLibraryId( const std::string& aLibraryId, std::string& aNickname,
 
 bool applyPropertyOverrides( std::string& aCacheSource,
                              const std::vector<DIRECT_PROPERTY>& aOverrides,
-                             JSON& aProperties, std::string& aError )
+                             JSON& aProperties, JSON& aPropertyLayouts,
+                             std::string& aError )
 {
     std::unique_ptr<DOCUMENT> cache = DOCUMENT::Parse( aCacheSource, &aError );
 
@@ -342,6 +451,7 @@ bool applyPropertyOverrides( std::string& aCacheSource,
         }
 
         aProperties[property.name] = property.value;
+        aPropertyLayouts[property.name] = property.layout;
     }
 
     if( !insertions.empty()
@@ -705,6 +815,7 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
                        { "inPosFiles", inPosFiles } };
 
         JSON properties = JSON::object();
+        JSON propertyLayouts = JSON::object();
         std::vector<DIRECT_PROPERTY> rootProperties;
 
         if( !directProperties( library, symbol, rootProperties ) )
@@ -716,7 +827,10 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
         }
 
         for( const DIRECT_PROPERTY& property : rootProperties )
+        {
             properties[property.name] = property.value;
+            propertyLayouts[property.name] = property.layout;
+        }
 
         std::map<int64_t, JSON> pinsByUnit;
         std::set<int64_t> presentUnits;
@@ -757,6 +871,13 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
         }
 
         JSON units = JSON::object();
+        size_t unitCount = 0;
+
+        for( int64_t presentUnit : presentUnits )
+        {
+            if( presentUnit > 0 )
+                ++unitCount;
+        }
 
         for( int64_t unit : requestedUnits )
         {
@@ -822,7 +943,8 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
                                         embeddedFonts )
                 || embeddedFonts
                 || !directProperties( library, derived, overrides )
-                || !applyPropertyOverrides( cacheSource, overrides, properties, editError ) )
+                || !applyPropertyOverrides( cacheSource, overrides, properties,
+                                             propertyLayouts, editError ) )
             {
                 cacheValid = false;
                 break;
@@ -846,6 +968,8 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
                                       { "inheritanceDepth", inheritanceChain.size() - 1 },
                                       { "flags", std::move( flags ) },
                                       { "properties", std::move( properties ) },
+                                      { "propertyLayouts", std::move( propertyLayouts ) },
+                                      { "unitCount", unitCount },
                                       { "units", std::move( units ) } };
     }
 

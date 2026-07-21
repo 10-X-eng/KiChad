@@ -13,6 +13,8 @@
 #include "codex_paths.h"
 #include "codex_protocol_log.h"
 
+#include <algorithm>
+#include <chrono>
 #include <vector>
 
 #include <wx/filename.h>
@@ -49,7 +51,9 @@ CODEX_APP_SERVER_CLIENT::CODEX_APP_SERVER_CLIENT() :
         m_process( nullptr ),
         m_pid( 0 ),
         m_pollTimer( this ),
-        m_nextRequestId( 1 )
+        m_nextRequestId( 1 ),
+        m_outboundQueuedBytes( 0 ),
+        m_outputDeferred( false )
 {
     Bind( wxEVT_TIMER, &CODEX_APP_SERVER_CLIENT::onPoll, this, m_pollTimer.GetId() );
     Bind( wxEVT_END_PROCESS, &CODEX_APP_SERVER_CLIENT::onProcessTerminated, this );
@@ -168,6 +172,9 @@ bool CODEX_APP_SERVER_CLIENT::Start()
 
     m_stdoutBuffer.clear();
     m_stderrBuffer.clear();
+    m_outboundFrames.clear();
+    m_outboundQueuedBytes = 0;
+    m_outputDeferred = false;
     m_pendingRequests.clear();
     m_pollTimer.Start( POLL_INTERVAL_MS );
     KICHAD::CODEX_PROTOCOL_LOG::Event( "app_server_started", { { "pid", m_pid } } );
@@ -180,6 +187,9 @@ void CODEX_APP_SERVER_CLIENT::Stop()
 {
     m_pollTimer.Stop();
     m_pendingRequests.clear();
+    m_outboundFrames.clear();
+    m_outboundQueuedBytes = 0;
+    m_outputDeferred = false;
 
     if( !m_process )
         return;
@@ -251,19 +261,134 @@ bool CODEX_APP_SERVER_CLIENT::writeMessage( const JSON& aMessage )
         return false;
     }
 
-    KICHAD::CODEX_PROTOCOL_LOG::Protocol( "outbound", aMessage );
-
     const std::string serialized = aMessage.dump() + "\n";
-    wxOutputStream*   stream = m_process->GetOutputStream();
-    stream->Write( serialized.data(), serialized.size() );
-    stream->Sync();
 
-    if( !stream->IsOk() )
+    if( serialized.size() > MAX_JSONRPC_MESSAGE_BYTES )
     {
-        KICHAD::CODEX_PROTOCOL_LOG::Event( "protocol_write_failed",
-                                           { { "reason", "stream write failed" } } );
-        setState( false, _( "Lost the Codex app-server input stream." ) );
+        KICHAD::CODEX_PROTOCOL_LOG::Event(
+                "protocol_write_failed",
+                { { "reason", "JSON-RPC message exceeds bounded transport size" },
+                  { "bytes", serialized.size() } } );
         return false;
+    }
+
+    if( serialized.size() > MAX_OUTBOUND_QUEUE_BYTES - m_outboundQueuedBytes )
+    {
+        KICHAD::CODEX_PROTOCOL_LOG::Event(
+                "protocol_write_failed",
+                { { "reason", "bounded app-server output queue is full" },
+                  { "queuedBytes", m_outboundQueuedBytes },
+                  { "messageBytes", serialized.size() },
+                  { "maximumQueuedBytes", MAX_OUTBOUND_QUEUE_BYTES } } );
+        setState( false, _( "Codex app-server output queue is full." ) );
+        return false;
+    }
+
+    KICHAD::CODEX_PROTOCOL_LOG::Protocol( "outbound", aMessage );
+    m_outboundQueuedBytes += serialized.size();
+    m_outboundFrames.push_back(
+            { serialized, 0, std::chrono::steady_clock::now() } );
+    return drainOutput();
+}
+
+
+bool CODEX_APP_SERVER_CLIENT::drainOutput()
+{
+    if( m_outboundFrames.empty() )
+        return true;
+
+    if( !IsRunning() || !m_process->GetOutputStream() )
+    {
+        KICHAD::CODEX_PROTOCOL_LOG::Event(
+                "protocol_write_failed",
+                { { "reason", "app-server input unavailable while output was queued" },
+                  { "queuedBytes", m_outboundQueuedBytes } } );
+        return false;
+    }
+
+    wxOutputStream* stream = m_process->GetOutputStream();
+    size_t          writeBudget = MAX_WRITE_BYTES_PER_POLL;
+
+    while( !m_outboundFrames.empty() && writeBudget > 0 )
+    {
+        OUTBOUND_FRAME& frame = m_outboundFrames.front();
+        const size_t remaining = frame.payload.size() - frame.offset;
+        const size_t requested = std::min( { remaining, MAX_WRITE_CHUNK_BYTES,
+                                             writeBudget } );
+
+        // wx's Unix pipe stream records EAGAIN as a generic write error.  Resetting only the
+        // stream status is safe: frame.offset remains the authoritative byte position and the
+        // process pipe itself stays open.
+        stream->Reset();
+        stream->Write( frame.payload.data() + frame.offset, requested );
+        const size_t written = stream->LastWrite();
+        const bool   writeError = !stream->IsOk();
+
+        if( written > requested )
+        {
+            KICHAD::CODEX_PROTOCOL_LOG::Event(
+                    "protocol_write_failed",
+                    { { "reason", "app-server pipe reported an invalid write count" },
+                      { "requestedBytes", requested }, { "writtenBytes", written } } );
+            setState( false, _( "Codex app-server transport returned an invalid write count." ) );
+            return false;
+        }
+
+        if( written > 0 )
+        {
+            frame.offset += written;
+            m_outboundQueuedBytes -= written;
+            writeBudget -= written;
+            frame.lastProgress = std::chrono::steady_clock::now();
+        }
+
+        if( frame.offset == frame.payload.size() )
+        {
+            m_outboundFrames.pop_front();
+
+            if( writeError )
+                stream->Reset();
+
+            continue;
+        }
+
+        if( written == 0 || writeError )
+        {
+            stream->Reset();
+            const auto stalledFor = std::chrono::steady_clock::now() - frame.lastProgress;
+
+            if( stalledFor >= std::chrono::seconds( 30 ) )
+            {
+                KICHAD::CODEX_PROTOCOL_LOG::Event(
+                        "protocol_write_failed",
+                        { { "reason", "app-server input remained blocked for 30 seconds" },
+                          { "frameBytesWritten", frame.offset },
+                          { "frameBytes", frame.payload.size() },
+                          { "queuedBytes", m_outboundQueuedBytes } } );
+                setState( false, _( "Codex app-server stopped accepting input." ) );
+                return false;
+            }
+
+            if( !m_outputDeferred )
+            {
+                KICHAD::CODEX_PROTOCOL_LOG::Event(
+                        "protocol_write_deferred",
+                        { { "reason", "app-server pipe backpressure" },
+                          { "frameBytesWritten", frame.offset },
+                          { "frameBytes", frame.payload.size() },
+                          { "queuedBytes", m_outboundQueuedBytes } } );
+                m_outputDeferred = true;
+            }
+
+            return true;
+        }
+    }
+
+    if( m_outboundFrames.empty() && m_outputDeferred )
+    {
+        KICHAD::CODEX_PROTOCOL_LOG::Event( "protocol_write_resumed",
+                                           { { "queuedBytes", 0 } } );
+        m_outputDeferred = false;
     }
 
     return true;
@@ -282,6 +407,18 @@ void CODEX_APP_SERVER_CLIENT::consumeStream( wxInputStream* aStream, std::string
     {
         aStream->Read( buffer, sizeof( buffer ) );
         aBuffer.append( buffer, aStream->LastRead() );
+
+        if( aBuffer.size() > MAX_JSONRPC_MESSAGE_BYTES
+            && aBuffer.find( '\n' ) == std::string::npos )
+        {
+            KICHAD::CODEX_PROTOCOL_LOG::Event(
+                    "protocol_read_failed",
+                    { { "reason", "unterminated JSON-RPC message exceeds bounded transport size" },
+                      { "bytes", aBuffer.size() } } );
+            aBuffer.clear();
+            setState( false, _( "Codex app-server returned an oversized protocol message." ) );
+            return;
+        }
     }
 
     size_t newline = 0;
@@ -296,6 +433,16 @@ void CODEX_APP_SERVER_CLIENT::consumeStream( wxInputStream* aStream, std::string
 
         if( line.empty() )
             continue;
+
+        if( line.size() > MAX_JSONRPC_MESSAGE_BYTES )
+        {
+            KICHAD::CODEX_PROTOCOL_LOG::Event(
+                    "protocol_read_failed",
+                    { { "reason", "JSON-RPC message exceeds bounded transport size" },
+                      { "bytes", line.size() } } );
+            setState( false, _( "Codex app-server returned an oversized protocol message." ) );
+            continue;
+        }
 
         if( aParseJson )
             dispatchLine( line );
@@ -370,6 +517,7 @@ void CODEX_APP_SERVER_CLIENT::onPoll( wxTimerEvent& aEvent )
 
     consumeStream( m_process->GetInputStream(), m_stdoutBuffer, true );
     consumeStream( m_process->GetErrorStream(), m_stderrBuffer, false );
+    drainOutput();
 }
 
 
@@ -386,6 +534,9 @@ void CODEX_APP_SERVER_CLIENT::onProcessTerminated( wxProcessEvent& aEvent )
     m_process = nullptr;
     m_pid = 0;
     m_pendingRequests.clear();
+    m_outboundFrames.clear();
+    m_outboundQueuedBytes = 0;
+    m_outputDeferred = false;
     delete finished;
 
     KICHAD::CODEX_PROTOCOL_LOG::Event(

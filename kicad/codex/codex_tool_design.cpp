@@ -13,6 +13,7 @@
 
 #include "codex_tool_internal.h"
 #include "design_script_compiler.h"
+#include "design_script_context_builder.h"
 #include "design_script_footprint_library_generator.h"
 #include "design_script_pcb_planner.h"
 #include "design_script_pcb_reconciler.h"
@@ -35,6 +36,7 @@
 #include <vector>
 
 #include <api/board/board.pb.h>
+#include <api/common/commands/editor_commands.pb.h>
 #include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/json_util.h>
 #include <picosha2.h>
@@ -100,6 +102,16 @@ struct MANAGED_FOOTPRINT_LIBRARY_UPDATE
     bool        applied = false;
 };
 
+
+bool saveBoardDocument( const KICHAD_IPC_CLIENT& aClient,
+                        const KICHAD_IPC_TARGET& aTarget, std::string& aError )
+{
+    kiapi::common::commands::SaveDocument request;
+    request.mutable_document()->CopyFrom( aTarget.document );
+    kiapi::common::ApiResponse response;
+    return aClient.Call( aTarget, request, response, aError );
+}
+
 } // namespace
 
 
@@ -114,7 +126,7 @@ nlohmann::json DesignSpec()
     schema["properties"]["operation"] =
             { { "type", "string" },
               { "enum", nlohmann::json::array(
-                                { "describe", "read", "compile", "preview", "save", "apply" } ) } };
+                                { "describe", "context", "read", "compile", "preview", "save", "apply" } ) } };
     schema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative reusable .kicad_kds sidecar path." } };
@@ -128,11 +140,26 @@ nlohmann::json DesignSpec()
             { { "type", "string" }, { "minLength", 64 }, { "maxLength", 64 },
               { "description",
                 "Required for stale-write protection and to apply the exact compiled revision." } };
+    schema["properties"]["domain"] =
+            { { "type", "string" },
+              { "enum", nlohmann::json::array(
+                                { "all", "project", "libraries", "schematic", "pcb",
+                                  "manufacturing" } ) },
+              { "description", "Optional semantic domain for design.context." } };
+    schema["properties"]["query"] =
+            { { "type", "string" }, { "maxLength", 256 },
+              { "description", "Optional case-insensitive context item filter." } };
+    schema["properties"]["offset"] =
+            { { "type", "integer" }, { "minimum", 0 }, { "maximum", 1000000 },
+              { "description", "Zero-based design.context page offset." } };
+    schema["properties"]["limit"] =
+            { { "type", "integer" }, { "minimum", 1 }, { "maximum", 200 },
+              { "description", "Maximum design.context semantic items." } };
 
     return { { "type", "function" },
              { "name", "design" },
              { "description",
-               "Describe, read, compile, preview, atomically save, or transactionally apply a "
+               "Describe, read bounded semantic context, compile, preview, atomically save, or transactionally apply a "
                "reusable KiChad Design Script sidecar. KDS programs declare the complete "
                "project—schematic, libraries, PCB intent, sourcing, verification, and "
                "fabrication outputs—for deterministic execution by KiChad compiler backends." },
@@ -155,11 +182,11 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     const std::string operation = aArguments["operation"].get<std::string>();
 
-    if( operation != "describe" && operation != "read" && operation != "compile"
+    if( operation != "describe" && operation != "context" && operation != "read" && operation != "compile"
         && operation != "preview" && operation != "save" && operation != "apply" )
     {
         return failure( "invalid_arguments",
-                        "design.operation must be 'describe', 'read', 'compile', 'preview', "
+                        "design.operation must be 'describe', 'context', 'read', 'compile', 'preview', "
                         "'save', or 'apply'" );
     }
 
@@ -168,14 +195,20 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     const bool hasSource = aArguments.contains( "source" ) && aArguments["source"].is_string();
     const bool hasPath = aArguments.contains( "path" ) && aArguments["path"].is_string();
+    const auto nonNegativeInteger = []( const JSON& aValue )
+    {
+        return aValue.is_number_unsigned()
+               || ( aValue.is_number_integer() && aValue.get<int64_t>() >= 0 );
+    };
 
     if( ( ( operation == "compile" || operation == "preview" ) && hasSource == hasPath )
         || ( operation == "save" && ( !hasSource || !hasPath ) )
-        || ( ( operation == "read" || operation == "apply" ) && ( hasSource || !hasPath ) ) )
+        || ( ( operation == "context" || operation == "read" || operation == "apply" )
+             && ( hasSource || !hasPath ) ) )
     {
         std::string message;
 
-        if( operation == "read" || operation == "apply" )
+        if( operation == "context" || operation == "read" || operation == "apply" )
             message = "design." + operation + " requires path and does not accept inline source";
         else if( operation == "save" )
             message = "design.save requires source and path";
@@ -187,10 +220,16 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     if( ( aArguments.contains( "source" ) && !aArguments["source"].is_string() )
         || ( aArguments.contains( "path" ) && !aArguments["path"].is_string() )
-        || ( aArguments.contains( "boardPath" ) && !aArguments["boardPath"].is_string() ) )
+        || ( aArguments.contains( "boardPath" ) && !aArguments["boardPath"].is_string() )
+        || ( aArguments.contains( "domain" ) && !aArguments["domain"].is_string() )
+        || ( aArguments.contains( "query" ) && !aArguments["query"].is_string() )
+        || ( aArguments.contains( "offset" )
+             && !nonNegativeInteger( aArguments["offset"] ) )
+        || ( aArguments.contains( "limit" )
+             && !nonNegativeInteger( aArguments["limit"] ) ) )
     {
         return failure( "invalid_arguments",
-                        "design source, path, or boardPath has the wrong type" );
+                        "design source, path, boardPath, or context filter has the wrong type" );
     }
 
     std::string source;
@@ -204,7 +243,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !KICHAD::CODEX_TOOLS::ResolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
             return failure( "invalid_path", pathError );
 
-        if( ( operation == "read" || operation == "compile" || operation == "preview"
+        if( ( operation == "context" || operation == "read" || operation == "compile" || operation == "preview"
               || operation == "apply" )
             && !sidecar.FileExists() )
             return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
@@ -224,6 +263,35 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    if( operation == "context" )
+    {
+        const std::string domain = aArguments.value( "domain", "all" );
+        const std::string query = aArguments.value( "query", "" );
+        const size_t offset = aArguments.value( "offset", 0U );
+        const size_t limit = aArguments.value( "limit", 50U );
+        static const std::set<std::string> DOMAINS = {
+            "all", "project", "libraries", "schematic", "pcb", "manufacturing"
+        };
+
+        if( !DOMAINS.contains( domain ) || query.size() > 256 || offset > 1000000
+            || limit == 0 || limit > 200 )
+        {
+            return failure( "invalid_arguments", "design.context has an invalid domain or page" );
+        }
+
+        JSON context = compiled.ok
+                               ? KICHAD::DESIGN_SCRIPT_CONTEXT_BUILDER::Build(
+                                         compiled.ir, compiled.plan, domain, query, offset, limit )
+                               : JSON( nullptr );
+        return success( { { "operation", "context" },
+                          { "path", aArguments["path"] },
+                          { "sourceSha256", compiled.sourceSha256 },
+                          { "sourceBytes", source.size() },
+                          { "valid", compiled.ok },
+                          { "diagnostics", compiled.diagnostics },
+                          { "context", std::move( context ) } } );
+    }
 
     if( operation == "read" )
     {
@@ -326,6 +394,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         if( resolvedSymbols.ok )
         {
+            planned = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan(
+                    compiled.ir, resolvedSymbols.symbols );
             schematicPlanned = KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
                     compiled.ir, JSON::object(), resolvedSymbols.symbols );
         }
@@ -368,6 +438,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             else if( action == "update_rules" )
             {
                 items.push_back( { { "action", "configure_global_board_rules" } } );
+            }
+            else if( action == "update_schematic_rule_severities" )
+            {
+                items.push_back(
+                        { { "action", "configure_erc_severities" },
+                          { "overrides",
+                            plannedOperation["severities"]["severities"].size() } } );
             }
             else if( action == "update_net_classes" )
             {
@@ -566,6 +643,9 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                       "message", "schematic symbol resolution failed" ) );
         }
 
+        planned = KICHAD::DESIGN_SCRIPT_PCB_PLANNER::Plan(
+                compiled.ir, resolvedSymbols.symbols );
+
         KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT schematicPreplanned =
                 KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
                         compiled.ir, JSON::object(), resolvedSymbols.symbols );
@@ -602,6 +682,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         std::unique_ptr<kiapi::common::project::TextVariables> desiredTextVariables;
         std::unique_ptr<kiapi::common::project::SchematicFieldTemplates>
                 desiredFieldTemplates;
+        std::unique_ptr<kiapi::common::project::SchematicRuleSeverities>
+                desiredSchematicRuleSeverities;
         JSON desiredLibraryTables = JSON::array();
         std::set<std::string> desiredLibraryTableKinds;
         bool        hasDesiredCustomRules = false;
@@ -617,6 +699,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 && plannedAction != "update_net_classes"
                 && plannedAction != "update_text_variables"
                 && plannedAction != "update_schematic_field_templates"
+                && plannedAction != "update_schematic_rule_severities"
                 && plannedAction != "update_custom_rules"
                 && plannedAction != "update_project_library_table" )
                 continue;
@@ -740,7 +823,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "textVariables" ).dump(), desiredTextVariables.get(), options );
             }
-            else
+            else if( plannedAction == "update_schematic_field_templates" )
             {
                 if( desiredFieldTemplates )
                     return failure( "invalid_plan", "KDS planned field templates more than once" );
@@ -749,6 +832,20 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                         std::make_unique<kiapi::common::project::SchematicFieldTemplates>();
                 status = google::protobuf::util::JsonStringToMessage(
                         action.at( "fieldTemplates" ).dump(), desiredFieldTemplates.get(), options );
+            }
+            else
+            {
+                if( desiredSchematicRuleSeverities )
+                {
+                    return failure( "invalid_plan",
+                                    "KDS planned schematic rule severities more than once" );
+                }
+
+                desiredSchematicRuleSeverities =
+                        std::make_unique<kiapi::common::project::SchematicRuleSeverities>();
+                status = google::protobuf::util::JsonStringToMessage(
+                        action.at( "severities" ).dump(),
+                        desiredSchematicRuleSeverities.get(), options );
             }
 
             if( !status.ok() )
@@ -1111,6 +1208,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         kiapi::common::project::NetClassSettings previousNetClasses;
         kiapi::common::project::TextVariables previousTextVariables;
         kiapi::common::project::SchematicFieldTemplates previousFieldTemplates;
+        kiapi::common::project::SchematicRuleSeverities previousSchematicRuleSeverities;
         bool        previousCustomRulesPresent = false;
         std::string previousCustomRulesSource;
 
@@ -1145,6 +1243,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     client, target, previousFieldTemplates, pathError ) )
         {
             return failure( "field_template_inventory_failed", pathError );
+        }
+
+        if( desiredSchematicRuleSeverities
+            && !KICHAD::PROJECT_SETTINGS_IPC::QuerySchematicRuleSeverities(
+                    client, target, previousSchematicRuleSeverities, pathError ) )
+        {
+            return failure( "erc_severity_inventory_failed", pathError );
         }
 
         if( hasDesiredCustomRules
@@ -1310,6 +1415,26 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             }
 
             applyJournal["previousSchematicFieldTemplates"] =
+                    JSON::parse( serializedPrevious );
+        }
+
+        if( desiredSchematicRuleSeverities )
+        {
+            std::string serializedPrevious;
+            google::protobuf::util::JsonPrintOptions options;
+            options.preserve_proto_field_names = false;
+            options.always_print_primitive_fields = true;
+            google::protobuf::util::Status status =
+                    google::protobuf::util::MessageToJsonString(
+                            previousSchematicRuleSeverities, &serializedPrevious, options );
+
+            if( !status.ok() )
+            {
+                return failure( "journal_failed",
+                                "could not serialize the prior schematic rule severities" );
+            }
+
+            applyJournal["previousSchematicRuleSeverities"] =
                     JSON::parse( serializedPrevious );
         }
 
@@ -1582,6 +1707,48 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             rollbackNetClasses( aMessage );
         };
 
+        bool schematicRuleSeveritiesApplied = false;
+
+        if( desiredSchematicRuleSeverities )
+        {
+            if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicRuleSeverities(
+                        client, target, *desiredSchematicRuleSeverities, pathError ) )
+            {
+                std::string message = pathError
+                                      + "; the apply journal was retained for safe recovery";
+                std::string rollbackError;
+
+                if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicRuleSeverities(
+                            client, target, previousSchematicRuleSeverities,
+                            rollbackError ) )
+                {
+                    message += "; ERC-severity rollback also failed: " + rollbackError;
+                }
+
+                rollbackTextVariables( message );
+                return failure( "erc_severity_apply_failed", message );
+            }
+
+            schematicRuleSeveritiesApplied = true;
+        }
+
+        auto rollbackSchematicRuleSeverities = [&]( std::string& aMessage )
+        {
+            if( schematicRuleSeveritiesApplied )
+            {
+                std::string rollbackError;
+
+                if( !KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicRuleSeverities(
+                            client, target, previousSchematicRuleSeverities,
+                            rollbackError ) )
+                {
+                    aMessage += "; ERC-severity rollback also failed: " + rollbackError;
+                }
+            }
+
+            rollbackTextVariables( aMessage );
+        };
+
         bool fieldTemplatesApplied = false;
 
         if( desiredFieldTemplates )
@@ -1599,7 +1766,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                     message += "; field-template rollback also failed: " + rollbackError;
                 }
 
-                rollbackTextVariables( message );
+                rollbackSchematicRuleSeverities( message );
                 return failure( "field_template_apply_failed", message );
             }
 
@@ -1619,7 +1786,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                 }
             }
 
-            rollbackTextVariables( aMessage );
+            rollbackSchematicRuleSeverities( aMessage );
         };
 
         bool customRulesApplied = false;
@@ -2001,6 +2168,17 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         if( reconciled.actions.empty() )
         {
+            const bool boardDocumentChanged = titleBlockApplied || stackupApplied || rulesApplied;
+
+            if( boardDocumentChanged && !saveBoardDocument( client, target, pathError ) )
+            {
+                return failure(
+                        "board_save_failed",
+                        pathError
+                                + "; the live board may contain unsaved changes and the apply "
+                                  "journal was retained for safe recovery" );
+            }
+
             if( !KICHAD::CODEX_TOOLS::WriteJsonAtomically( statePath, reconciled.nextState, pathError ) )
             {
                 std::string message = pathError
@@ -2039,6 +2217,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                managedFootprintLibrariesApplied },
                              { "schematicFilesApplied", schematicFilesApplied },
                              { "schematicCounts", schematicReconciled.counts },
+                             { "boardSaved", boardDocumentChanged },
+                             { "verification",
+                               { { "status", "not_run" },
+                                 { "required", JSON::array( { "erc", "drc" } ) } } },
                              { "journalRetained", !journalRemoved } };
             return success( payload );
         }
@@ -2089,6 +2271,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                                         "reconciled safely on the next apply" );
         }
 
+        if( !saveBoardDocument( client, target, pathError ) )
+        {
+            return failure(
+                    "board_save_failed",
+                    pathError
+                            + "; the committed board remains live but may be unsaved, and the "
+                              "apply journal was retained for safe recovery" );
+        }
+
         if( !KICHAD::CODEX_TOOLS::WriteJsonAtomically( statePath, reconciled.nextState, pathError ) )
         {
             return failure( "state_write_failed",
@@ -2119,6 +2310,10 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                          { "schematicFilesApplied", schematicFilesApplied },
                          { "schematicCounts", schematicReconciled.counts },
                          { "zonesRefilled", zoneMutation ? expectedZoneIds.size() : 0 },
+                         { "boardSaved", true },
+                         { "verification",
+                           { { "status", "not_run" },
+                             { "required", JSON::array( { "erc", "drc" } ) } } },
                          { "statePath", statePath.GetFullName().ToStdString() },
                          { "journalRetained", !journalRemoved } };
         return success( payload );

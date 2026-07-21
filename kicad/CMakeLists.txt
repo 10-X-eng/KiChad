@@ -31,6 +31,7 @@ set( KICAD_SRCS
     codex/codex_tool_pcb.cpp
     codex/codex_tool_project.cpp
     codex/codex_tool_verify.cpp
+    codex/design_script_board_asset_compiler.cpp
     codex/design_script_board_compiler.cpp
     codex/design_script_board_graphic_compiler.cpp
     codex/design_script_board_graphic_proto_generator.cpp
@@ -39,9 +40,13 @@ set( KICAD_SRCS
     codex/design_script_board_table_proto_generator.cpp
     codex/design_script_board_text_box_compiler.cpp
     codex/design_script_board_text_box_proto_generator.cpp
+    codex/design_script_assembly_compiler.cpp
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
+    codex/design_script_context_builder.cpp
     codex/design_script_custom_pad_proto_generator.cpp
+    codex/design_script_device_code_compiler.cpp
+    codex/design_release_writer.cpp
     codex/design_script_footprint_backdrill_generator.cpp
     codex/design_script_footprint_component_classes_compiler.cpp
     codex/design_script_footprint_component_classes_generator.cpp
@@ -71,6 +76,7 @@ set( KICAD_SRCS
     codex/design_script_footprint_zone_generator.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
+    codex/design_script_production_compiler.cpp
     codex/design_script_schematic_planner.cpp
     codex/design_script_schematic_reconciler.cpp
     codex/design_script_symbol_compiler.cpp
@@ -103,6 +109,7 @@ set( KICAD_SRCS
     codex/kicad_ipc_client.cpp
     codex/kicad_ipc_transaction.cpp
     codex/project_settings_ipc.cpp
+    codex/production_package_writer.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp
     codex/codex_thread_store.cpp

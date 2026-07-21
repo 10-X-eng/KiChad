@@ -327,6 +327,9 @@ bool PGM_KICAD::OnPgmInit()
                 if( aChange & APIPSC_FIELD_TEMPLATES )
                     flags |= FIELD_TEMPLATES_CHANGED;
 
+                if( aChange & APIPSC_ERC_SEVERITIES )
+                    flags |= ERC_SETTINGS_CHANGED;
+
                 Kiway.CommonSettingsChanged( flags );
             } );
     m_api_server->RegisterHandler( m_api_common_handler.get() );

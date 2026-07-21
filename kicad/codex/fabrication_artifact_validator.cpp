@@ -733,6 +733,8 @@ bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
 
     using NETLIST_NODE = std::pair<std::string, std::string>;
     std::map<std::string, std::set<NETLIST_NODE>> actualNets;
+    std::set<NETLIST_NODE> actualNoConnects;
+    std::set<std::string> actualNetNames;
     size_t totalNodes = 0;
 
     for( size_t child : document->Nodes().at( nets ).children )
@@ -747,12 +749,14 @@ bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
         const std::string name = scalar( child, "name" );
         std::set<NETLIST_NODE> nodes;
 
-        if( name.empty() || actualNets.contains( name )
-            || actualNets.size() >= MAX_NETLIST_NETS )
+        if( name.empty() || !actualNetNames.emplace( name ).second
+            || actualNetNames.size() > MAX_NETLIST_NETS )
         {
             aError = "KiCad netlist has an empty, duplicate, or excessive net";
             return false;
         }
+
+        size_t noConnectNodeCount = 0;
 
         for( size_t netChild : document->Nodes().at( child ).children )
         {
@@ -765,6 +769,7 @@ bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
 
             const std::string reference = scalar( netChild, "ref" );
             const std::string pin = scalar( netChild, "pin" );
+            const std::string pinType = scalar( netChild, "pintype" );
 
             if( reference.empty() || pin.empty()
                 || !nodes.emplace( reference, pin ).second
@@ -773,9 +778,25 @@ bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
                 aError = "KiCad netlist has an invalid, duplicate, or excessive node";
                 return false;
             }
+
+            if( pinType.find( "no_connect" ) != std::string::npos )
+                ++noConnectNodeCount;
         }
 
-        actualNets.emplace( name, std::move( nodes ) );
+        if( noConnectNodeCount != 0 )
+        {
+            if( nodes.size() != 1 || noConnectNodeCount != 1
+                || !name.starts_with( "unconnected-(" ) || !name.ends_with( ')' )
+                || !actualNoConnects.emplace( *nodes.begin() ).second )
+            {
+                aError = "KiCad netlist has a malformed or duplicate no-connect endpoint";
+                return false;
+            }
+        }
+        else
+        {
+            actualNets.emplace( name, std::move( nodes ) );
+        }
     }
 
     std::map<std::string, std::set<NETLIST_NODE>> expectedNets;
@@ -805,9 +826,84 @@ bool KICHAD::FABRICATION_ARTIFACT_VALIDATOR::ValidateKiCadNetlist(
         }
     }
 
+    std::set<NETLIST_NODE> expectedNoConnects;
+
+    for( const JSON& endpoint : aPlan.at( "expectedNetlistNoConnects" ) )
+    {
+        if( !endpoint.is_object() || !endpoint.contains( "reference" )
+            || !endpoint["reference"].is_string() || !endpoint.contains( "pin" )
+            || !endpoint["pin"].is_string()
+            || !expectedNoConnects.emplace(
+                    endpoint["reference"].get<std::string>(),
+                    endpoint["pin"].get<std::string>() ).second )
+        {
+            aError = "fabrication plan contains an invalid expected no-connect endpoint";
+            return false;
+        }
+    }
+
+    if( actualNoConnects != expectedNoConnects )
+    {
+        for( const NETLIST_NODE& endpoint : expectedNoConnects )
+        {
+            if( !actualNoConnects.contains( endpoint ) )
+            {
+                aError = "KiCad netlist is missing KDS no-connect endpoint "
+                         + endpoint.first + "." + endpoint.second;
+                return false;
+            }
+        }
+
+        const NETLIST_NODE& endpoint = *std::find_if(
+                actualNoConnects.begin(), actualNoConnects.end(),
+                [&]( const NETLIST_NODE& aEndpoint )
+                {
+                    return !expectedNoConnects.contains( aEndpoint );
+                } );
+        aError = "KiCad netlist contains unexpected no-connect endpoint "
+                 + endpoint.first + "." + endpoint.second;
+        return false;
+    }
+
     if( actualNets != expectedNets )
     {
-        aError = "KiCad netlist connectivity differs from compiled KDS";
+        for( const auto& [name, nodes] : expectedNets )
+        {
+            auto actual = actualNets.find( name );
+
+            if( actual == actualNets.end() )
+            {
+                aError = "KiCad netlist is missing KDS net '" + name + "'";
+                return false;
+            }
+
+            for( const NETLIST_NODE& endpoint : nodes )
+            {
+                if( !actual->second.contains( endpoint ) )
+                {
+                    aError = "KiCad netlist net '" + name + "' is missing KDS endpoint "
+                             + endpoint.first + "." + endpoint.second;
+                    return false;
+                }
+            }
+
+            for( const NETLIST_NODE& endpoint : actual->second )
+            {
+                if( !nodes.contains( endpoint ) )
+                {
+                    aError = "KiCad netlist net '" + name
+                             + "' contains unexpected endpoint " + endpoint.first + "."
+                             + endpoint.second;
+                    return false;
+                }
+            }
+        }
+
+        const auto unexpected = std::find_if(
+                actualNets.begin(), actualNets.end(),
+                [&]( const auto& aNet ) { return !expectedNets.contains( aNet.first ); } );
+        aError = "KiCad netlist contains unexpected connected net '"
+                 + unexpected->first + "'";
         return false;
     }
 

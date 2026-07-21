@@ -15,6 +15,7 @@
 
 #include "design_script_board_compiler.h"
 #include "design_script_footprint_compiler.h"
+#include "design_script_production_compiler.h"
 #include "design_script_symbol_compiler.h"
 #include "lossless_sexpr_document.h"
 
@@ -219,6 +220,17 @@ bool validTextVariableName( const std::string& aValue )
                                     || excluded.find( static_cast<char>( aCharacter ) )
                                                != std::string_view::npos;
                          } );
+}
+
+
+bool validNativeRuleKey( const std::string& aValue )
+{
+    return !aValue.empty() && aValue.size() <= 128
+           && std::all_of( aValue.begin(), aValue.end(), []( unsigned char aCharacter )
+               {
+                   return std::islower( aCharacter ) || std::isdigit( aCharacter )
+                          || aCharacter == '_' || aCharacter == '-';
+               } );
 }
 
 
@@ -1523,26 +1535,55 @@ JSON compileNet( const DOCUMENT& aDocument, size_t aNode,
         return JSON::object();
     }
 
-    JSON net = { { "name", name }, { "pins", JSON::array() } };
+    JSON net = { { "name", name },
+                 { "presentation", "labels" },
+                 { "presentationExplicit", false },
+                 { "pins", JSON::array() } };
+    bool sawPresentation = false;
 
     for( size_t i = 2; i < node.children.size(); ++i )
     {
         const size_t child = node.children[i];
+        const std::string head = aDocument.ListHead( child );
+
+        if( head == "presentation" )
+        {
+            std::string presentation;
+
+            if( sawPresentation || !parseSingleValueForm( aDocument, child, presentation )
+                || ( presentation != "wired" && presentation != "labels" ) )
+            {
+                diagnostic( aResult, "error", "invalid_net_presentation",
+                            "net " + name
+                                    + " presentation may occur once and must be wired or labels" );
+            }
+            else
+            {
+                net["presentation"] = presentation;
+                net["presentationExplicit"] = true;
+            }
+
+            sawPresentation = true;
+            continue;
+        }
+
         const DOCUMENT::NODE& pin = aDocument.Nodes()[child];
         std::string reference;
         std::string unitText;
         std::string number;
         int64_t     unit = 0;
 
-        if( aDocument.ListHead( child ) != "pin" || pin.children.size() != 4
+        if( head != "pin" || pin.children.size() != 4
             || !scalarText( aDocument, pin.children[1], reference )
             || !scalarText( aDocument, pin.children[2], unitText )
             || !scalarText( aDocument, pin.children[3], number )
             || !parseBoundedInteger( unitText, 1, 256, unit )
             || !validIdentifier( reference ) || number.empty() || number.size() > 64 )
         {
-            diagnostic( aResult, "error", "invalid_pin",
-                        "net endpoints must use (pin COMPONENT UNIT PIN_NUMBER)" );
+            diagnostic( aResult, "error", "invalid_net_field",
+                        "net " + name
+                                + " accepts one (presentation wired|labels) field and endpoints "
+                                  "using (pin COMPONENT UNIT PIN_NUMBER)" );
             continue;
         }
 
@@ -5396,7 +5437,9 @@ JSON compileRules( const DOCUMENT& aDocument, size_t aNode,
         "minimum_copper_to_edge_clearance",
         "use_height_for_length_calculations",
         "maximum_error",
-        "allow_fillets_outside_zone_outline"
+        "allow_fillets_outside_zone_outline",
+        "drc_severities",
+        "erc_severities"
     };
     std::map<std::string, size_t> fields;
 
@@ -5502,6 +5545,145 @@ JSON compileRules( const DOCUMENT& aDocument, size_t aNode,
     }
 
     rules["allowFilletsOutsideZoneOutline"] = allowExternalFillets;
+    JSON drcSeverities = nullptr;
+    auto severitiesField = fields.find( "drc_severities" );
+
+    if( severitiesField != fields.end() )
+    {
+        drcSeverities = { { "default", "" }, { "checks", JSON::object() } };
+        const DOCUMENT::NODE& severitiesNode =
+                aDocument.Nodes()[severitiesField->second];
+        bool sawDefault = false;
+
+        for( size_t index = 1; index < severitiesNode.children.size(); ++index )
+        {
+            const size_t child = severitiesNode.children[index];
+            const std::string head = aDocument.ListHead( child );
+
+            if( head == "default" )
+            {
+                std::string severity;
+
+                if( sawDefault || !parseSingleValueForm( aDocument, child, severity )
+                    || ( severity != "error" && severity != "warning"
+                         && severity != "ignore" ) )
+                {
+                    diagnostic( aResult, "error", "invalid_drc_severity_default",
+                                "drc_severities requires exactly one default of error, "
+                                "warning, or ignore" );
+                }
+                else
+                {
+                    sawDefault = true;
+                    drcSeverities["default"] = severity;
+                }
+
+                continue;
+            }
+
+            if( head != "check" )
+            {
+                diagnostic( aResult, "error", "unknown_drc_severity_field",
+                            "drc_severities accepts only default and check forms" );
+                continue;
+            }
+
+            const DOCUMENT::NODE& check = aDocument.Nodes()[child];
+            std::string key;
+            std::string severity;
+
+            if( check.children.size() != 3
+                || !scalarText( aDocument, check.children[1], key )
+                || !scalarText( aDocument, check.children[2], severity )
+                || !validNativeRuleKey( key )
+                || ( severity != "error" && severity != "warning"
+                     && severity != "ignore" ) )
+            {
+                diagnostic( aResult, "error", "invalid_drc_severity_check",
+                            "drc severity check requires a bounded native key and error, "
+                            "warning, or ignore" );
+                continue;
+            }
+
+            if( drcSeverities["checks"].contains( key ) )
+            {
+                diagnostic( aResult, "error", "duplicate_drc_severity_check",
+                            "DRC severity check '" + key + "' occurs more than once" );
+                continue;
+            }
+
+            drcSeverities["checks"][key] = severity;
+        }
+
+        if( !sawDefault )
+        {
+            diagnostic( aResult, "error", "missing_drc_severity_default",
+                        "drc_severities requires exactly one default policy" );
+        }
+
+        if( drcSeverities["checks"].size() > 256 )
+        {
+            diagnostic( aResult, "error", "too_many_drc_severity_checks",
+                        "drc_severities supports at most 256 explicit overrides" );
+        }
+    }
+
+    rules["drcSeverities"] = std::move( drcSeverities );
+    JSON ercSeverities = nullptr;
+    auto ercSeveritiesField = fields.find( "erc_severities" );
+
+    if( ercSeveritiesField != fields.end() )
+    {
+        ercSeverities = { { "checks", JSON::object() } };
+        const DOCUMENT::NODE& severitiesNode =
+                aDocument.Nodes()[ercSeveritiesField->second];
+
+        for( size_t index = 1; index < severitiesNode.children.size(); ++index )
+        {
+            const size_t child = severitiesNode.children[index];
+
+            if( aDocument.ListHead( child ) != "check" )
+            {
+                diagnostic( aResult, "error", "unknown_erc_severity_field",
+                            "erc_severities accepts only check forms" );
+                continue;
+            }
+
+            const DOCUMENT::NODE& check = aDocument.Nodes()[child];
+            std::string key;
+            std::string severity;
+
+            if( check.children.size() != 3
+                || !scalarText( aDocument, check.children[1], key )
+                || !scalarText( aDocument, check.children[2], severity )
+                || !validNativeRuleKey( key )
+                || ( severity != "error" && severity != "warning"
+                     && severity != "ignore" ) )
+            {
+                diagnostic( aResult, "error", "invalid_erc_severity_check",
+                            "ERC severity check requires a bounded native key and error, "
+                            "warning, or ignore" );
+                continue;
+            }
+
+            if( ercSeverities["checks"].contains( key ) )
+            {
+                diagnostic( aResult, "error", "duplicate_erc_severity_check",
+                            "ERC severity check '" + key + "' occurs more than once" );
+                continue;
+            }
+
+            ercSeverities["checks"][key] = severity;
+        }
+
+        if( ercSeverities["checks"].size() > 256 )
+        {
+            diagnostic( aResult, "error", "too_many_erc_severity_checks",
+                        "erc_severities supports at most 256 explicit overrides" );
+        }
+    }
+
+    rules["ercSeverities"] = std::move( ercSeverities );
     int64_t     edgeClearance = 0;
     std::string edgeText;
     std::string edgeMode;
@@ -5537,13 +5719,6 @@ JSON compileRules( const DOCUMENT& aDocument, size_t aNode,
     {
         diagnostic( aResult, "error", "inconsistent_rules_via_geometry",
                     "minimum_via_diameter cannot satisfy the drill and annular-width constraints" );
-    }
-
-    if( rules["minimumMicroviaDiameterNm"].get<int64_t>()
-        < rules["minimumMicroviaDrillNm"].get<int64_t>() + 2 * annular )
-    {
-        diagnostic( aResult, "error", "inconsistent_rules_microvia_geometry",
-                    "minimum_microvia_diameter cannot satisfy the drill and annular-width constraints" );
     }
 
     return rules;
@@ -6908,7 +7083,9 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(justify left|center|right top|center|bottom) "
                       "(bold BOOL) (italic BOOL) (hyperlink none|TEXT) "
                       "(private BOOL)) ...)) ...)" } },
-                  { { "form", "(net NAME (pin REF UNIT NUMBER) (pin REF UNIT NUMBER) ...)" } },
+                  { { "form",
+                      "(net NAME (presentation wired|labels) "
+                      "(pin REF UNIT NUMBER) (pin REF UNIT NUMBER) ...)" } },
                   { { "form", "(no_connect REF UNIT NUMBER)" } },
                   { { "form",
                       "(wire|bus|bus_entry ID (sheet ID) (from X Y) (to X Y) "
@@ -7014,7 +7191,7 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(filling inherit|filled|unfilled) (capping inherit|capped|uncapped) "
                       "(post_machining front|back counterbore|countersink ...))]) "
                       "(zone NET ...) (text ...) (text_box ...) (table ...) (dimension ...) "
-                      "(keepout ...))" } },
+                      "(keepout ...) (image ...) (barcode ...))" } },
                   { { "form",
                       "(stackup (finish NAME) (impedance_controlled BOOL) "
                       "(edge_connector none|yes|bevelled) (edge_plating BOOL) "
@@ -7064,6 +7241,18 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(dimension aligned|orthogonal|radial|leader|center (id ID) "
                       "(layer LAYER) STYLE_GEOMETRY (line_width D) (arrow_length D) ...)" } },
                   { { "form",
+                      "(image ID (at X Y) (origin_offset X Y) (layer LAYER) "
+                      "(scale FACTOR) (locked BOOL) "
+                      "(media_type image/png|jpeg|gif|bmp|webp) (sha256 DIGEST) "
+                      "(description TEXT) (data_base64 DATA))" } },
+                  { { "form",
+                      "(barcode ID (text TEXT) "
+                      "(kind code_39|code_128|data_matrix|qr_code|micro_qr_code) "
+                      "(error_correction L|M|Q|H) (at X Y) (rotation ANGLE) "
+                      "(layer LAYER) (size WIDTH HEIGHT) (show_text BOOL) "
+                      "(text_height HEIGHT) (knockout BOOL) "
+                      "(knockout_margin X Y) (locked BOOL))" } },
+                  { { "form",
                       "(rules (minimum_clearance D) (minimum_connection_width D) "
                       "(minimum_track_width D) (minimum_via_annular_width D) "
                       "(minimum_via_diameter D) (minimum_through_hole_diameter D) "
@@ -7089,6 +7278,37 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(lifecycle active|nrnd|last_time_buy|obsolete) (supplier NAME) "
                       "(sku PART) (product_url HTTPS_URL) (available N) "
                       "(verified_on YYYY-MM-DD) (quantity N) [(unit_price TEXT) (notes TEXT)])" } },
+                  { { "form",
+                      "(production "
+                      "(assembly (acceptance ipc-a-610-class-1|ipc-a-610-class-2|ipc-a-610-class-3) "
+                      "(process lead_free_reflow|leaded_reflow|hand|mixed) (solder_alloy TEXT) "
+                      "(stencil none|top|bottom|both) [(stencil_thickness_um N)] "
+                      "(cleaning no_clean|aqueous|solvent) "
+                      "(coating none|acrylic|silicone|urethane|parylene) "
+                      "[(instruction ID (scope board|component REF) (text TEXT)) ...]) "
+                      "(firmware ID ((path PROJECT_RELATIVE_FILE)|(data_base64 DATA)) "
+                      "(format binary|ihex|elf|uf2|srec) (sha256 DIGEST) (bytes N) "
+                      "(version TEXT) (target REF) "
+                      "[(device_code (toolchain arduino_cli|platformio|zephyr_west|esp_idf|pico_sdk|cmake|cargo_embedded) "
+                      "(toolchain_version TEXT) (target TEXT) (entry PATH) "
+                      "(file PATH (language c|cpp|rust|assembly|arduino|linker_script|configuration) "
+                      "(sha256 DIGEST) (data_base64 DATA)) ... "
+                      "[(dependency NAME VERSION SHA256) ...])]) ... "
+                      "(program ID (firmware ID) (target REF) "
+                      "(interface swd|jtag|isp|updi|pdi|debugwire|uart_bootloader|usb_dfu|can_bootloader) "
+                      "(connector REF) (device TEXT) (voltage V) (speed_khz N) "
+                      "(erase none|chip|required_regions) (reset none|run|halt) (verify true) "
+                      "(signal NAME CONNECTOR_PIN) ... [(option NAME VALUE) ...]) ... "
+                      "(power ID (connector REF) (positive_pin PIN) (return_pin PIN) "
+                      "(voltage V) (current_limit A) (settle_ms N)) ... "
+                      "(test ID (stage unpowered|power_on|programmed|functional) "
+                      "(method voltage|current|resistance|continuity|logic|frequency|visual|functional) "
+                      "(instrument dmm|oscilloscope|logic_analyzer|frequency_counter|ict|flying_probe|camera|operator|fixture) "
+                      "(target net NAME|component REF|pin REF PIN) "
+                      "[(range MIN MAX V|A|ohm|Hz)|(expected open|closed|high|low|pulse|pass)] "
+                      "[(testpoint REF)] [(power ID)] [(program ID)] "
+                      "(after_ms N) (timeout_ms N) (required true) "
+                      "[(procedure TEXT)]) ... )" } },
                   { { "form", "(check erc|drc|sourcing|footprints|fabrication)" } },
                   { { "form",
                       "(output gerbers|drill|ipcd356|netlist|ipc2581|odbpp|pick_place|bom|step|"
@@ -7099,7 +7319,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
           } ) },
         { "compilerPasses",
           JSON::array( { "parse", "typecheck", "resolve", "plan", "snapshot", "schematic",
-                         "libraries", "pcb", "sourcing", "erc", "drc", "fabrication" } ) },
+                         "libraries", "pcb", "sourcing", "production_handoff", "erc", "drc",
+                         "fabrication" } ) },
         { "example",
           "(kichad_design\n"
           "  (version 1)\n"
@@ -7224,6 +7445,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         { "netClasses", nullptr },
         { "customRules", nullptr },
         { "sourcing", JSON::array() },
+        { "production", nullptr },
         { "checks", JSON::array() },
         { "outputs", JSON::array() }
     };
@@ -7242,6 +7464,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     bool                     sawRules = false;
     bool                     sawNetClasses = false;
     bool                     sawCustomRules = false;
+    bool                     sawProduction = false;
     std::set<std::string>    sourceIds;
     std::set<std::string>    checkKinds;
     std::set<std::string>    outputKinds;
@@ -7631,6 +7854,33 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             }
 
             result.ir["sourcing"].emplace_back( std::move( source ) );
+        }
+        else if( form == "production" )
+        {
+            if( sawProduction )
+            {
+                diagnostic( result, "error", "duplicate_production",
+                            "production occurs more than once" );
+            }
+            else
+            {
+                KICHAD::DESIGN_SCRIPT_PRODUCTION_COMPILER::RESULT production =
+                        KICHAD::DESIGN_SCRIPT_PRODUCTION_COMPILER::Compile( *document,
+                                                                           formNode );
+
+                for( JSON& productionDiagnostic : production.diagnostics )
+                    result.diagnostics.emplace_back( std::move( productionDiagnostic ) );
+
+                referencedComponents.insert( referencedComponents.end(),
+                                             production.referencedComponents.begin(),
+                                             production.referencedComponents.end() );
+                referencedNets.insert( referencedNets.end(),
+                                      production.referencedNets.begin(),
+                                      production.referencedNets.end() );
+                result.ir["production"] = std::move( production.production );
+            }
+
+            sawProduction = true;
         }
         else if( form == "check" )
         {
@@ -8568,6 +8818,150 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         }
     }
 
+    if( result.ir["production"].is_object() )
+    {
+        std::set<std::string> physicalPins;
+
+        for( const JSON& net : result.ir["schematic"]["nets"] )
+        {
+            if( !net.is_object() || !net.contains( "pins" ) || !net["pins"].is_array() )
+                continue;
+
+            for( const JSON& pin : net["pins"] )
+            {
+                if( pin.is_object() && pin.contains( "component" )
+                    && pin["component"].is_string() && pin.contains( "number" )
+                    && pin["number"].is_string() )
+                {
+                    physicalPins.emplace( pin["component"].get<std::string>() + "\n"
+                                          + pin["number"].get<std::string>() );
+                }
+            }
+        }
+
+        for( const JSON& pin : result.ir["schematic"]["noConnects"] )
+        {
+            if( pin.is_object() && pin.contains( "component" )
+                && pin["component"].is_string() && pin.contains( "number" )
+                && pin["number"].is_string() )
+            {
+                physicalPins.emplace( pin["component"].get<std::string>() + "\n"
+                                      + pin["number"].get<std::string>() );
+            }
+        }
+
+        const auto requirePhysicalComponent = [&]( const std::string& aReference,
+                                                   const std::string& aContext )
+        {
+            const auto component = componentHasFootprint.find( aReference );
+
+            if( component != componentHasFootprint.end() && !component->second )
+            {
+                diagnostic( result, "error", "virtual_production_component",
+                            aContext + " references virtual component " + aReference
+                                    + " without a physical footprint" );
+            }
+        };
+
+        const auto requirePhysicalPin = [&]( const std::string& aReference,
+                                             const std::string& aPin,
+                                             const std::string& aContext )
+        {
+            requirePhysicalComponent( aReference, aContext );
+
+            if( !aReference.empty() && !aPin.empty()
+                && !physicalPins.contains( aReference + "\n" + aPin ) )
+            {
+                diagnostic( result, "error", "unresolved_production_connector_pin",
+                            aContext + " references " + aReference + " pin " + aPin
+                                    + ", which is absent from KDS schematic connectivity" );
+            }
+        };
+
+        const JSON& production = result.ir["production"];
+
+        if( production.contains( "firmware" ) && production["firmware"].is_array() )
+        {
+            for( const JSON& firmware : production["firmware"] )
+            {
+                requirePhysicalComponent( firmware.value( "target", "" ),
+                                          "firmware " + firmware.value( "id", "" ) );
+            }
+        }
+
+        if( production.contains( "programming" ) && production["programming"].is_array() )
+        {
+            for( const JSON& program : production["programming"] )
+            {
+                const std::string id = program.value( "id", "" );
+                const std::string connector = program.value( "connector", "" );
+                requirePhysicalComponent( program.value( "target", "" ),
+                                          "program " + id + " target" );
+
+                if( program.contains( "signals" ) && program["signals"].is_array() )
+                {
+                    for( const JSON& signal : program["signals"] )
+                    {
+                        requirePhysicalPin( connector, signal.value( "pin", "" ),
+                                            "program " + id + " signal "
+                                                    + signal.value( "name", "" ) );
+                    }
+                }
+            }
+        }
+
+        if( production.contains( "power" ) && production["power"].is_array() )
+        {
+            for( const JSON& power : production["power"] )
+            {
+                const std::string id = power.value( "id", "" );
+                const std::string connector = power.value( "connector", "" );
+                requirePhysicalPin( connector, power.value( "positivePin", "" ),
+                                    "power " + id + " positive pin" );
+                requirePhysicalPin( connector, power.value( "returnPin", "" ),
+                                    "power " + id + " return pin" );
+            }
+        }
+
+        if( production.contains( "tests" ) && production["tests"].is_array() )
+        {
+            for( const JSON& test : production["tests"] )
+            {
+                const std::string id = test.value( "id", "" );
+
+                if( test.contains( "target" ) && test["target"].is_object()
+                    && test["target"].value( "kind", "" ) == "pin" )
+                {
+                    requirePhysicalPin( test["target"].value( "component", "" ),
+                                        test["target"].value( "pin", "" ),
+                                        "test " + id + " target" );
+                }
+
+                if( test.contains( "testpoint" ) && test["testpoint"].is_string() )
+                {
+                    requirePhysicalComponent( test["testpoint"].get<std::string>(),
+                                              "test " + id + " testpoint" );
+                }
+            }
+        }
+
+        if( production.contains( "assembly" ) && production["assembly"].is_object()
+            && production["assembly"].contains( "instructions" )
+            && production["assembly"]["instructions"].is_array() )
+        {
+            for( const JSON& instruction : production["assembly"]["instructions"] )
+            {
+                if( instruction.contains( "scope" ) && instruction["scope"].is_object()
+                    && instruction["scope"].value( "kind", "" ) == "component" )
+                {
+                    requirePhysicalComponent(
+                            instruction["scope"].value( "component", "" ),
+                            "assembly instruction " + instruction.value( "id", "" ) );
+                }
+            }
+        }
+    }
+
     JSON passes = JSON::array( { "parse", "typecheck", "resolve", "plan", "snapshot" } );
 
     if( !result.ir["libraries"].empty() )
@@ -8595,6 +8989,9 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     if( !result.ir["sourcing"].empty() )
         passes.emplace_back( "sourcing" );
+
+    if( result.ir["production"].is_object() )
+        passes.emplace_back( "production_handoff" );
 
     if( !result.ir["checks"].empty() )
         passes.emplace_back( "verification" );
@@ -8637,6 +9034,22 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
                                      ? result.ir["customRules"]["rules"].size()
                                      : 0 },
             { "sourcingRecords", result.ir["sourcing"].size() },
+            { "firmwareImages", result.ir["production"].is_object()
+                                          ? result.ir["production"]["firmware"].size()
+                                          : 0 },
+            { "assemblyProfiles", result.ir["production"].is_object()
+                                           && result.ir["production"]["assembly"].is_object()
+                                           ? 1
+                                           : 0 },
+            { "programmingSteps", result.ir["production"].is_object()
+                                            ? result.ir["production"]["programming"].size()
+                                            : 0 },
+            { "powerProfiles", result.ir["production"].is_object()
+                                         ? result.ir["production"]["power"].size()
+                                         : 0 },
+            { "bringupTests", result.ir["production"].is_object()
+                                        ? result.ir["production"]["tests"].size()
+                                        : 0 },
             { "checks", result.ir["checks"].size() },
             { "outputs", result.ir["outputs"].size() } } }
     };

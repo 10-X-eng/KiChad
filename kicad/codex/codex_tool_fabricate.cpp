@@ -12,7 +12,9 @@
 #include "codex_tool_registry.h"
 
 #include "codex_tool_internal.h"
+#include "design_release_writer.h"
 #include "design_script_compiler.h"
+#include "production_package_writer.h"
 
 #include <build_version.h>
 #include <kiid.h>
@@ -65,8 +67,10 @@ nlohmann::json FabricateSpec()
              { "description",
                "Plan or perform the final KiCad 10 fabrication export declared by the exact "
                "KDS revision. Export reruns ERC, DRC, and sourcing gates, writes a private "
-               "staging package, validates every artifact, and atomically installs it only "
-               "after visible user confirmation." },
+               "staging package, validates every artifact, includes any hash-bound firmware "
+               "and programming/bring-up plan, and atomically installs it only after visible "
+               "user confirmation. Plan reports manufacturing productionReady separately from "
+               "complete runningReady status." },
              { "inputSchema", std::move( schema ) } };
 }
 
@@ -256,10 +260,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
         return failure( "project_unavailable", "active project directory could not be resolved" );
 
     KICHAD::CODEX_TOOLS::PRIVATE_TEMPORARY_DIRECTORY verificationSnapshot;
+    std::vector<std::string> productionInputs;
+
+    if( compiled.ir["production"].is_object() )
+    {
+        for( const JSON& firmware : compiled.ir["production"]["firmware"] )
+        {
+            if( firmware.contains( "path" ) )
+                productionInputs.emplace_back( firmware["path"].get<std::string>() );
+        }
+    }
 
     if( !KICHAD::CODEX_TOOLS::CreateFabricationVerificationSnapshot(
                 projectRoot, board, schematic, sidecar,
                 { sourceRelativePath, boardRelativePath, schematicRelativePath },
+                productionInputs,
                 verificationSnapshot, pathError ) )
     {
         return failure( "verification_snapshot_failed", pathError );
@@ -465,6 +480,32 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
         return failure( "artifact_validation_failed", exportError );
     }
 
+    JSON productionArtifacts;
+
+    if( !KICHAD::PRODUCTION_PACKAGE_WRITER::Write(
+                verificationSnapshot.Path(), staging, compiled.ir["production"],
+                plan["productionPlan"],
+                productionArtifacts, exportError ) )
+    {
+        cleanupStaging();
+        return failure( "production_package_failed", exportError );
+    }
+
+    for( JSON& artifact : productionArtifacts )
+        artifacts.push_back( std::move( artifact ) );
+
+    JSON designArtifacts;
+
+    if( !KICHAD::DESIGN_RELEASE_WRITER::Write(
+                verificationSnapshot.Path(), staging, designArtifacts, exportError ) )
+    {
+        cleanupStaging();
+        return failure( "design_release_failed", exportError );
+    }
+
+    for( JSON& artifact : designArtifacts )
+        artifacts.push_back( std::move( artifact ) );
+
     if( !inputsUnchanged() )
     {
         cleanupStaging();
@@ -475,21 +516,27 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
     const bool waiversPresent = checks["erc"].value( "waiversPresent", false )
                                 || checks["drc"].value( "waiversPresent", false );
     JSON manifest = {
-        { "schema", "kichad.fabrication-manifest.v1" },
-        { "manifestVersion", 1 },
+        { "schema", "kichad.fabrication-manifest.v3" },
+        { "manifestVersion", 3 },
         { "profile", plan["profile"] },
         { "kicadVersion", std::string( GetMajorMinorPatchVersion().ToUTF8() ) },
         { "releaseStatus", waiversPresent ? "waived" : "clean" },
         { "waiversAllowed", allowWaivers },
         { "source",
           { { "kds", { { "path", sourceRelativePath },
+                          { "packagePath", "design/" + sourceRelativePath },
                           { "sha256", compiled.sourceSha256 } } },
-            { "board", { { "path", boardRelativePath }, { "sha256", boardSha256 },
+            { "board", { { "path", boardRelativePath },
+                           { "packagePath", "design/" + boardRelativePath },
+                           { "sha256", boardSha256 },
                            { "formatVersion", "20260206" } } },
             { "schematic", { { "path", schematicRelativePath },
+                               { "packagePath", "design/" + schematicRelativePath },
                                { "sha256", schematicSha256 },
                                { "formatVersion", "20260306" } } } } },
         { "checks", checks },
+        { "runningReady", plan["runningReady"] },
+        { "productionPlan", plan["productionPlan"] },
         { "bomRows", bomRows },
         { "artifacts", artifacts }
     };
@@ -593,6 +640,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
                       { "profile", plan["profile"] },
                       { "targetDirectory", "fabrication" },
                       { "releaseStatus", waiversPresent ? "waived" : "clean" },
+                      { "runningReady", plan["runningReady"] },
                       { "checks", std::move( checks ) },
                       { "artifactCount", artifacts.size() },
                       { "artifactBytes", artifactBytes },

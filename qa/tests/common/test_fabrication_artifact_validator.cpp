@@ -208,6 +208,7 @@ BOOST_AUTO_TEST_CASE( AcceptsExactKiCadNetlistAndRejectsConnectivityDrift )
     const JSON plan = {
         { "fileStem", "controller" },
         { "expectedNetlistReferences", JSON::array( { "R1", "R2" } ) },
+        { "expectedNetlistNoConnects", JSON::array() },
         { "expectedNetlistNets",
           JSON::array(
                   { { { "name", "SIGNAL" },

@@ -1986,6 +1986,17 @@ void SCH_EDIT_FRAME::CommonSettingsChanged( int aFlags )
 {
     SCH_BASE_FRAME::CommonSettingsChanged( aFlags );
 
+    if( aFlags & ERC_SETTINGS_CHANGED )
+    {
+        Schematic().ErcSettings().LoadFromFile();
+
+        if( m_ercDialog )
+        {
+            m_ercDialog->Destroy();
+            m_ercDialog = nullptr;
+        }
+    }
+
     SCHEMATIC_SETTINGS& settings = Schematic().Settings();
 
     ShowAllIntersheetRefs( settings.m_IntersheetRefsShow );

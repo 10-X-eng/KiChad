@@ -64,6 +64,7 @@ fi
     libzstd-dev \
     ngspice \
     ninja-build \
+    poppler-utils \
     pkg-config \
     protobuf-compiler \
     python3-cairosvg \

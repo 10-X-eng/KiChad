@@ -144,8 +144,9 @@ bool KICHAD_IPC_CLIENT::FindOpenPcb( const wxString& aProjectPath, const wxStrin
 
         std::sort( socketPaths.begin(), socketPaths.end() );
 
-        for( const std::filesystem::path& socketPath : socketPaths )
+        for( size_t socketIndex = 0; socketIndex < socketPaths.size(); ++socketIndex )
         {
+            const std::filesystem::path& socketPath = socketPaths[socketIndex];
             const auto now = std::chrono::steady_clock::now();
 
             if( now >= deadline )
@@ -161,7 +162,18 @@ bool KICHAD_IPC_CLIENT::FindOpenPcb( const wxString& aProjectPath, const wxStrin
             auto remaining =
                     std::chrono::duration_cast<std::chrono::milliseconds>( deadline - now );
 
-            if( !callSocket( socketUrl, "", request, response, ignoredError, remaining ) )
+            // A dead socket may accept the transport connection and never reply.  Give every
+            // discovered KiCad instance a fair share of the remaining discovery budget so one
+            // stale endpoint cannot hide a live PCB Editor later in the directory.
+            const size_t remainingSockets = socketPaths.size() - socketIndex;
+            auto candidateTimeout = remaining / static_cast<int64_t>( remainingSockets );
+            candidateTimeout = std::min( candidateTimeout, std::chrono::milliseconds( 250 ) );
+
+            if( candidateTimeout <= std::chrono::milliseconds::zero() )
+                candidateTimeout = std::chrono::milliseconds( 1 );
+
+            if( !callSocket( socketUrl, "", request, response, ignoredError,
+                             candidateTimeout ) )
                 continue;
 
             kiapi::common::commands::GetOpenDocumentsResponse openDocuments;

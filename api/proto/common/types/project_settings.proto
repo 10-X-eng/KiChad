@@ -120,3 +120,19 @@ message SchematicFieldTemplates
 {
   repeated SchematicFieldTemplate fields = 1;
 }
+
+enum ProjectRuleSeverity
+{
+  PRS_UNKNOWN = 0;
+  PRS_ERROR = 1;
+  PRS_WARNING = 2;
+  PRS_IGNORE = 3;
+}
+
+// Exact project-file overrides for named KiCad ERC checks. Checks omitted from this map use the
+// pinned KiCad version's native default; release verification reports and gates any remaining
+// ignored checks.
+message SchematicRuleSeverities
+{
+  map<string, ProjectRuleSeverity> severities = 1;
+}

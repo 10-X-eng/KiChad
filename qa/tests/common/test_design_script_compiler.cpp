@@ -13,11 +13,15 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <set>
 
 #include <kicad/codex/design_script_compiler.h>
+#include <kicad/codex/design_script_context_builder.h>
+#include <qa_utils/wx_utils/unit_test_utils.h>
 
 
 namespace
@@ -196,6 +200,109 @@ BOOST_AUTO_TEST_CASE( CompilesEveryDesignFacetIntoDeterministicValidatedIr )
     BOOST_CHECK_EQUAL( first.plan["counts"]["checks"].get<size_t>(), 3 );
     BOOST_CHECK_EQUAL( first.plan["counts"]["outputs"].get<size_t>(), 3 );
     BOOST_CHECK( first.plan["transactional"].get<bool>() );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesExactFirmwareProgrammingPowerAndBringupHandoff )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project controller)
+  (sheet root (parent none) (file "controller.kicad_sch") (title "Main"))
+  (library symbol Device (table global))
+  (library footprint Package_SO (table global))
+  (component U1 (symbol "Device:R") (value "MCU")
+    (footprint "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm")
+    (unit 1 (sheet root) (at 10mm 10mm) (rotation 0deg) (mirror none)))
+  (component J1 (symbol "Device:R") (value "POWER")
+    (footprint "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm")
+    (unit 1 (sheet root) (at 20mm 10mm) (rotation 0deg) (mirror none)))
+  (component J3 (symbol "Device:R") (value "SWD")
+    (footprint "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm")
+    (unit 1 (sheet root) (at 30mm 10mm) (rotation 0deg) (mirror none)))
+  (component TP1 (symbol "Device:R") (value "3V3")
+    (footprint "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm")
+    (unit 1 (sheet root) (at 40mm 10mm) (rotation 0deg) (mirror none)))
+  (net +3V3 (pin U1 1 1) (pin TP1 1 1) (pin J1 1 1))
+  (net GND (pin U1 1 2) (pin J1 1 2) (pin J3 1 3))
+  (net SWDIO (pin U1 1 3) (pin J3 1 2))
+  (net SWCLK (pin U1 1 4) (pin J3 1 4))
+  (net RESET (pin U1 1 5) (pin J3 1 6))
+  (production
+    (assembly
+      (acceptance ipc-a-610-class-2) (process lead_free_reflow)
+      (solder_alloy "SAC305") (stencil top) (stencil_thickness_um 120)
+      (cleaning no_clean) (coating none)
+      (instruction mcu-orientation (scope component U1)
+        (text "Install U1 at the marked pin-one orientation.")))
+    (firmware controller
+      (data_base64 "OjAxMDAwMDAwMDBGRgo6MDAwMDAwMDFGRgo=") (format ihex)
+      (sha256 "c3f2ee75459ee15fe6bf5a6f5ad95766f1477ffe75fb9d867f540e1f36d39b3f")
+      (bytes 26) (version "1.0.0") (target U1)
+      (device_code
+        (toolchain cmake) (toolchain_version "3.28.3")
+        (target "fixture-mcu") (entry "src/main.c")
+        (file "src/main.c" (language c)
+          (sha256 "86004d65c4f387c95467c6cee92bc1f1f8cb04d6650be09fbd1e359834a56766")
+          (data_base64 "aW50IG1haW4odm9pZCl7cmV0dXJuIDA7fQo="))))
+    (program controller (firmware controller) (target U1) (interface swd)
+      (connector J3) (device "STM32G0B1CBT6") (voltage 3.3) (speed_khz 1000)
+      (erase chip) (reset run) (verify true)
+      (signal swdio 2) (signal swclk 4) (signal reset 6) (signal ground 3))
+    (power main (connector J1) (positive_pin 1) (return_pin 2)
+      (voltage 12) (current_limit 0.25) (settle_ms 250))
+    (test input-not-shorted (stage unpowered) (method resistance) (instrument dmm)
+      (target net +3V3) (range 1000 1000000 ohm)
+      (after_ms 0) (timeout_ms 5000) (required true))
+    (test rail-3v3 (stage power_on) (method voltage) (instrument dmm)
+      (target net +3V3) (range 3.20 3.40 V) (testpoint TP1) (power main)
+      (after_ms 250) (timeout_ms 5000) (required true))
+    (test firmware-response (stage functional) (method functional) (instrument fixture)
+      (target component U1) (expected pass) (power main) (program controller)
+      (after_ms 0) (timeout_ms 5000) (required true)
+      (procedure "Require the deterministic firmware response."))))
+)KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["firmware"][0]["id"], "controller" );
+    BOOST_CHECK_EQUAL(
+            compiled.ir["production"]["firmware"][0]["deviceCode"]["totalBytes"], 26 );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["assembly"]["stencilThicknessUm"], 120 );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["programming"][0]["interface"], "swd" );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["power"][0]["currentLimitA"], 0.25 );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["tests"][1]["range"]["unit"], "V" );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["firmwareImages"], 1 );
+    BOOST_CHECK( std::find( compiled.plan["passes"].begin(), compiled.plan["passes"].end(),
+                            "production_handoff" ) != compiled.plan["passes"].end() );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesCompleteStepperControllerReleaseReference )
+{
+    const std::filesystem::path path =
+            std::filesystem::path( KI_TEST::GetTestDataRootDir() ) / "kichad"
+            / "reference_stepper_controller" / "reference_stepper_controller.kicad_kds";
+    std::ifstream input( path, std::ios::binary );
+    BOOST_REQUIRE_MESSAGE( input, "missing production reference KDS: " << path );
+    const std::string source{ std::istreambuf_iterator<char>( input ),
+                              std::istreambuf_iterator<char>() };
+    BOOST_REQUIRE( !input.bad() );
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump( 2 ) );
+    BOOST_CHECK_EQUAL( compiled.ir["project"]["name"], "reference_stepper_controller" );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["firmware"][0]["bytes"], 9640 );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["tests"][2]["power"].size(), 2 );
+    BOOST_CHECK_EQUAL( compiled.ir["production"]["tests"][4]["stage"], "functional" );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["components"], 5 );
+    const nlohmann::json context = KICHAD::DESIGN_SCRIPT_CONTEXT_BUILDER::Build(
+            compiled.ir, compiled.plan, "manufacturing", "production", 0, 10 );
+    const std::string contextText = context.dump();
+    BOOST_CHECK( contextText.find( "OjEwMDAwMDAw" ) == std::string::npos );
+    BOOST_CHECK( contextText.find( "dataBase64Omitted" ) != std::string::npos );
 }
 
 

@@ -154,6 +154,7 @@ public:
 #define HOTKEYS_CHANGED  0x0004
 #define FIELD_TEMPLATES_CHANGED 0x0008
 #define NETCLASSES_CHANGED 0x0010
+#define ERC_SETTINGS_CHANGED 0x0020
 
     /**
      * Notification event that some of the common (suite-wide) settings have changed.

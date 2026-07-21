@@ -47,9 +47,12 @@ public:
     using NATIVE_FABRICATION_RUNNER =
             std::function<bool( const wxFileName&, const wxFileName&, const JSON&,
                                 const wxFileName&, std::string& )>;
+    using NATIVE_PREVIEW_RUNNER =
+            std::function<bool( const std::string&, const wxFileName&,
+                                const wxFileName&, int, std::string& )>;
     // Bump whenever the model-visible tool or capability contract changes so a project cannot
     // resume a persistent thread created with a broader or incompatible surface.
-    static constexpr int SCHEMA_VERSION = 10;
+    static constexpr int SCHEMA_VERSION = 11;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
@@ -61,7 +64,8 @@ public:
                                   std::function<bool( const wxFileName&, std::string& )>
                                           aSymbolLibraryValidator = {},
                                   std::function<bool( const wxFileName&, std::string& )>
-                                          aFootprintLibraryValidator = {} );
+                                          aFootprintLibraryValidator = {},
+                                  NATIVE_PREVIEW_RUNNER aNativePreviewRunner = {} );
 
     JSON Specs() const;
     static bool RequiresFinalConfirmation( const std::string& aTool,
@@ -106,6 +110,7 @@ private:
     NATIVE_FABRICATION_RUNNER m_nativeFabricationRunner;
     std::function<bool( const wxFileName&, std::string& )> m_symbolLibraryValidator;
     std::function<bool( const wxFileName&, std::string& )> m_footprintLibraryValidator;
+    NATIVE_PREVIEW_RUNNER m_nativePreviewRunner;
 };
 
 #endif // KICHAD_CODEX_TOOL_REGISTRY_H

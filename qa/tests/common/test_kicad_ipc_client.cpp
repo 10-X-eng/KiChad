@@ -161,6 +161,70 @@ BOOST_AUTO_TEST_CASE( DiscoveryTimeoutCoversAllUnresponsiveSockets )
 }
 
 
+BOOST_AUTO_TEST_CASE( StaleSocketDoesNotHideLiveEditor )
+{
+    wxFileName socketDirectory = wxFileName::DirName( wxFileName::GetTempDir() );
+    socketDirectory.AppendDir( wxS( "kichad-ipc-stale-test-" ) + KIID().AsString() );
+    BOOST_REQUIRE( wxFileName::Mkdir( socketDirectory.GetFullPath(), wxS_DIR_DEFAULT,
+                                     wxPATH_MKDIR_FULL ) );
+
+    wxFileName projectDirectory( socketDirectory );
+    projectDirectory.AppendDir( wxS( "project" ) );
+    BOOST_REQUIRE( wxFileName::Mkdir( projectDirectory.GetFullPath(), wxS_DIR_DEFAULT,
+                                     wxPATH_MKDIR_FULL ) );
+
+    wxFileName stalePath( socketDirectory.GetFullPath(), wxS( "api-0.sock" ) );
+    KINNG_REQUEST_SERVER staleServer( "ipc://" + stalePath.GetFullPath().ToStdString() );
+    staleServer.SetCallback( []( std::string* ) {} );
+
+    wxFileName livePath( socketDirectory.GetFullPath(), wxS( "api-1.sock" ) );
+    KINNG_REQUEST_SERVER liveServer( "ipc://" + livePath.GetFullPath().ToStdString() );
+    const std::string token = "qa-live-after-stale";
+    liveServer.SetCallback(
+            [&]( std::string* aSerializedRequest )
+            {
+                kiapi::common::ApiRequest request;
+                kiapi::common::ApiResponse response;
+                response.mutable_header()->set_kicad_token( token );
+
+                if( request.ParseFromString( *aSerializedRequest )
+                    && request.message().Is<kiapi::common::commands::GetOpenDocuments>() )
+                {
+                    kiapi::common::commands::GetOpenDocumentsResponse documents;
+                    auto* document = documents.add_documents();
+                    document->set_type( kiapi::common::types::DOCTYPE_PCB );
+                    document->set_board_filename( "design.kicad_pcb" );
+                    document->mutable_project()->set_name( "design" );
+                    document->mutable_project()->set_path(
+                            projectDirectory.GetFullPath().ToStdString() );
+                    response.mutable_status()->set_status( kiapi::common::AS_OK );
+                    response.mutable_message()->PackFrom( documents );
+                }
+                else
+                {
+                    response.mutable_status()->set_status( kiapi::common::AS_BAD_REQUEST );
+                }
+
+                liveServer.Reply( response.SerializeAsString() );
+            } );
+
+    KICHAD_IPC_CLIENT client( "org.kichad.qa", socketDirectory.GetFullPath(),
+                              std::chrono::milliseconds( 600 ) );
+    KICHAD_IPC_TARGET target;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE( client.FindOpenPcb( projectDirectory.GetFullPath(),
+                                               wxS( "design.kicad_pcb" ), target, error ),
+                           error );
+    BOOST_CHECK_EQUAL( target.kicadToken, token );
+    BOOST_CHECK_EQUAL( target.socketUrl,
+                       "ipc://" + livePath.GetFullPath().ToStdString() );
+
+    liveServer.Stop();
+    staleServer.Stop();
+    wxFileName::Rmdir( socketDirectory.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+}
+
+
 BOOST_AUTO_TEST_CASE( LiveCreateUpdateDeleteWhenRequested )
 {
     wxString projectPath;

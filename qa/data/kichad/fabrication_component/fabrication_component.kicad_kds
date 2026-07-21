@@ -18,8 +18,8 @@
     (value "10k")
     (footprint "Resistor_SMD:R_0603_1608Metric")
     (unit 1 (sheet root) (at 50.8mm 40.64mm) (rotation 0deg) (mirror none)))
-  (net TEST_A (pin R1 1 1) (pin R2 1 1))
-  (net TEST_B (pin R1 1 2) (pin R2 1 2))
+  (net TEST_A (presentation wired) (pin R1 1 1) (pin R2 1 1))
+  (net TEST_B (presentation wired) (pin R1 1 2) (pin R2 1 2))
   (source R1
     (manufacturer "KiChad QA Components")
     (mpn "KQA-0603-10K")

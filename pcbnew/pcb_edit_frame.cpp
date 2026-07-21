@@ -558,6 +558,9 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                     if( aChange & APIPSC_FIELD_TEMPLATES )
                         flags |= FIELD_TEMPLATES_CHANGED;
 
+                    if( aChange & APIPSC_ERC_SEVERITIES )
+                        flags |= ERC_SETTINGS_CHANGED;
+
                     CommonSettingsChanged( flags );
                 } );
         Pgm().GetApiServer().RegisterHandler( m_apiHandlerCommon.get() );

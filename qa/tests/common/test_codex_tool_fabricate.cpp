@@ -605,6 +605,10 @@ std::string productionKds( const std::string& aVerifiedOn )
     (symbol "Amplifier_Operational:LM358")
     (value "LM358")
     (footprint "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"))
+  (net PROGRAM_TX (presentation wired) (pin U1 1 1) (pin U1 1 5))
+  (net PROGRAM_RX (presentation wired) (pin U1 1 2) (pin U1 1 3))
+  (net GND (presentation labels) (pin U1 1 4) (pin U1 1 7))
+  (net +3V3 (presentation labels) (pin U1 1 8) (pin U1 1 6))
   (source U1
     (manufacturer "Texas Instruments")
     (mpn "LM358DR")
@@ -618,6 +622,47 @@ std::string productionKds( const std::string& aVerifiedOn )
            + aVerifiedOn
            + R"KDS()
     (quantity 1))
+  (production
+    (assembly
+      (acceptance ipc-a-610-class-2) (process lead_free_reflow)
+      (solder_alloy "SAC305") (stencil top) (stencil_thickness_um 120)
+      (cleaning no_clean) (coating none)
+      (instruction fixture-note (scope component U1)
+        (text "Install U1 with the fixture orientation mark aligned.")))
+    (firmware controller
+      (data_base64 "OjAxMDAwMDAwMDBGRgo6MDAwMDAwMDFGRgo=")
+      (format ihex)
+      (sha256 "c3f2ee75459ee15fe6bf5a6f5ad95766f1477ffe75fb9d867f540e1f36d39b3f")
+      (bytes 26)
+      (version "fixture-1")
+      (target U1)
+      (device_code
+        (toolchain cmake) (toolchain_version "3.28.3")
+        (target "fixture-mcu") (entry "src/main.c")
+        (file "src/main.c" (language c)
+          (sha256 "86004d65c4f387c95467c6cee92bc1f1f8cb04d6650be09fbd1e359834a56766")
+          (data_base64 "aW50IG1haW4odm9pZCl7cmV0dXJuIDA7fQo="))))
+    (program controller
+      (firmware controller) (target U1) (interface uart_bootloader)
+      (connector U1) (device "LM358-fixture") (voltage 3.3) (speed_khz 115)
+      (erase required_regions) (reset run) (verify true)
+      (signal transmit 1) (signal receive 2) (signal ground 4))
+    (power main
+      (connector U1) (positive_pin 8) (return_pin 4)
+      (voltage 3.3) (current_limit 0.05) (settle_ms 100))
+    (test input-not-shorted
+      (stage unpowered) (method resistance) (instrument dmm)
+      (target component U1) (range 1000 1000000 ohm)
+      (after_ms 0) (timeout_ms 5000) (required true))
+    (test power-rail
+      (stage power_on) (method voltage) (instrument dmm)
+      (target pin U1 8) (range 3.2 3.4 V) (power main)
+      (after_ms 100) (timeout_ms 5000) (required true))
+    (test fixture-response
+      (stage functional) (method functional) (instrument fixture)
+      (target component U1) (expected pass) (power main) (program controller)
+      (after_ms 100) (timeout_ms 5000) (required true)
+      (procedure "Require the deterministic fixture response.")))
   (board
     (stackup
       (finish "ENIG")
@@ -842,6 +887,17 @@ bool writeNativeArtifacts( const JSON& aPlan, const wxFileName& aStaging,
                 }
 
                 source += ")";
+            }
+
+            for( const JSON& endpoint : aPlan.at( "expectedNetlistNoConnects" ) )
+            {
+                const std::string reference = endpoint.at( "reference" ).get<std::string>();
+                const std::string pin = endpoint.at( "pin" ).get<std::string>();
+                source += " (net (code \"" + std::to_string( code++ )
+                          + "\") (name \"unconnected-(" + reference + "-Pad" + pin
+                          + ")\") (node (ref " + endpoint.at( "reference" ).dump()
+                          + ") (pin " + endpoint.at( "pin" ).dump()
+                          + ") (pintype \"passive+no_connect\")))";
             }
 
             source += "))\n";
@@ -1335,8 +1391,9 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     BOOST_REQUIRE_MESSAGE( planned.at( "success" ).get<bool>(), planned.dump() );
     JSON data = envelope( planned )["data"];
     BOOST_CHECK( data["productionReady"].get<bool>() );
+    BOOST_CHECK( data["runningReady"].get<bool>() );
     BOOST_CHECK_EQUAL( data["profile"].get<std::string>(),
-                       "kichad-production-10.0.4-v12" );
+                       "kichad-production-10.0.4-v16" );
     BOOST_CHECK_EQUAL( data["nativeInputFormats"]["board"].get<std::string>(),
                        "20260206" );
     BOOST_REQUIRE_EQUAL( data["jobs"].size(), 30 );
@@ -1348,7 +1405,7 @@ BOOST_AUTO_TEST_CASE( PlansCompleteProductionIntentAndRejectsLegacyNativeInputs 
     BOOST_CHECK_EQUAL( data["expectedPlacementReferences"][0].get<std::string>(), "U1" );
     BOOST_CHECK_EQUAL( data["expectedNetlistReferences"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedNetlistReferences"][0].get<std::string>(), "U1" );
-    BOOST_CHECK( data["expectedNetlistNets"].empty() );
+    BOOST_CHECK_EQUAL( data["expectedNetlistNets"].size(), 4 );
     BOOST_REQUIRE_EQUAL( data["expectedSchematicBomRows"].size(), 1 );
     BOOST_CHECK_EQUAL( data["expectedSchematicBomRows"][0]["reference"], "U1" );
     BOOST_CHECK_EQUAL( data["expectedSchematicBomRows"][0]["value"], "LM358" );
@@ -1511,9 +1568,26 @@ BOOST_AUTO_TEST_CASE( GatesValidatesAndAtomicallyInstallsConfirmedFabrication )
     BOOST_REQUIRE( manifestPath.FileExists() );
     JSON manifest = JSON::parse( readText( manifestPath ) );
     BOOST_CHECK_EQUAL( manifest["schema"].get<std::string>(),
-                       "kichad.fabrication-manifest.v1" );
+                       "kichad.fabrication-manifest.v3" );
     BOOST_CHECK_EQUAL( manifest["source"]["board"]["formatVersion"].get<std::string>(),
                        "20260206" );
+    BOOST_CHECK_EQUAL( manifest["source"]["kds"]["packagePath"].get<std::string>(),
+                       "design/design.kicad_kds" );
+    BOOST_CHECK( manifest["runningReady"].get<bool>() );
+    BOOST_REQUIRE( wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                 + wxS( "fabrication/design/design.kicad_kds" ) ) );
+    BOOST_REQUIRE( wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                 + wxS( "fabrication/design/design.kicad_pcb" ) ) );
+    BOOST_REQUIRE( wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                 + wxS( "fabrication/design/design.kicad_sch" ) ) );
+    BOOST_CHECK( !wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                + wxS( "fabrication/design/design.kicad_prl" ) ) );
+    BOOST_REQUIRE( wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                 + wxS( "fabrication/production/firmware/controller.hex" ) ) );
+    BOOST_REQUIRE( wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                 + wxS( "fabrication/production/source/controller/src/main.c" ) ) );
+    BOOST_REQUIRE( wxFileExists( fixture.Root() + wxFILE_SEP_PATH
+                                 + wxS( "fabrication/production/production-plan.json" ) ) );
     BOOST_CHECK_EQUAL( manifest["bomRows"].get<int>(), 1 );
     BOOST_CHECK( checksUsedSnapshot );
     BOOST_CHECK( checksSawProjectLibraries );

@@ -42,6 +42,7 @@ work_dir="$(mktemp -d --tmpdir kichad-kds-live-XXXXXX)"
 project_dir="${work_dir}/project"
 config_dir="${work_dir}/config"
 editor_log="${work_dir}/pcbnew.log"
+attempt_log="${work_dir}/qa-common.log"
 mkdir -p -- "$project_dir" "$config_dir"
 cp -- "${fixture_dir}/live_apply.kicad_pro" "$project_dir/"
 cp -- "${fixture_dir}/live_apply.kicad_pcb" "$project_dir/"
@@ -85,7 +86,7 @@ for attempt in $(seq 1 30); do
 
     if KICAD_CONFIG_HOME="$config_dir" KICAD_RUN_FROM_BUILD_DIR=1 "$test_binary" \
         --run_test=CodexToolRegistry/AppliesReusableDesignAgainstLivePcbEditorWhenRequested \
-        --log_level=message; then
+        --log_level=message 2>&1 | tee "$attempt_log"; then
         if ! KICAD_RUN_FROM_BUILD_DIR=1 "$kicad_cli_binary" sch export netlist \
                 --output "${project_dir}/live_apply.net" \
                 "${project_dir}/live_apply.kicad_sch"; then
@@ -220,6 +221,15 @@ for attempt in $(seq 1 30); do
             "${project_dir}/live_apply.kicad_sch"
         echo "KiChad live KDS apply smoke test passed."
         exit 0
+    fi
+
+    # The editor can briefly exist before its document is discoverable over IPC.  Only that
+    # startup race is retryable.  Compiler, validator, and transaction failures are deterministic
+    # and must be reported immediately instead of being mislabeled as an editor timeout.
+    if ! grep -Eq '"code"[[:space:]]*:[[:space:]]*"(pcb_not_open|pcb_editor_unavailable|dependency_unavailable)"' \
+            "$attempt_log"; then
+        echo "The live KDS apply test failed after the PCB Editor became available." >&2
+        exit 1
     fi
 
     sleep 1

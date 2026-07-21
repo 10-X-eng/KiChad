@@ -165,6 +165,14 @@ enum BoardCopperEdgeClearanceMode
   BCECM_LEGACY = 2;
 }
 
+enum BoardRuleSeverity
+{
+  BRS_UNKNOWN = 0;
+  BRS_ERROR = 1;
+  BRS_WARNING = 2;
+  BRS_IGNORE = 3;
+}
+
 // The complete global constraint set from Board Setup > Design Rules > Constraints.
 // This does not include net classes or custom .kicad_dru rules.
 message BoardDesignRules
@@ -190,4 +198,8 @@ message BoardDesignRules
   optional bool use_height_for_length_calculations = 18;
   kiapi.common.types.Distance maximum_error = 19;
   optional bool allow_fillets_outside_zone_outline = 20;
+  // When present, initializes every registered KiCad DRC check before applying overrides.
+  // Query responses omit this field and return a complete rule_severities map instead.
+  optional BoardRuleSeverity default_rule_severity = 21;
+  map<string, BoardRuleSeverity> rule_severities = 22;
 }

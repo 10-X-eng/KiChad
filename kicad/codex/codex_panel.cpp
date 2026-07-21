@@ -92,12 +92,29 @@ const char* agentInstructions()
            "Never guess "
            "component facts or treat an unverified component as production-ready. "
            "Treat the versioned project.kicad_kds KiChad Design Script sidecar as the only "
-           "representation of design intent: read and edit the exact KDS source, describe the "
-           "language when needed, compile before saving, and use native backends to produce KiCad "
-           "artifacts. Before a final release, call fabricate plan with the exact compiled KDS "
-           "digest and request fabricate export only when its production plan is ready. Never set "
+           "representation of design intent: use design.context for bounded semantic inventory, "
+           "then read and edit the exact KDS source, describe the language when needed, compile "
+           "before saving, and use native backends to produce KiCad "
+           "artifacts. A successful design.apply means only that the exact revision was committed "
+           "and saved; it is not evidence that the design is correct. After every apply, use "
+           "explicit net presentation intent: use (presentation wired) for same-sheet circuits "
+           "that a reviewer must trace and (presentation labels) only for deliberate global, "
+           "power, or cross-sheet connectivity. Wired nets lower to deterministic orthogonal "
+           "paths anchored at resolved native pin connection points; do not substitute detached "
+           "decorative wire primitives for semantic connectivity. After every apply, use "
+           "inspect render on the schematic and both useful PCB views, review the attached images, "
+           "then run ERC and DRC against the saved files. Repair KDS geometry, labeling, placement, "
+           "routing, and connectivity until the visual review and declared checks are clean. "
+           "When the user asks for a running product rather than fabrication files alone, author "
+           "the KDS production contract: assembly process/acceptance intent, self-contained device code when source is available, exact hash-bound firmware (embedded or confined), typed "
+           "programming connector/signals and mandatory verification, current-limited power, and "
+           "ordered unpowered, power-on, and functional acceptance tests. "
+           "Before a final release, call fabricate plan with the exact compiled KDS "
+           "digest. Treat productionReady as manufacturing readiness and require runningReady for "
+           "a programmed/testable product; request fabricate export only at the appropriate gate. Never set "
            "allowWaivers unless the user explicitly approved releasing ignored checks or "
-           "exclusions. Never create or depend on a separate context projection. Never use shell, "
+           "exclusions. design.context is compiler introspection, never a second authored file; "
+           "do not create or depend on another design representation. Never use shell, "
            "arbitrary code execution, GUI automation, MCP, or direct ad-hoc file rewriting.";
 }
 
@@ -1562,7 +1579,9 @@ void CODEX_PANEL::onAppServerMessage( const JSON& aMessage )
             wxString confirmationMessage =
                     _( "Codex is requesting a final fabrication export. KiChad will rerun ERC, "
                        "DRC, and sourcing gates, then atomically replace the project's "
-                       "fabrication output directory only if every requested artifact validates.\n\n" );
+                       "fabrication output directory only if every requested artifact validates. "
+                       "Any KDS-declared firmware and programming/bring-up plan will be hash-checked "
+                       "and included in that release.\n\n" );
 
             if( arguments.is_object() && arguments.contains( "allowWaivers" )
                 && arguments["allowWaivers"].is_boolean()
@@ -1749,7 +1768,14 @@ void CODEX_PANEL::onToolCompleted( wxThreadEvent& aEvent )
             return;
         }
 
-        m_client.SendResponse( requestId, result );
+        if( !m_client.SendResponse( requestId, result ) )
+        {
+            appendTranscript(
+                    _( "[tool result could not be delivered: Codex transport write failed]\n" ) );
+            setStatus( _( "Tool completed, but Codex transport failed. Restart the conversation "
+                          "service before continuing." ) );
+            return;
+        }
 
         if( result.value( "success", false ) )
         {

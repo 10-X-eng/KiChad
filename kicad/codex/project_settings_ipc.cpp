@@ -68,6 +68,24 @@ bool sameFieldTemplates( const kiapi::common::project::SchematicFieldTemplates& 
     return true;
 }
 
+
+bool sameRuleSeverities( const kiapi::common::project::SchematicRuleSeverities& aLeft,
+                         const kiapi::common::project::SchematicRuleSeverities& aRight )
+{
+    if( aLeft.severities_size() != aRight.severities_size() )
+        return false;
+
+    for( const auto& [key, severity] : aLeft.severities() )
+    {
+        auto found = aRight.severities().find( key );
+
+        if( found == aRight.severities().end() || found->second != severity )
+            return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 
@@ -166,6 +184,53 @@ bool KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicFieldTemplates(
     {
         if( aError.empty() )
             aError = "KiCad field-template readback did not match the requested replacement";
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool KICHAD::PROJECT_SETTINGS_IPC::QuerySchematicRuleSeverities(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        kiapi::common::project::SchematicRuleSeverities& aSeverities,
+        std::string& aError )
+{
+    kiapi::common::commands::GetSchematicRuleSeverities request;
+    request.mutable_document()->CopyFrom( projectDocument( aTarget ) );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError )
+        || !response.message().UnpackTo( &aSeverities ) )
+    {
+        if( aError.empty() )
+            aError = "KiCad returned invalid schematic rule severities";
+
+        return false;
+    }
+
+    return true;
+}
+
+
+bool KICHAD::PROJECT_SETTINGS_IPC::ReplaceSchematicRuleSeverities(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        const kiapi::common::project::SchematicRuleSeverities& aSeverities,
+        std::string& aError )
+{
+    kiapi::common::commands::SetSchematicRuleSeverities request;
+    request.mutable_document()->CopyFrom( projectDocument( aTarget ) );
+    request.mutable_severities()->CopyFrom( aSeverities );
+    kiapi::common::ApiResponse response;
+    kiapi::common::project::SchematicRuleSeverities active;
+
+    if( !aClient.Call( aTarget, request, response, aError )
+        || !response.message().UnpackTo( &active )
+        || !sameRuleSeverities( active, aSeverities ) )
+    {
+        if( aError.empty() )
+            aError = "KiCad ERC-severity readback did not match the requested replacement";
 
         return false;
     }

@@ -36,7 +36,8 @@ enum API_PROJECT_SETTINGS_CHANGE : int
 {
     APIPSC_NETCLASSES = 0x01,
     APIPSC_TEXT_VARIABLES = 0x02,
-    APIPSC_FIELD_TEMPLATES = 0x04
+    APIPSC_FIELD_TEMPLATES = 0x04,
+    APIPSC_ERC_SEVERITIES = 0x08
 };
 
 class API_HANDLER_COMMON : public API_HANDLER
@@ -94,6 +95,12 @@ private:
 
     HANDLER_RESULT<project::SchematicFieldTemplates> handleSetSchematicFieldTemplates(
         const HANDLER_CONTEXT<commands::SetSchematicFieldTemplates>& aCtx );
+
+    HANDLER_RESULT<project::SchematicRuleSeverities> handleGetSchematicRuleSeverities(
+        const HANDLER_CONTEXT<commands::GetSchematicRuleSeverities>& aCtx );
+
+    HANDLER_RESULT<project::SchematicRuleSeverities> handleSetSchematicRuleSeverities(
+        const HANDLER_CONTEXT<commands::SetSchematicRuleSeverities>& aCtx );
 };
 
 #endif //KICAD_API_HANDLER_COMMON_H

@@ -447,6 +447,8 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
     const std::string unitKey = std::to_string( unit );
     const JSON& pins = aResolved.at( "units" ).at( unitKey );
     const JSON& nativeProperties = aResolved.at( "properties" );
+    const JSON nativePropertyLayouts =
+            aResolved.value( "propertyLayouts", JSON::object() );
     const JSON& nativeFlags = aResolved.at( "flags" );
     const std::string footprint =
             aComponent.at( "footprint" ).is_null()
@@ -465,6 +467,27 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
 
         if( layout != fieldLayouts.end() )
             return layout->second;
+
+        auto nativeLayout = nativePropertyLayouts.find( aName );
+
+        if( nativeLayout != nativePropertyLayouts.end()
+            && nativeLayout->contains( "position" ) )
+        {
+            const JSON& relativePosition = nativeLayout->at( "position" );
+            const auto [ relativeX, relativeY ] = transformPoint(
+                    relativePosition.at( "xNm" ).get<int64_t>(),
+                    relativePosition.at( "yNm" ).get<int64_t>(), rotation, mirror );
+            JSON inherited = defaultComponentFieldLayout(
+                    aName, x + relativeX, y + relativeY, nativeRotation,
+                    !nativeLayout->value( "visible", true ), "center" );
+            inherited["rotationDegrees"] =
+                    std::fmod( nativeLayout->value( "rotationDegrees", 0.0 )
+                                       + nativeRotation,
+                               360.0 );
+            inherited["showName"] = nativeLayout->value( "showName", false );
+            inherited["autoplace"] = nativeLayout->value( "autoplace", true );
+            return inherited;
+        }
 
         return defaultComponentFieldLayout(
                 aName, aX, aY, aAngle, aHidden, aHorizontal );
@@ -574,14 +597,16 @@ std::string componentExpression( const JSON& aComponent, const JSON& aUnit,
 
 
 std::string globalLabelExpression( const std::string& aName, int64_t aX, int64_t aY,
-                                   const std::string& aUuid )
+                                   int aRotation, const std::string& aUuid )
 {
+    const std::string justification = aRotation == 0 || aRotation == 90 ? "left" : "right";
     std::ostringstream output;
     output << "(global_label " << quoted( aName ) << "\n"
            << "    (shape passive)\n"
-           << "    (at " << millimetres( aX ) << ' ' << millimetres( aY ) << " 0)\n"
+           << "    (at " << millimetres( aX ) << ' ' << millimetres( aY ) << ' '
+           << aRotation << ")\n"
            << "    (fields_autoplaced yes)\n"
-           << effects( "left" )
+           << effects( justification )
            << "    (uuid " << quoted( aUuid ) << ")\n"
            << "  )";
     return output.str();
@@ -2291,6 +2316,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
     result.counts = { { "files", 0 }, { "sheets", 0 }, { "pins", 0 },
                       { "components", 0 }, { "netEndpoints", 0 },
                       { "noConnects", 0 }, { "drawings", 0 }, { "busAliases", 0 },
+                      { "generatedWires", 0 }, { "generatedJunctions", 0 },
                       { "groups", 0 },
                       { "librarySymbols", 0 },
                       { "managedItems", 0 } };
@@ -2513,6 +2539,7 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
         std::string sheet;
         int64_t     x;
         int64_t     y;
+        int         labelRotation;
     };
 
     std::map<std::string, std::vector<JSON>> placementsBySheet;
@@ -2607,7 +2634,9 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                     if( !pin.is_object() || !pin.contains( "number" )
                         || !pin["number"].is_string() || !pin.contains( "xNm" )
                         || !pin["xNm"].is_number_integer() || !pin.contains( "yNm" )
-                        || !pin["yNm"].is_number_integer() )
+                        || !pin["yNm"].is_number_integer()
+                        || !pin.contains( "rotationDegrees" )
+                        || !pin["rotationDegrees"].is_number_integer() )
                     {
                         diagnostic( result, "invalid_resolved_symbol_pin",
                                     "resolved symbol " + libraryId + " has malformed pin metadata" );
@@ -2617,10 +2646,19 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                     const auto [ pinX, pinY ] = transformPoint(
                             pin["xNm"].get<int64_t>(), pin["yNm"].get<int64_t>(),
                             rotation, mirror );
+                    const int pinRotation = pin["rotationDegrees"].get<int>();
+                    const int directionX = pinRotation == 0 ? 1 : pinRotation == 180 ? -1 : 0;
+                    const int directionY = pinRotation == 90 ? 1 : pinRotation == 270 ? -1 : 0;
+                    const auto [ transformedDirectionX, transformedDirectionY ] =
+                            transformPoint( directionX, directionY, rotation, mirror );
+                    const int outwardX = -static_cast<int>( transformedDirectionX );
+                    const int outwardY = -static_cast<int>( transformedDirectionY );
+                    const int labelRotation = outwardX > 0 ? 0 : outwardX < 0 ? 180
+                                                       : outwardY > 0 ? 90 : 270;
                     const std::string endpoint = reference + "/" + unitKey + "/"
                                                  + pin["number"].get<std::string>();
                     endpointPositions[endpoint].push_back(
-                            { sheetId, originX + pinX, originY + pinY } );
+                            { sheetId, originX + pinX, originY + pinY, labelRotation } );
                 }
             }
         }
@@ -2736,10 +2774,43 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
                                           + std::to_string( index );
             const std::string kind = aNoConnect ? "no_connect" : "global_label";
             const std::string uuid = stableUuid( project, "schematic_" + kind, logicalId );
+            constexpr int64_t LABEL_STUB_LENGTH_NM = 5'080'000;
+            const int64_t labelX = point.x
+                                   + ( point.labelRotation == 0
+                                               ? LABEL_STUB_LENGTH_NM
+                                               : point.labelRotation == 180
+                                                         ? -LABEL_STUB_LENGTH_NM
+                                                         : 0 );
+            const int64_t labelY = point.y
+                                   + ( point.labelRotation == 90
+                                               ? LABEL_STUB_LENGTH_NM
+                                               : point.labelRotation == 270
+                                                         ? -LABEL_STUB_LENGTH_NM
+                                                         : 0 );
             const std::string source = aNoConnect
                                                ? noConnectExpression( point.x, point.y, uuid )
-                                               : globalLabelExpression( aNetName, point.x, point.y,
+                                               : globalLabelExpression( aNetName, labelX, labelY,
+                                                                        point.labelRotation,
                                                                         uuid );
+
+            if( !aNoConnect )
+            {
+                const std::string stubLogicalId = "net_stub/" + aNetName + "/" + endpoint
+                                                  + "/" + std::to_string( index );
+                const std::string stubUuid =
+                        stableUuid( project, "schematic_wire", stubLogicalId );
+                const JSON stub = {
+                    { "kind", "wire" },
+                    { "from", { { "xNm", point.x }, { "yNm", point.y } } },
+                    { "to", { { "xNm", labelX }, { "yNm", labelY } } },
+                    { "stroke", { { "widthNm", 0 }, { "lineStyle", "default" } } }
+                };
+                connectivityBySheet[point.sheet].push_back(
+                        { { "kind", "wire" }, { "logicalId", stubLogicalId },
+                          { "uuid", stubUuid },
+                          { "source", schematicLineExpression( stub, stubUuid ) } } );
+            }
+
             connectivityBySheet[point.sheet].push_back(
                     { { "kind", kind }, { "logicalId", logicalId }, { "uuid", uuid },
                       { "source", source } } );
@@ -2752,12 +2823,493 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
         }
     };
 
+    struct AXIS_SEGMENT
+    {
+        int64_t x1;
+        int64_t y1;
+        int64_t x2;
+        int64_t y2;
+    };
+
+    std::map<std::string, std::set<int64_t>> reservedVerticalLanes;
+    std::map<std::string, std::set<int64_t>> reservedHorizontalLanes;
+
+    const auto addWiredNet = [&]( const JSON& aNet )
+    {
+        const std::string netName = aNet["name"].get<std::string>();
+        std::vector<PIN_POINT> points;
+        std::string sheet;
+
+        for( const JSON& endpointJson : aNet["pins"] )
+        {
+            const std::string endpoint = endpointJson["component"].get<std::string>() + "/"
+                                         + std::to_string( endpointJson["unit"].get<int>() )
+                                         + "/" + endpointJson["number"].get<std::string>();
+            auto positions = endpointPositions.find( endpoint );
+
+            if( positions == endpointPositions.end() || positions->second.empty() )
+            {
+                diagnostic( result, "unresolved_schematic_pin",
+                            "schematic endpoint " + endpoint
+                                    + " does not resolve to a native symbol pin" );
+                continue;
+            }
+
+            for( const PIN_POINT& point : positions->second )
+            {
+                if( sheet.empty() )
+                    sheet = point.sheet;
+                else if( sheet != point.sheet )
+                {
+                    diagnostic( result, "wired_net_spans_sheets",
+                                "net " + netName
+                                        + " requests wired presentation across multiple sheets; "
+                                          "use labels or split the circuit into local wired nets "
+                                          "through hierarchical pins" );
+                    return;
+                }
+
+                points.push_back( point );
+            }
+        }
+
+        if( points.size() < 2 || sheet.empty() )
+            return;
+
+        int64_t minX = points.front().x;
+        int64_t maxX = points.front().x;
+        int64_t minY = points.front().y;
+        int64_t maxY = points.front().y;
+        size_t horizontalPins = 0;
+        size_t verticalPins = 0;
+
+        for( const PIN_POINT& point : points )
+        {
+            minX = std::min( minX, point.x );
+            maxX = std::max( maxX, point.x );
+            minY = std::min( minY, point.y );
+            maxY = std::max( maxY, point.y );
+
+            if( point.labelRotation == 0 || point.labelRotation == 180 )
+                ++horizontalPins;
+            else
+                ++verticalPins;
+        }
+
+        const bool verticalTrunk = horizontalPins != verticalPins
+                                           ? horizontalPins > verticalPins
+                                           : maxX - minX >= maxY - minY;
+        constexpr int64_t STUB_LENGTH_NM = 5'080'000;
+        constexpr int64_t DETOUR_STEP_NM = 2'540'000;
+        constexpr int64_t LABEL_INSET_MAX_NM = 10'160'000;
+        constexpr int64_t CONNECTION_GRID_NM = 1'270'000;
+
+        const auto chooseTrunk = [&]( bool aVertical )
+        {
+            const int64_t minimum = aVertical ? minX : minY;
+            const int64_t maximum = aVertical ? maxX : maxY;
+            std::vector<int64_t> candidates = { minimum + ( maximum - minimum ) / 2,
+                                                minimum, maximum };
+
+            if( minimum >= STUB_LENGTH_NM )
+                candidates.push_back( minimum - STUB_LENGTH_NM );
+
+            if( maximum <= 2'000'000'000 - STUB_LENGTH_NM )
+                candidates.push_back( maximum + STUB_LENGTH_NM );
+
+            for( const PIN_POINT& point : points )
+                candidates.push_back( aVertical ? point.x : point.y );
+
+            std::sort( candidates.begin(), candidates.end() );
+            candidates.erase( std::unique( candidates.begin(), candidates.end() ),
+                              candidates.end() );
+            int64_t best = candidates.front();
+            __int128 bestScore = -1;
+
+            for( int64_t candidate : candidates )
+            {
+                __int128 score = 0;
+
+                for( const PIN_POINT& point : points )
+                {
+                    const int64_t coordinate = aVertical ? point.x : point.y;
+                    score += std::abs( candidate - coordinate );
+                    bool opposes = false;
+
+                    if( aVertical && point.labelRotation == 0 )
+                        opposes = candidate <= point.x;
+                    else if( aVertical && point.labelRotation == 180 )
+                        opposes = candidate >= point.x;
+                    else if( !aVertical && point.labelRotation == 90 )
+                        opposes = candidate <= point.y;
+                    else if( !aVertical && point.labelRotation == 270 )
+                        opposes = candidate >= point.y;
+
+                    if( opposes )
+                        score += static_cast<__int128>( 4'000'000'000LL );
+                }
+
+                if( bestScore < 0 || score < bestScore || ( score == bestScore && candidate < best ) )
+                {
+                    bestScore = score;
+                    best = candidate;
+                }
+            }
+
+            return best;
+        };
+
+        const int64_t trunk = chooseTrunk( verticalTrunk );
+        std::vector<AXIS_SEGMENT> rawSegments;
+        std::vector<int64_t> attachments;
+
+        const auto appendSegment = [&]( int64_t aX1, int64_t aY1,
+                                        int64_t aX2, int64_t aY2 )
+        {
+            if( aX1 == aX2 && aY1 == aY2 )
+                return;
+
+            if( aX1 != aX2 && aY1 != aY2 )
+            {
+                diagnostic( result, "invalid_generated_wire",
+                            "internal schematic router generated a diagonal segment for net "
+                                    + netName );
+                return;
+            }
+
+            rawSegments.push_back( { aX1, aY1, aX2, aY2 } );
+        };
+
+        if( points.size() == 2 )
+        {
+            const PIN_POINT& first = points[0];
+            const PIN_POINT& second = points[1];
+
+            if( first.x == second.x || first.y == second.y )
+            {
+                appendSegment( first.x, first.y, second.x, second.y );
+            }
+            else
+            {
+                const bool useVerticalLane =
+                        ( first.labelRotation == 0 || first.labelRotation == 180 )
+                        && ( second.labelRotation == 0 || second.labelRotation == 180 );
+                auto& reserved = useVerticalLane ? reservedVerticalLanes[sheet]
+                                                 : reservedHorizontalLanes[sheet];
+                const int64_t firstCoordinate = useVerticalLane ? first.x : first.y;
+                const int64_t secondCoordinate = useVerticalLane ? second.x : second.y;
+                const int64_t base = firstCoordinate
+                                     + ( secondCoordinate - firstCoordinate ) / 2;
+                int64_t lane = base;
+
+                for( size_t attempt = 0; reserved.contains( lane ); ++attempt )
+                {
+                    const int64_t magnitude = static_cast<int64_t>( attempt / 2 + 1 )
+                                              * DETOUR_STEP_NM;
+                    const int64_t candidate = base + ( attempt % 2 == 0 ? magnitude
+                                                                        : -magnitude );
+
+                    if( candidate >= 0 && candidate <= 2'000'000'000 )
+                        lane = candidate;
+                }
+
+                reserved.insert( lane );
+
+                if( useVerticalLane )
+                {
+                    appendSegment( first.x, first.y, lane, first.y );
+                    appendSegment( lane, first.y, lane, second.y );
+                    appendSegment( lane, second.y, second.x, second.y );
+                }
+                else
+                {
+                    appendSegment( first.x, first.y, first.x, lane );
+                    appendSegment( first.x, lane, second.x, lane );
+                    appendSegment( second.x, lane, second.x, second.y );
+                }
+            }
+        }
+        else
+        {
+            for( size_t index = 0; index < points.size(); ++index )
+            {
+                const PIN_POINT& point = points[index];
+
+                if( verticalTrunk )
+                {
+                    int64_t attachY = point.y;
+
+                    if( point.labelRotation == 90 || point.labelRotation == 270 )
+                    {
+                        const int64_t direction = point.labelRotation == 90 ? 1 : -1;
+                        attachY = std::clamp( point.y + direction * STUB_LENGTH_NM,
+                                              int64_t( 0 ), int64_t( 2'000'000'000 ) );
+                        appendSegment( point.x, point.y, point.x, attachY );
+                        appendSegment( point.x, attachY, trunk, attachY );
+                    }
+                    else
+                    {
+                        const bool follows = trunk == point.x
+                                             || ( point.labelRotation == 0 && trunk > point.x )
+                                             || ( point.labelRotation == 180 && trunk < point.x );
+
+                        if( follows )
+                        {
+                            appendSegment( point.x, point.y, trunk, point.y );
+                        }
+                        else
+                        {
+                            const int64_t direction = point.labelRotation == 0 ? 1 : -1;
+                            const int64_t stubX = std::clamp(
+                                    point.x + direction * STUB_LENGTH_NM,
+                                    int64_t( 0 ), int64_t( 2'000'000'000 ) );
+                            const int64_t detourDirection = index % 2 == 0 ? 1 : -1;
+                            attachY = std::clamp(
+                                    point.y + detourDirection
+                                                      * static_cast<int64_t>( index + 1 )
+                                                      * DETOUR_STEP_NM,
+                                    int64_t( 0 ), int64_t( 2'000'000'000 ) );
+                            appendSegment( point.x, point.y, stubX, point.y );
+                            appendSegment( stubX, point.y, stubX, attachY );
+                            appendSegment( stubX, attachY, trunk, attachY );
+                        }
+                    }
+
+                    attachments.push_back( attachY );
+                }
+                else
+                {
+                    int64_t attachX = point.x;
+
+                    if( point.labelRotation == 0 || point.labelRotation == 180 )
+                    {
+                        const int64_t direction = point.labelRotation == 0 ? 1 : -1;
+                        attachX = std::clamp( point.x + direction * STUB_LENGTH_NM,
+                                              int64_t( 0 ), int64_t( 2'000'000'000 ) );
+                        appendSegment( point.x, point.y, attachX, point.y );
+                        appendSegment( attachX, point.y, attachX, trunk );
+                    }
+                    else
+                    {
+                        const bool follows = trunk == point.y
+                                             || ( point.labelRotation == 90 && trunk > point.y )
+                                             || ( point.labelRotation == 270 && trunk < point.y );
+
+                        if( follows )
+                        {
+                            appendSegment( point.x, point.y, point.x, trunk );
+                        }
+                        else
+                        {
+                            const int64_t direction = point.labelRotation == 90 ? 1 : -1;
+                            const int64_t stubY = std::clamp(
+                                    point.y + direction * STUB_LENGTH_NM,
+                                    int64_t( 0 ), int64_t( 2'000'000'000 ) );
+                            const int64_t detourDirection = index % 2 == 0 ? 1 : -1;
+                            attachX = std::clamp(
+                                    point.x + detourDirection
+                                                      * static_cast<int64_t>( index + 1 )
+                                                      * DETOUR_STEP_NM,
+                                    int64_t( 0 ), int64_t( 2'000'000'000 ) );
+                            appendSegment( point.x, point.y, point.x, stubY );
+                            appendSegment( point.x, stubY, attachX, stubY );
+                            appendSegment( attachX, stubY, attachX, trunk );
+                        }
+                    }
+
+                    attachments.push_back( attachX );
+                }
+            }
+
+            const auto [ attachmentMin, attachmentMax ] =
+                    std::minmax_element( attachments.begin(), attachments.end() );
+
+            if( verticalTrunk )
+                appendSegment( trunk, *attachmentMin, trunk, *attachmentMax );
+            else
+                appendSegment( *attachmentMin, trunk, *attachmentMax, trunk );
+        }
+
+        using AXIS_KEY = std::pair<char, int64_t>;
+        std::map<AXIS_KEY, std::vector<std::pair<int64_t, int64_t>>> intervals;
+        std::set<std::pair<int64_t, int64_t>> protectedNodes;
+
+        for( const AXIS_SEGMENT& segment : rawSegments )
+        {
+            protectedNodes.emplace( segment.x1, segment.y1 );
+            protectedNodes.emplace( segment.x2, segment.y2 );
+
+            if( segment.y1 == segment.y2 )
+            {
+                intervals[{ 'h', segment.y1 }].push_back(
+                        std::minmax( segment.x1, segment.x2 ) );
+            }
+            else
+            {
+                intervals[{ 'v', segment.x1 }].push_back(
+                        std::minmax( segment.y1, segment.y2 ) );
+            }
+        }
+
+        std::array<PIN_POINT, 2> nameAnchors = { points.front(), points.back() };
+
+        for( PIN_POINT& anchor : nameAnchors )
+        {
+            for( const AXIS_SEGMENT& segment : rawSegments )
+            {
+                int64_t otherX = 0;
+                int64_t otherY = 0;
+
+                if( segment.x1 == anchor.x && segment.y1 == anchor.y )
+                {
+                    otherX = segment.x2;
+                    otherY = segment.y2;
+                }
+                else if( segment.x2 == anchor.x && segment.y2 == anchor.y )
+                {
+                    otherX = segment.x1;
+                    otherY = segment.y1;
+                }
+                else
+                {
+                    continue;
+                }
+
+                const int64_t length = std::abs( otherX - anchor.x )
+                                       + std::abs( otherY - anchor.y );
+                const int64_t desiredInset = std::min( LABEL_INSET_MAX_NM, length / 3 );
+                const int64_t inset = desiredInset / CONNECTION_GRID_NM
+                                      * CONNECTION_GRID_NM;
+
+                if( inset == 0 )
+                    break;
+
+                if( otherX != anchor.x )
+                    anchor.x += otherX > anchor.x ? inset : -inset;
+                else
+                    anchor.y += otherY > anchor.y ? inset : -inset;
+
+                protectedNodes.emplace( anchor.x, anchor.y );
+                break;
+            }
+        }
+
+        size_t wireIndex = 0;
+
+        for( auto& [ axis, ranges ] : intervals )
+        {
+            std::sort( ranges.begin(), ranges.end() );
+            std::vector<std::pair<int64_t, int64_t>> merged;
+
+            for( const auto& range : ranges )
+            {
+                if( merged.empty() || range.first > merged.back().second )
+                    merged.push_back( range );
+                else
+                    merged.back().second = std::max( merged.back().second, range.second );
+            }
+
+            for( const auto& range : merged )
+            {
+                const bool horizontal = axis.first == 'h';
+                std::vector<int64_t> cuts = { range.first, range.second };
+
+                for( const auto& [ nodeX, nodeY ] : protectedNodes )
+                {
+                    const bool onAxis = horizontal ? nodeY == axis.second
+                                                   : nodeX == axis.second;
+                    const int64_t coordinate = horizontal ? nodeX : nodeY;
+
+                    if( onAxis && coordinate > range.first && coordinate < range.second )
+                        cuts.push_back( coordinate );
+                }
+
+                std::sort( cuts.begin(), cuts.end() );
+                cuts.erase( std::unique( cuts.begin(), cuts.end() ), cuts.end() );
+
+                for( size_t cut = 1; cut < cuts.size(); ++cut )
+                {
+                    const JSON wire = {
+                        { "kind", "wire" },
+                        { "from", { { "xNm", horizontal ? cuts[cut - 1] : axis.second },
+                                      { "yNm", horizontal ? axis.second : cuts[cut - 1] } } },
+                        { "to", { { "xNm", horizontal ? cuts[cut] : axis.second },
+                                    { "yNm", horizontal ? axis.second : cuts[cut] } } },
+                        { "stroke", { { "widthNm", 0 }, { "lineStyle", "default" } } }
+                    };
+                    const std::string logicalId = "net_wire/" + netName + "/"
+                                                  + std::to_string( wireIndex++ );
+                    const std::string uuid =
+                            stableUuid( project, "schematic_wire", logicalId );
+                    connectivityBySheet[sheet].push_back(
+                            { { "kind", "wire" }, { "logicalId", logicalId },
+                              { "uuid", uuid },
+                              { "source", schematicLineExpression( wire, uuid ) } } );
+                    result.counts["generatedWires"] =
+                            result.counts["generatedWires"].get<size_t>() + 1;
+                }
+            }
+        }
+
+        if( points.size() > 2 && !attachments.empty() )
+        {
+            const auto [ attachmentMin, attachmentMax ] =
+                    std::minmax_element( attachments.begin(), attachments.end() );
+
+            if( *attachmentMin != *attachmentMax )
+            {
+                std::set<int64_t> uniqueAttachments( attachments.begin(), attachments.end() );
+
+                for( int64_t attachment : uniqueAttachments )
+                {
+                    if( attachment == *attachmentMin || attachment == *attachmentMax )
+                        continue;
+
+                    const int64_t x = verticalTrunk ? trunk : attachment;
+                    const int64_t y = verticalTrunk ? attachment : trunk;
+                    const std::string logicalId = "net_junction/" + netName + "/"
+                                                  + std::to_string( x ) + "/"
+                                                  + std::to_string( y );
+                    const std::string uuid =
+                            stableUuid( project, "schematic_junction", logicalId );
+                    const JSON junction = {
+                        { "position", { { "xNm", x }, { "yNm", y } } },
+                        { "diameterNm", 0 }, { "color", nullptr }
+                    };
+                    connectivityBySheet[sheet].push_back(
+                            { { "kind", "junction" }, { "logicalId", logicalId },
+                              { "uuid", uuid },
+                              { "source", junctionExpression( junction, uuid ) } } );
+                    result.counts["generatedJunctions"] =
+                            result.counts["generatedJunctions"].get<size_t>() + 1;
+                }
+            }
+        }
+
+        for( size_t anchorNumber = 0; anchorNumber < nameAnchors.size(); ++anchorNumber )
+        {
+            const PIN_POINT& nameAnchor = nameAnchors[anchorNumber];
+            const std::string labelLogicalId = "net_name/" + netName + "/"
+                                               + std::to_string( anchorNumber );
+            const std::string labelUuid =
+                    stableUuid( project, "schematic_global_label", labelLogicalId );
+            connectivityBySheet[sheet].push_back(
+                    { { "kind", "global_label" }, { "logicalId", labelLogicalId },
+                      { "uuid", labelUuid },
+                      { "source", globalLabelExpression(
+                                          netName, nameAnchor.x, nameAnchor.y,
+                                          nameAnchor.labelRotation, labelUuid ) } } );
+        }
+    };
+
     try
     {
         for( const JSON& net : sourceNets )
         {
             if( !net.is_object() || !net.contains( "name" ) || !net["name"].is_string()
-                || !net.contains( "pins" ) || !net["pins"].is_array() )
+                || !net.contains( "pins" ) || !net["pins"].is_array()
+                || !net.contains( "presentation" ) || !net["presentation"].is_string()
+                || ( net["presentation"] != "wired" && net["presentation"] != "labels" ) )
             {
                 diagnostic( result, "invalid_schematic_ir", "schematic net IR is malformed" );
                 continue;
@@ -2765,8 +3317,15 @@ DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan( const JSON& aCompilerIr,
 
             const std::string name = net["name"].get<std::string>();
 
-            for( const JSON& endpoint : net["pins"] )
-                addEndpoint( endpoint, name, false );
+            if( net["presentation"] == "wired" )
+            {
+                addWiredNet( net );
+            }
+            else
+            {
+                for( const JSON& endpoint : net["pins"] )
+                    addEndpoint( endpoint, name, false );
+            }
         }
 
         for( const JSON& endpoint : sourceNoConnects )

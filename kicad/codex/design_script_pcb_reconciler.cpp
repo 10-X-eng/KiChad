@@ -88,6 +88,7 @@ bool managedType( const std::string& aType )
     return aType == "shape" || aType == "trace" || aType == "arc" || aType == "via"
            || aType == "zone" || aType == "rule_area" || aType == "text"
            || aType == "textbox" || aType == "table" || aType == "dimension"
+           || aType == "reference_image" || aType == "barcode"
            || aType == "footprint";
 }
 
@@ -173,6 +174,19 @@ JSON updateFields( const std::string& aType, const JSON& aItem )
         return fields;
     }
 
+    if( aType == "reference_image" )
+    {
+        return JSON::array( { "layer", "position", "transform_origin_offset",
+                              "image_scale", "image_data", "locked" } );
+    }
+
+    if( aType == "barcode" )
+    {
+        return JSON::array( { "text", "kind", "error_correction", "position",
+                              "orientation", "layer", "width", "height", "show_text",
+                              "text_height", "knockout", "knockout_margin", "locked" } );
+    }
+
     return JSON::array( { "position", "pad_stack", "locked", "net", "type" } );
 }
 
@@ -255,6 +269,8 @@ bool readPlacement( const JSON& aJson, PLACEMENT& aPlacement, RESULT& aResult )
         || !instance["symbolSheetName"].is_string()
         || !instance.contains( "symbolSheetFilename" )
         || !instance["symbolSheetFilename"].is_string()
+        || ( instance.contains( "fields" )
+             && ( !instance["fields"].is_object() || instance["fields"].size() > 1024 ) )
         || !instance.contains( "padNets" ) || !instance["padNets"].is_object()
         || instance["padNets"].size() > 1024 )
     {
@@ -299,7 +315,22 @@ bool readPlacement( const JSON& aJson, PLACEMENT& aPlacement, RESULT& aResult )
         }
     }
 
+    const JSON fields = instance.value( "fields", JSON::object() );
+
+    for( auto field = fields.begin(); field != fields.end(); ++field )
+    {
+        if( !boundedText( field.key(), 128 ) || !field.value().is_string()
+            || field.value().get<std::string>().size() > 4096
+            || field.value().get<std::string>().find( '\0' ) != std::string::npos )
+        {
+            diagnostic( aResult, "invalid_placement",
+                        "planned component footprint field is invalid" );
+            return false;
+        }
+    }
+
     aPlacement.instance = instance;
+    aPlacement.instance["fields"] = fields;
 
     return true;
 }
@@ -454,7 +485,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
     RESULT result;
     result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
                       { "placement", 0 }, { "footprintCreate", 0 },
-                      { "footprintDelete", 0 } };
+                      { "footprintDelete", 0 }, { "footprintMetadata", 0 } };
     validateContext( aContext, result );
 
     std::map<std::string, MANAGED_ITEM> previous;
@@ -777,6 +808,18 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
                   { "itemId", footprint.itemId },
                   { "fieldMask", JSON::array( { "position", "orientation", "layer", "locked" } ) },
                   { "item", std::move( item ) } } );
+
+        if( placement.instance.is_object() )
+        {
+            result.actions.push_back(
+                    { { "action", "update_footprint_metadata" },
+                      { "component", component },
+                      { "itemType", "footprint" },
+                      { "itemId", footprint.itemId },
+                      { "instance", placement.instance } } );
+            ++result.counts["footprintMetadata"].get_ref<int64_t&>();
+        }
+
         ++result.counts["placement"].get_ref<int64_t&>();
     }
 
@@ -811,7 +854,7 @@ DESIGN_SCRIPT_PCB_RECONCILER::RESULT DESIGN_SCRIPT_PCB_RECONCILER::Reconcile(
         result.actions = JSON::array();
         result.counts = { { "create", 0 }, { "update", 0 }, { "delete", 0 },
                           { "placement", 0 }, { "footprintCreate", 0 },
-                          { "footprintDelete", 0 } };
+                          { "footprintDelete", 0 }, { "footprintMetadata", 0 } };
         return result;
     }
 

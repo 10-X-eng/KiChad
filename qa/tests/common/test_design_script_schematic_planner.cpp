@@ -298,10 +298,17 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
               { { "excludeFromSim", true }, { "inBom", false }, { "onBoard", false },
                 { "inPosFiles", false } } },
             { "properties", { { "Description", "Resistor" } } },
+            { "propertyLayouts",
+              { { "Reference",
+                  { { "position", { { "xNm", -5000000 }, { "yNm", 0 } } },
+                    { "rotationDegrees", 0.0 }, { "visible", true },
+                    { "showName", false }, { "autoplace", false } } } } },
             { "units",
               { { "1", nlohmann::json::array(
-                               { { { "number", "1" }, { "xNm", 0 }, { "yNm", 3810000 } },
-                                 { { "number", "2" }, { "xNm", 0 }, { "yNm", -3810000 } } } ) } } } } }
+                               { { { "number", "1" }, { "xNm", 0 }, { "yNm", 3810000 },
+                                   { "rotationDegrees", 270 } },
+                                 { { "number", "2" }, { "xNm", 0 }, { "yNm", -3810000 },
+                                   { "rotationDegrees", 90 } } } ) } } } } }
     };
     KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
             KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
@@ -328,6 +335,9 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(property private \"Manufacturer Part\" "
                                  "\"RC0603FR-0710KL\"" ),
                     std::string::npos );
+    BOOST_CHECK_NE( native.find( "(property \"Reference\" \"R1\"\n"
+                                 "      (at 35 40 0)" ),
+                    std::string::npos );
     BOOST_CHECK_NE( native.find( "(at 43 42 12.5)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(show_name yes)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(do_not_autoplace yes)" ), std::string::npos );
@@ -337,8 +347,11 @@ BOOST_AUTO_TEST_CASE( LowersResolvedComponentsGlobalNetsAndNoConnectsWithoutPlac
     BOOST_CHECK_NE( native.find( "(global_label \"SIGNAL\"" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(no_connect" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(mirror x)" ), std::string::npos );
-    BOOST_CHECK_NE( native.find( "(at 40 36.19 0)" ), std::string::npos );
-    BOOST_CHECK_NE( native.find( "(at 56.19 40 0)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(at 40 31.11 270)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(at 51.11 40 180)" ), std::string::npos );
+    BOOST_CHECK_NE( native.find( "(wire\n    (pts\n      (xy 40 36.19)\n"
+                                 "      (xy 40 31.11)" ),
+                    std::string::npos );
     BOOST_CHECK_NE( native.find( "(at 40 43.81)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(at 80 40 270)" ), std::string::npos );
     BOOST_CHECK_EQUAL( native.find( "(mirror x y)" ), std::string::npos );
@@ -452,16 +465,18 @@ BOOST_AUTO_TEST_CASE( LowersTypedNestedGroupsAndRejectsMissingNativeOccurrences 
             { "properties", nlohmann::json::object() },
             { "units",
               { { "1", nlohmann::json::array(
-                               { { { "number", "1" }, { "xNm", 0 }, { "yNm", 3810000 } },
+                               { { { "number", "1" }, { "xNm", 0 }, { "yNm", 3810000 },
+                                   { "rotationDegrees", 270 } },
                                  { { "number", "2" }, { "xNm", 0 },
-                                   { "yNm", -3810000 } } } ) } } } } }
+                                   { "yNm", -3810000 },
+                                   { "rotationDegrees", 90 } } } ) } } } } }
     };
     KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
             KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
                     compiled.ir, nlohmann::json::object(), resolved );
     BOOST_REQUIRE_MESSAGE( plan.fullyLowered, plan.diagnostics.dump() );
     BOOST_CHECK_EQUAL( plan.counts["groups"].get<int>(), 3 );
-    BOOST_CHECK_EQUAL( plan.operations[0]["managedItems"].size(), 13 );
+    BOOST_CHECK_EQUAL( plan.operations[0]["managedItems"].size(), 15 );
     const std::string rootNative = plan.operations[0]["files"][0]["newDocumentSource"];
     const std::string childNative = plan.operations[0]["files"][1]["newDocumentSource"];
     BOOST_CHECK_NE( rootNative.find( "(group \"Signal core\"" ), std::string::npos );
@@ -551,6 +566,75 @@ BOOST_AUTO_TEST_CASE( LowersCanonicalWiresBusesEntriesAndJunctionsToNativeItems 
     BOOST_CHECK_NE( native.find( "(type dash_dot)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(diameter 0.8)" ), std::string::npos );
     BOOST_CHECK_NE( native.find( "(color 17 34 51 0.50196078)" ), std::string::npos );
+}
+
+
+BOOST_AUTO_TEST_CASE( GeneratesOneStableReviewableWireDirectlyBetweenResolvedNetPins )
+{
+    const std::string program = R"KDS((kichad_design
+  (version 1)
+  (project wired_net)
+  (library symbol Local (table project) (uri "${KIPRJMOD}/Local.kicad_sym"))
+  (library footprint LocalFp (table project) (uri "${KIPRJMOD}/Local.pretty"))
+  (sheet root (parent none) (file "wired_net.kicad_sch") (title "Wired net"))
+  (component R1 (symbol "Local:R") (value "10k") (footprint "LocalFp:R")
+    (unit 1 (sheet root) (at 40mm 40mm) (rotation 0deg) (mirror none)))
+  (component R2 (symbol "Local:R") (value "10k") (footprint "LocalFp:R")
+    (unit 1 (sheet root) (at 60mm 40mm) (rotation 0deg) (mirror none)))
+  (net SIGNAL (presentation wired) (pin R1 1 2) (pin R2 1 1))
+))KDS";
+    const KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( program );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( compiled.ir["schematic"]["nets"][0]["presentation"], "wired" );
+    BOOST_CHECK( compiled.ir["schematic"]["nets"][0]["presentationExplicit"].get<bool>() );
+    const std::string cache = R"SYM((symbol "Local:R"
+  (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+  (property "Value" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+  (symbol "R_1_1"
+    (pin passive line (at -2.54 0 0) (length 1.27)
+      (name "" (effects (font (size 1.27 1.27))))
+      (number "1" (effects (font (size 1.27 1.27)))))
+    (pin passive line (at 2.54 0 180) (length 1.27)
+      (name "" (effects (font (size 1.27 1.27))))
+      (number "2" (effects (font (size 1.27 1.27)))))))
+)SYM";
+    const nlohmann::json resolved = {
+        { "Local:R",
+          { { "libraryId", "Local:R" }, { "cacheSource", cache },
+            { "flags",
+              { { "excludeFromSim", false }, { "inBom", true }, { "onBoard", true },
+                { "inPosFiles", true } } },
+            { "properties", nlohmann::json::object() },
+            { "propertyLayouts", nlohmann::json::object() },
+            { "units",
+              { { "1", nlohmann::json::array(
+                               { { { "number", "1" }, { "xNm", -2'540'000 },
+                                   { "yNm", 0 }, { "rotationDegrees", 0 } },
+                                 { { "number", "2" }, { "xNm", 2'540'000 },
+                                   { "yNm", 0 }, { "rotationDegrees", 180 } } } ) } } } } }
+    };
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT first =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                    compiled.ir, nlohmann::json::object(), resolved );
+    const KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT second =
+            KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(
+                    compiled.ir, nlohmann::json::object(), resolved );
+    BOOST_REQUIRE_MESSAGE( first.fullyLowered, first.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( first.operations.dump(), second.operations.dump() );
+    BOOST_CHECK_EQUAL( first.counts["generatedWires"].get<int>(), 3 );
+    BOOST_CHECK_EQUAL( first.counts["generatedJunctions"].get<int>(), 0 );
+    const std::string native = first.operations[0]["files"][0]["newDocumentSource"];
+    BOOST_CHECK_NE( native.find( "(wire\n    (pts\n      (xy 42.54 40)\n"
+                                 "      (xy 47.513333 40)" ),
+                    std::string::npos );
+    BOOST_CHECK_NE( native.find( "(wire\n    (pts\n      (xy 47.513333 40)\n"
+                                 "      (xy 52.486667 40)" ),
+                    std::string::npos );
+    const size_t firstLabel = native.find( "(global_label \"SIGNAL\"" );
+    BOOST_REQUIRE_NE( firstLabel, std::string::npos );
+    BOOST_CHECK_NE( native.find( "(global_label \"SIGNAL\"", firstLabel + 1 ),
+                    std::string::npos );
 }
 
 

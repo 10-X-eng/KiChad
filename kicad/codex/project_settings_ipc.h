@@ -43,6 +43,16 @@ bool ReplaceSchematicFieldTemplates(
         const kiapi::common::project::SchematicFieldTemplates& aTemplates,
         std::string& aError );
 
+bool QuerySchematicRuleSeverities(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        kiapi::common::project::SchematicRuleSeverities& aSeverities,
+        std::string& aError );
+
+bool ReplaceSchematicRuleSeverities(
+        const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
+        const kiapi::common::project::SchematicRuleSeverities& aSeverities,
+        std::string& aError );
+
 } // namespace KICHAD::PROJECT_SETTINGS_IPC
 
 #endif // KICHAD_PROJECT_SETTINGS_IPC_H

@@ -113,3 +113,19 @@ message SetSchematicFieldTemplates
   kiapi.common.types.DocumentSpecifier document = 1;
   kiapi.common.project.SchematicFieldTemplates templates = 2;
 }
+
+
+// Returns kiapi.common.project.SchematicRuleSeverities.
+message GetSchematicRuleSeverities
+{
+  kiapi.common.types.DocumentSpecifier document = 1;
+}
+
+
+// Atomically validates and replaces the project-file ERC severity overrides.
+// Returns kiapi.common.project.SchematicRuleSeverities with the active exact map.
+message SetSchematicRuleSeverities
+{
+  kiapi.common.types.DocumentSpecifier document = 1;
+  kiapi.common.project.SchematicRuleSeverities severities = 2;
+}

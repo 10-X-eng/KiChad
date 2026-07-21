@@ -42,6 +42,7 @@ set( QA_COMMON_SRCS
     test_collector.cpp
     test_color4d.cpp
     test_commit.cpp
+    test_codex_app_server_client.cpp
     test_codex_tool_fabricate.cpp
     test_codex_tool_registry.cpp
     test_codex_thread_store.cpp
@@ -123,7 +124,9 @@ set( QA_COMMON_SRCS
     test_wx_filename.cpp
 
     ${CMAKE_SOURCE_DIR}/kicad/codex/lossless_sexpr_document.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_app_server_client.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_paths.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_protocol_log.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_thread_store.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_design.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_fabricate.cpp
@@ -131,6 +134,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_pcb.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_project.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_verify.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_asset_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_graphic_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_graphic_proto_generator.cpp
@@ -139,9 +143,13 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_table_proto_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_text_box_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_board_text_box_proto_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_assembly_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_context_builder.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_custom_pad_proto_generator.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_device_code_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_release_writer.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_backdrill_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_component_classes_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_component_classes_generator.cpp
@@ -171,6 +179,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_footprint_zone_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_reconciler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_production_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_reconciler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_compiler.cpp
@@ -189,6 +198,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_via_protection_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/production_package_writer.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/board_render_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/board_ps_artifact_validator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/fabrication_artifact_validator.cpp

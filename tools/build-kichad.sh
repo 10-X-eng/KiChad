@@ -50,6 +50,10 @@ fi
 
 cd "$repo_root"
 
+if (( $# == 0 )); then
+    "${repo_root}/tools/fetch-kicad-libraries.sh"
+fi
+
 cmake --preset kichad-release
 
 build_command=( cmake --build --preset kichad-release --parallel "$jobs" )
@@ -62,14 +66,19 @@ fi
 
 if (( $# == 0 )); then
     cmake --install "$build_dir"
+    "${repo_root}/tools/install-kichad-libraries.sh"
 
     for target_name in kicad kicad-cli; do
         installed_binary="$install_dir/bin/$target_name"
+        built_binary="$build_dir/kicad/$target_name"
 
-        if [[ ! -x "$installed_binary" ]]; then
-            echo "Installed KiChad target is missing: ${installed_binary}" >&2
+        if [[ ! -x "$installed_binary" || ! -x "$built_binary" ]]; then
+            echo "Built or installed KiChad target is missing: $target_name" >&2
             exit 1
         fi
+
+        native_binary="$install_dir/bin/_$target_name"
+        install -m 0755 "$built_binary" "$native_binary"
     done
 
     install -m 0755 "$launcher_template" "$install_dir/bin/kichad"
@@ -81,6 +90,8 @@ if (( $# == 0 )); then
         echo "Expected a ${base_version} build, got: ${built_version}" >&2
         exit 1
     fi
+
+    "${repo_root}/tools/check-kichad-libraries.sh"
 
     printf 'KiChad stable build verified: %s\n' "$built_version"
 else

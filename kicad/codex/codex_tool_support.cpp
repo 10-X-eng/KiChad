@@ -21,6 +21,7 @@
 #include "fabrication_artifact_validator.h"
 #include "legacy_bom_artifact_validator.h"
 #include "mechanical_artifact_validator.h"
+#include "production_package_writer.h"
 #include "schematic_bom_artifact_validator.h"
 #include "schematic_dxf_artifact_validator.h"
 #include "schematic_pdf_artifact_validator.h"
@@ -61,12 +62,14 @@
 #include <api/common/types/project_settings.pb.h>
 #include <google/protobuf/util/field_mask_util.h>
 #include <google/protobuf/util/json_util.h>
+#include <google/protobuf/util/message_differencer.h>
 #include <wx/base64.h>
 #include <wx/datetime.h>
 #include <wx/dir.h>
 #include <wx/file.h>
 #include <wx/ffile.h>
 #include <wx/filename.h>
+#include <wx/image.h>
 #include <wx/stdpaths.h>
 #include <wx/utils.h>
 #include <wx/wfstream.h>
@@ -115,6 +118,7 @@ bool createFabricationVerificationSnapshot(
         const wxFileName& aProjectRoot, const wxFileName& aBoard,
         const wxFileName& aSchematic, const wxFileName& aSidecar,
         const std::array<std::string, 3>& aRelativePaths,
+        const std::vector<std::string>& aAdditionalRelativePaths,
         PRIVATE_TEMPORARY_DIRECTORY& aSnapshot, std::string& aError )
 {
     if( !aSnapshot.Create( "kichad-fabrication-verify-", aError ) )
@@ -256,6 +260,33 @@ bool createFabricationVerificationSnapshot(
         {
             return false;
         }
+    }
+
+    for( const std::string& relativePath : aAdditionalRelativePaths )
+    {
+        const std::filesystem::path relative( relativePath );
+        const std::filesystem::path candidate = ( sourceRoot / relative ).lexically_normal();
+        std::error_code canonicalError;
+        const std::filesystem::path canonicalRoot =
+                std::filesystem::canonical( sourceRoot, canonicalError );
+        const std::filesystem::path canonical =
+                canonicalError ? std::filesystem::path()
+                               : std::filesystem::canonical( candidate, canonicalError );
+        const std::filesystem::path confined =
+                canonicalError ? std::filesystem::path()
+                               : canonical.lexically_relative( canonicalRoot );
+
+        if( canonicalError || relative.empty() || relative.is_absolute()
+            || relative.lexically_normal() != relative || confined.empty()
+            || confined.is_absolute() || confined.begin() == confined.end()
+            || *confined.begin() == ".." || canonical != candidate )
+        {
+            aError = "production input must be a confined project-relative regular file";
+            return false;
+        }
+
+        if( !copyFile( canonical, relative ) )
+            return false;
     }
 
     return true;
@@ -1454,6 +1485,192 @@ bool runNativeFabricationCommand( const wxFileName& aCli,
 }
 
 
+bool runNativeKiCadPreview( const std::string& aView, const wxFileName& aInput,
+                            const wxFileName& aOutput, int aPage, std::string& aError )
+{
+    wxFileName cli;
+
+    if( !findNativeKiCadCli( cli ) )
+    {
+        aError = "the sibling kicad-cli preview backend is unavailable";
+        return false;
+    }
+
+    PRIVATE_TEMPORARY_DIRECTORY temporary;
+
+    if( !temporary.Create( "kichad-preview", aError ) )
+        return false;
+
+    wxFileName logs = wxFileName::DirName(
+            wxString::FromUTF8( temporary.Path().string() ) );
+
+    if( aOutput.FileExists() && !wxRemoveFile( aOutput.GetFullPath() ) )
+    {
+        aError = "could not replace the prior derived preview";
+        return false;
+    }
+
+    if( aView == "pcb3d" )
+    {
+        const std::vector<std::string> arguments = {
+            "pcb", "render", "--output", aOutput.GetFullPath().ToStdString(),
+            "--width", "1600", "--height", "1200", "--side", "top",
+            "--background", "opaque", "--quality", "high", "--preset",
+            "follow_plot_settings", aInput.GetFullPath().ToStdString()
+        };
+
+        if( !runNativeFabricationCommand( cli, arguments, logs, 0, "PCB preview", aError ) )
+            return false;
+
+        if( !aOutput.FileExists() )
+        {
+            aError = "native KiCad did not produce the requested PCB preview";
+            return false;
+        }
+
+        return true;
+    }
+
+    wxFileName pdf( wxString::FromUTF8( temporary.Path().string() ),
+                    wxS( "preview.pdf" ) );
+    std::vector<std::string> arguments;
+
+    if( aView == "schematic" )
+    {
+        arguments = { "sch", "export", "pdf", "--output",
+                      pdf.GetFullPath().ToStdString(), "--exclude-drawing-sheet",
+                      "--pages", std::to_string( aPage ),
+                      aInput.GetFullPath().ToStdString() };
+    }
+    else if( aView == "pcb2d" )
+    {
+        arguments = { "pcb", "export", "pdf", "--output",
+                      pdf.GetFullPath().ToStdString(), "--layers",
+                      "F.Cu,B.Cu,F.SilkS,B.SilkS,Edge.Cuts", "--mode-single",
+                      "--scale", "0", "--exclude-value", "--no-property-popups",
+                      aInput.GetFullPath().ToStdString() };
+    }
+    else
+    {
+        aError = "unsupported native preview view";
+        return false;
+    }
+
+    if( !runNativeFabricationCommand( cli, arguments, logs, 0, aView + " preview", aError )
+        || !pdf.FileExists() )
+    {
+        if( aError.empty() )
+            aError = "native KiCad did not produce the preview PDF";
+
+        return false;
+    }
+
+    wxString executableSearchPath;
+    wxString rasterizer;
+
+    if( !wxGetEnv( wxS( "PATH" ), &executableSearchPath )
+        || !wxFindFileInPath( &rasterizer, executableSearchPath, wxS( "pdftoppm" ) ) )
+    {
+        aError = "the PDF-to-PNG preview rasterizer is unavailable";
+        return false;
+    }
+
+    wxFileName rasterizerPath( rasterizer );
+    wxFileName prefix( wxString::FromUTF8( temporary.Path().string() ),
+                       wxS( "rasterized" ) );
+    prefix.ClearExt();
+    const std::vector<std::string> rasterArguments = {
+        "-png", "-r", "160", "-singlefile", pdf.GetFullPath().ToStdString(),
+        prefix.GetFullPath().ToStdString()
+    };
+
+    if( !runNativeFabricationCommand( rasterizerPath, rasterArguments, logs, 1,
+                                      "preview rasterization", aError ) )
+    {
+        return false;
+    }
+
+    wxFileName rasterized = prefix;
+    rasterized.SetExt( wxS( "png" ) );
+
+    if( !rasterized.FileExists() )
+    {
+        aError = "preview rasterization did not produce a readable PNG";
+        return false;
+    }
+
+    // PDF plots retain their entire paper rectangle.  Crop uniform page margins so the model
+    // receives the actual circuit at useful resolution instead of a mostly blank A4 image.
+    wxImage preview;
+    bool wrotePreview = false;
+
+    if( preview.LoadFile( rasterized.GetFullPath(), wxBITMAP_TYPE_PNG ) && preview.IsOk()
+        && preview.GetWidth() > 0 && preview.GetHeight() > 0 && preview.GetData() )
+    {
+        const int width = preview.GetWidth();
+        const int height = preview.GetHeight();
+        const unsigned char* pixels = preview.GetData();
+        const auto channel = [&]( int aX, int aY, int aChannel ) -> int
+        {
+            return pixels[( static_cast<size_t>( aY ) * width + aX ) * 3 + aChannel];
+        };
+        const int background[3] = {
+            ( channel( 0, 0, 0 ) + channel( width - 1, 0, 0 )
+              + channel( 0, height - 1, 0 ) + channel( width - 1, height - 1, 0 ) ) / 4,
+            ( channel( 0, 0, 1 ) + channel( width - 1, 0, 1 )
+              + channel( 0, height - 1, 1 ) + channel( width - 1, height - 1, 1 ) ) / 4,
+            ( channel( 0, 0, 2 ) + channel( width - 1, 0, 2 )
+              + channel( 0, height - 1, 2 ) + channel( width - 1, height - 1, 2 ) ) / 4
+        };
+        int left = width;
+        int top = height;
+        int right = -1;
+        int bottom = -1;
+
+        for( int y = 0; y < height; ++y )
+        {
+            for( int x = 0; x < width; ++x )
+            {
+                const bool content =
+                        std::abs( channel( x, y, 0 ) - background[0] ) > 12
+                        || std::abs( channel( x, y, 1 ) - background[1] ) > 12
+                        || std::abs( channel( x, y, 2 ) - background[2] ) > 12;
+
+                if( content )
+                {
+                    left = std::min( left, x );
+                    top = std::min( top, y );
+                    right = std::max( right, x );
+                    bottom = std::max( bottom, y );
+                }
+            }
+        }
+
+        if( right >= left && bottom >= top )
+        {
+            const int padding = std::max( 16, std::min( width, height ) / 40 );
+            left = std::max( 0, left - padding );
+            top = std::max( 0, top - padding );
+            right = std::min( width - 1, right + padding );
+            bottom = std::min( height - 1, bottom + padding );
+            wxImage cropped = preview.GetSubImage(
+                    wxRect( left, top, right - left + 1, bottom - top + 1 ) );
+            wrotePreview = cropped.IsOk()
+                           && cropped.SaveFile( aOutput.GetFullPath(), wxBITMAP_TYPE_PNG );
+        }
+    }
+
+    if( !wrotePreview
+        && !wxCopyFile( rasterized.GetFullPath(), aOutput.GetFullPath(), true ) )
+    {
+        aError = "preview rasterization did not produce a readable PNG";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool runNativeKiCadFabrication( const wxFileName& aBoard,
                                 const wxFileName& aSchematic,
                                 const JSON& aPlan, const wxFileName& aStaging,
@@ -1744,6 +1961,51 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         }
     }
 
+    JSON implicitPresentationNets = JSON::array();
+    size_t wiredNetCount = 0;
+    size_t labelNetCount = 0;
+
+    for( const JSON& net : aIr.at( "schematic" ).at( "nets" ) )
+    {
+        const std::string name = net.value( "name", "" );
+        const std::string presentation = net.value( "presentation", "labels" );
+
+        if( presentation == "wired" )
+            ++wiredNetCount;
+        else
+            ++labelNetCount;
+
+        if( !net.value( "presentationExplicit", false ) )
+            implicitPresentationNets.push_back( name );
+    }
+
+    if( !implicitPresentationNets.empty() )
+    {
+        issues.push_back(
+                { { "type", "missing_schematic_presentation" },
+                  { "severity", "error" },
+                  { "description",
+                    "Production fabrication requires every KDS net to declare "
+                    "(presentation wired) or (presentation labels); implicit label stubs are "
+                    "not reviewable design intent" },
+                  { "nets", implicitPresentationNets },
+                  { "recovery",
+                    "Use wired for same-sheet circuits that must be visually inspectable and "
+                    "labels for deliberate global, power, or cross-sheet connectivity." } } );
+    }
+
+    if( !aIr.at( "schematic" ).at( "nets" ).empty() && wiredNetCount == 0 )
+    {
+        issues.push_back(
+                { { "type", "label_only_schematic" },
+                  { "severity", "error" },
+                  { "description",
+                    "The schematic has electrical nets but no reviewable generated wire paths" },
+                  { "recovery",
+                    "Declare (presentation wired) on same-sheet signal nets, apply the KDS, and "
+                    "review the rendered schematic before release." } } );
+    }
+
     const JSON* stackup = nullptr;
 
     for( const JSON& statement : aIr.at( "pcb" ) )
@@ -1794,6 +2056,7 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     std::set<std::string> netlistReferences;
     JSON expectedSchematicBomRows = JSON::array();
     JSON expectedNetlistNets = JSON::array();
+    JSON expectedNetlistNoConnects = JSON::array();
     std::string expectedSchematicPdfTitle = aFileStem + ".pdf";
 
     if( aIr.at( "project" ).contains( "titleBlock" ) )
@@ -1854,6 +2117,20 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
 
         expectedNetlistNets.push_back( { { "name", net.at( "name" ) },
                                          { "nodes", std::move( plannedNodes ) } } );
+    }
+
+    std::set<std::pair<std::string, std::string>> noConnects;
+
+    for( const JSON& noConnect : aIr.at( "schematic" ).at( "noConnects" ) )
+    {
+        noConnects.emplace( noConnect.at( "component" ).get<std::string>(),
+                            noConnect.at( "number" ).get<std::string>() );
+    }
+
+    for( const auto& [reference, pin] : noConnects )
+    {
+        expectedNetlistNoConnects.push_back(
+                { { "reference", reference }, { "pin", pin } } );
     }
 
     for( const char* kind : OUTPUT_ORDER )
@@ -1984,15 +2261,34 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
         jobs.push_back( std::move( job ) );
     }
 
-    return { { "profile", "kichad-production-10.0.4-v12" },
+    JSON productionPlan = KICHAD::PRODUCTION_PACKAGE_WRITER::BuildPlan(
+            aIr.value( "production", JSON( nullptr ) ) );
+    JSON runningIssues = issues;
+
+    if( productionPlan.is_null() )
+    {
+        runningIssues.push_back( { { "type", "missing_production_handoff" },
+                                   { "severity", "error" },
+                                   { "description",
+                                     "A running-board release requires KDS firmware, programming, power, and bring-up intent" } } );
+    }
+
+    return { { "profile", "kichad-production-10.0.4-v16" },
              { "targetDirectory", "fabrication" },
              { "fileStem", aFileStem },
              { "productionReady", issues.empty() },
+             { "runningReady", runningIssues.empty() },
              { "issues", std::move( issues ) },
+             { "runningIssues", std::move( runningIssues ) },
+             { "schematicPresentation",
+               { { "wiredNets", wiredNetCount }, { "labelNets", labelNetCount },
+                 { "implicitNets", implicitPresentationNets.size() } } },
+             { "productionPlan", std::move( productionPlan ) },
              { "expectedBomReferences", bomReferences },
              { "expectedPlacementReferences", placementReferences },
              { "expectedNetlistReferences", netlistReferences },
              { "expectedNetlistNets", std::move( expectedNetlistNets ) },
+             { "expectedNetlistNoConnects", std::move( expectedNetlistNoConnects ) },
              { "expectedSchematicBomRows", std::move( expectedSchematicBomRows ) },
              { "expectedSchematicPdfTitle", std::move( expectedSchematicPdfTitle ) },
              { "jobs", std::move( jobs ) } };
@@ -4450,6 +4746,10 @@ kiapi::common::types::KiCadObjectType pcbObjectType( const std::string& aItemTyp
         return KOT_PCB_TABLE;
     if( aItemType == "dimension" )
         return KOT_PCB_DIMENSION;
+    if( aItemType == "reference_image" )
+        return KOT_PCB_REFERENCE_IMAGE;
+    if( aItemType == "barcode" )
+        return KOT_PCB_BARCODE;
 
     return KOT_UNKNOWN;
 }
@@ -4479,6 +4779,10 @@ std::unique_ptr<google::protobuf::Message> newPcbItem( const std::string& aItemT
         return std::make_unique<BoardTable>();
     if( aItemType == "dimension" )
         return std::make_unique<Dimension>();
+    if( aItemType == "reference_image" )
+        return std::make_unique<ReferenceImage>();
+    if( aItemType == "barcode" )
+        return std::make_unique<Barcode>();
 
     return {};
 }
@@ -4708,6 +5012,10 @@ std::string pcbAnyType( const google::protobuf::Any& aItem )
         return "table";
     if( aItem.Is<Dimension>() )
         return "dimension";
+    if( aItem.Is<ReferenceImage>() )
+        return "reference_image";
+    if( aItem.Is<Barcode>() )
+        return "barcode";
     if( aItem.Is<FootprintInstance>() )
         return "footprint";
     if( aItem.Is<Zone>() )
@@ -5201,6 +5509,32 @@ bool refillPcbZones( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& 
 }
 
 
+bool validateManagedAssetReadback( const google::protobuf::Any& aActive,
+                                   const nlohmann::json& aAction,
+                                   const char* aMutation, std::string& aError )
+{
+    const std::string itemType = aAction.at( "itemType" ).get<std::string>();
+
+    if( itemType != "reference_image" && itemType != "barcode" )
+        return true;
+
+    std::unique_ptr<google::protobuf::Message> expected;
+    std::unique_ptr<google::protobuf::Message> active = newPcbItem( itemType );
+
+    if( !parsePcbItem( itemType, aAction.at( "item" ), expected, aError )
+        || !active || !aActive.UnpackTo( active.get() )
+        || !google::protobuf::util::MessageDifferencer::Equals( *expected, *active ) )
+    {
+        if( aError.empty() )
+            aError = "KiCad " + itemType + " " + aMutation + " readback did not match KDS";
+
+        return false;
+    }
+
+    return true;
+}
+
+
 bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
                                            kiapi::common::commands::ItemCreationResult>& aResults,
                                    const std::vector<const nlohmann::json*>& aActions,
@@ -5224,6 +5558,9 @@ bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
 
             return false;
         }
+
+        if( !validateManagedAssetReadback( aResults[i].item(), *aActions[i], "create", aError ) )
+            return false;
     }
 
     return true;
@@ -5253,6 +5590,9 @@ bool validateCreateUpdateResponse( const google::protobuf::RepeatedPtrField<
 
             return false;
         }
+
+        if( !validateManagedAssetReadback( aResults[i].item(), *aActions[i], "update", aError ) )
+            return false;
     }
 
     return true;
@@ -5320,6 +5660,17 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
         requested.mutable_definition()->add_items()->PackFrom( pad );
     }
 
+    for( auto field = instance.at( "fields" ).begin();
+         field != instance.at( "fields" ).end(); ++field )
+    {
+        kiapi::board::types::Field requestedField;
+        requestedField.set_name( field.key() );
+        requestedField.mutable_text()->mutable_text()->set_text(
+                field.value().get<std::string>() );
+        requestedField.set_visible( false );
+        requested.mutable_definition()->add_items()->PackFrom( requestedField );
+    }
+
     kiapi::common::commands::ParseAndCreateItemsFromString parse;
     parse.mutable_document()->CopyFrom( aTarget.document );
     parse.set_contents( aFootprintSources[libraryId].get<std::string>() );
@@ -5365,12 +5716,122 @@ bool createFootprintFromSource( const KICHAD_IPC_CLIENT& aClient,
 }
 
 
+bool updateFootprintMetadata( const KICHAD_IPC_CLIENT& aClient,
+                              const KICHAD_IPC_TARGET& aTarget,
+                              const nlohmann::json& aAction, std::string& aError )
+{
+    using namespace kiapi::board::types;
+    const nlohmann::json& instance = aAction.at( "instance" );
+    const nlohmann::json& fields = instance.at( "fields" );
+    static const std::set<std::string> mandatory = {
+        "Reference", "Value", "Footprint", "Datasheet", "Description"
+    };
+    FootprintInstance requested;
+    requested.mutable_id()->set_value( aAction.at( "itemId" ).get<std::string>() );
+    requested.mutable_value_field()->mutable_text()->mutable_text()->set_text(
+            instance.at( "value" ).get<std::string>() );
+    requested.mutable_datasheet_field()->mutable_text()->mutable_text()->set_text(
+            fields.value( "Datasheet", "" ) );
+    requested.mutable_description_field()->mutable_text()->mutable_text()->set_text(
+            fields.value( "Description", "" ) );
+    requested.mutable_attributes()->set_do_not_populate( instance.at( "dnp" ).get<bool>() );
+    std::map<std::string, std::string> expectedFields;
+
+    for( auto field = fields.begin(); field != fields.end(); ++field )
+    {
+        if( mandatory.contains( field.key() ) )
+            continue;
+
+        Field requestedField;
+        requestedField.set_name( field.key() );
+        requestedField.mutable_text()->mutable_text()->set_text(
+                field.value().get<std::string>() );
+        requested.mutable_definition()->add_items()->PackFrom( requestedField );
+        expectedFields.emplace( field.key(), field.value().get<std::string>() );
+    }
+
+    kiapi::common::commands::UpdateItems request;
+    request.mutable_header()->mutable_document()->CopyFrom( aTarget.document );
+
+    for( const char* path : { "value_field", "datasheet_field", "description_field",
+                              "attributes.do_not_populate", "definition.items" } )
+    {
+        request.mutable_header()->mutable_field_mask()->add_paths( path );
+    }
+
+    request.add_items()->PackFrom( requested );
+    kiapi::common::ApiResponse response;
+
+    if( !aClient.Call( aTarget, request, response, aError ) )
+        return false;
+
+    kiapi::common::commands::UpdateItemsResponse updated;
+
+    if( !response.message().UnpackTo( &updated )
+        || updated.status() != kiapi::common::types::IRS_OK
+        || updated.updated_items_size() != 1
+        || updated.updated_items( 0 ).status().code()
+                   != kiapi::common::commands::ISC_OK )
+    {
+        if( updated.updated_items_size() == 1 )
+            aError = updated.updated_items( 0 ).status().error_message();
+
+        if( aError.empty() )
+            aError = "KiCad rejected the managed footprint metadata replacement";
+
+        return false;
+    }
+
+    FootprintInstance active;
+
+    if( !updated.updated_items( 0 ).item().UnpackTo( &active )
+        || active.id().value() != requested.id().value()
+        || active.value_field().text().text().text()
+                   != requested.value_field().text().text().text()
+        || active.datasheet_field().text().text().text()
+                   != requested.datasheet_field().text().text().text()
+        || active.description_field().text().text().text()
+                   != requested.description_field().text().text().text()
+        || active.attributes().do_not_populate()
+                   != requested.attributes().do_not_populate() )
+    {
+        aError = "KiCad footprint metadata readback did not match KDS";
+        return false;
+    }
+
+    std::map<std::string, std::string> activeFields;
+
+    for( const google::protobuf::Any& packed : active.definition().items() )
+    {
+        Field field;
+
+        if( !packed.UnpackTo( &field ) )
+            continue;
+
+        if( !activeFields.emplace( field.name(), field.text().text().text() ).second )
+        {
+            aError = "KiCad footprint metadata readback contains duplicate fields";
+            return false;
+        }
+    }
+
+    if( activeFields != expectedFields )
+    {
+        aError = "KiCad footprint custom-field readback did not match KDS";
+        return false;
+    }
+
+    return true;
+}
+
+
 bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGET& aTarget,
                         const nlohmann::json& aActions,
                         const nlohmann::json& aFootprintSources, std::string& aError )
 {
     std::vector<const nlohmann::json*> creates;
     std::vector<const nlohmann::json*> footprintCreates;
+    std::vector<const nlohmann::json*> footprintMetadataUpdates;
     std::map<std::pair<std::string, std::string>,
              std::vector<const nlohmann::json*>> updates;
     std::vector<const nlohmann::json*> deletes;
@@ -5383,11 +5844,18 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
             creates.emplace_back( &action );
         else if( kind == "create_footprint" )
             footprintCreates.emplace_back( &action );
+        else if( kind == "update_footprint_metadata" )
+            footprintMetadataUpdates.emplace_back( &action );
         else if( kind == "update" )
             updates[{ action.at( "itemType" ).get<std::string>(),
                       action.at( "fieldMask" ).dump() }].emplace_back( &action );
-        else
+        else if( kind == "delete" )
             deletes.emplace_back( &action );
+        else
+        {
+            aError = "PCB reconcile produced an unsupported executable action";
+            return false;
+        }
     }
 
     for( const nlohmann::json* action : footprintCreates )
@@ -5479,6 +5947,12 @@ bool executePcbActions( const KICHAD_IPC_CLIENT& aClient, const KICHAD_IPC_TARGE
                 return false;
             }
         }
+    }
+
+    for( const nlohmann::json* action : footprintMetadataUpdates )
+    {
+        if( !updateFootprintMetadata( aClient, aTarget, *action, aError ) )
+            return false;
     }
 
     for( size_t begin = 0; begin < deletes.size(); begin += 500 )
@@ -5888,6 +6362,14 @@ bool KICHAD::CODEX_TOOLS::RunNativeKiCadCheck(
 }
 
 
+bool KICHAD::CODEX_TOOLS::RunNativeKiCadPreview(
+        const std::string& aView, const wxFileName& aInput,
+        const wxFileName& aOutput, int aPage, std::string& aError )
+{
+    return runNativeKiCadPreview( aView, aInput, aOutput, aPage, aError );
+}
+
+
 bool KICHAD::CODEX_TOOLS::CanonicalizeExisting( wxFileName& aPath, bool aDirectory )
 {
     return canonicalizeExisting( aPath, aDirectory );
@@ -5898,11 +6380,12 @@ bool KICHAD::CODEX_TOOLS::CreateFabricationVerificationSnapshot(
         const wxFileName& aProjectRoot, const wxFileName& aBoard,
         const wxFileName& aSchematic, const wxFileName& aSidecar,
         const std::array<std::string, 3>& aRelativePaths,
+        const std::vector<std::string>& aAdditionalRelativePaths,
         PRIVATE_TEMPORARY_DIRECTORY& aSnapshot, std::string& aError )
 {
     return createFabricationVerificationSnapshot( aProjectRoot, aBoard, aSchematic,
-                                                   aSidecar, aRelativePaths, aSnapshot,
-                                                   aError );
+                                                   aSidecar, aRelativePaths,
+                                                   aAdditionalRelativePaths, aSnapshot, aError );
 }
 
 

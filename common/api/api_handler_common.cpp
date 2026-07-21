@@ -63,6 +63,7 @@ constexpr size_t MAX_SCHEMATIC_FIELD_TEMPLATE_NAME_BYTES = 128;
 constexpr size_t MAX_PROJECT_TEXT_VARIABLES = 1024;
 constexpr size_t MAX_PROJECT_TEXT_VARIABLE_NAME_BYTES = 128;
 constexpr size_t MAX_PROJECT_TEXT_VARIABLE_VALUE_BYTES = 4096;
+constexpr size_t MAX_SCHEMATIC_RULE_SEVERITIES = 256;
 
 
 struct DECODED_NETCLASS_SETTINGS
@@ -678,6 +679,10 @@ API_HANDLER_COMMON::API_HANDLER_COMMON( std::function<void( int )> aOnProjectSet
             &API_HANDLER_COMMON::handleGetSchematicFieldTemplates );
     registerHandler<SetSchematicFieldTemplates, project::SchematicFieldTemplates>(
             &API_HANDLER_COMMON::handleSetSchematicFieldTemplates );
+    registerHandler<GetSchematicRuleSeverities, project::SchematicRuleSeverities>(
+            &API_HANDLER_COMMON::handleGetSchematicRuleSeverities );
+    registerHandler<SetSchematicRuleSeverities, project::SchematicRuleSeverities>(
+            &API_HANDLER_COMMON::handleSetSchematicRuleSeverities );
 
 }
 
@@ -1239,5 +1244,159 @@ API_HANDLER_COMMON::handleSetSchematicFieldTemplates(
         return tl::unexpected( error );
     }
 
+    return reply;
+}
+
+
+HANDLER_RESULT<project::SchematicRuleSeverities>
+API_HANDLER_COMMON::handleGetSchematicRuleSeverities(
+        const HANDLER_CONTEXT<GetSchematicRuleSeverities>& aCtx )
+{
+    if( !aCtx.Request.has_document() || aCtx.Request.document().type() != DOCTYPE_PROJECT )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        return tl::unexpected( error );
+    }
+
+    PROJECT& project = Pgm().GetSettingsManager().Prj();
+
+    if( project.IsNullProject() )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message( "no valid project is loaded, cannot get ERC severities" );
+        return tl::unexpected( error );
+    }
+
+    const nlohmann::json active = project.GetProjectFile()
+                                          .GetJson( "erc.rule_severities" )
+                                          .value_or( nlohmann::json::object() );
+    project::SchematicRuleSeverities reply;
+
+    if( !active.is_object() || active.size() > MAX_SCHEMATIC_RULE_SEVERITIES )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( "project ERC severity settings are malformed" );
+        return tl::unexpected( error );
+    }
+
+    for( auto entry = active.begin(); entry != active.end(); ++entry )
+    {
+        if( !entry.value().is_string() )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "project ERC severity settings contain a non-string value" );
+            return tl::unexpected( error );
+        }
+
+        const std::string value = entry.value().get<std::string>();
+        const project::ProjectRuleSeverity severity =
+                value == "error" ? project::PRS_ERROR
+                : value == "warning" ? project::PRS_WARNING
+                : value == "ignore" ? project::PRS_IGNORE
+                                      : project::PRS_UNKNOWN;
+
+        if( severity == project::PRS_UNKNOWN )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "project ERC severity settings contain an invalid value" );
+            return tl::unexpected( error );
+        }
+
+        ( *reply.mutable_severities() )[entry.key()] = severity;
+    }
+
+    return reply;
+}
+
+
+HANDLER_RESULT<project::SchematicRuleSeverities>
+API_HANDLER_COMMON::handleSetSchematicRuleSeverities(
+        const HANDLER_CONTEXT<SetSchematicRuleSeverities>& aCtx )
+{
+    if( !aCtx.Request.has_document() || aCtx.Request.document().type() != DOCTYPE_PROJECT )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_UNHANDLED );
+        return tl::unexpected( error );
+    }
+
+    PROJECT& project = Pgm().GetSettingsManager().Prj();
+
+    if( project.IsNullProject() )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message( "no valid project is loaded, cannot set ERC severities" );
+        return tl::unexpected( error );
+    }
+
+    if( !aCtx.Request.has_severities()
+        || aCtx.Request.severities().severities_size()
+                   > static_cast<int>( MAX_SCHEMATIC_RULE_SEVERITIES ) )
+    {
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+        error.set_error_message( "ERC severities require at most 256 named checks" );
+        return tl::unexpected( error );
+    }
+
+    nlohmann::json decoded = nlohmann::json::object();
+
+    for( const auto& [key, severity] : aCtx.Request.severities().severities() )
+    {
+        const bool validKey = !key.empty() && key.size() <= 128
+                              && std::all_of( key.begin(), key.end(), []( unsigned char character )
+                                  {
+                                      return std::islower( character )
+                                             || std::isdigit( character )
+                                             || character == '_' || character == '-';
+                                  } );
+        const char* value = severity == project::PRS_ERROR ? "error"
+                            : severity == project::PRS_WARNING ? "warning"
+                            : severity == project::PRS_IGNORE ? "ignore"
+                                                               : nullptr;
+
+        if( !validKey || !value )
+        {
+            ApiResponseStatus error;
+            error.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            error.set_error_message( "ERC severities contain an invalid check key or value" );
+            return tl::unexpected( error );
+        }
+
+        decoded[key] = value;
+    }
+
+    PROJECT_FILE& projectFile = project.GetProjectFile();
+    const nlohmann::json previous = projectFile.GetJson( "erc.rule_severities" )
+                                               .value_or( nlohmann::json::object() );
+    projectFile.Set<nlohmann::json>( "erc.rule_severities", std::move( decoded ) );
+
+    if( m_onProjectSettingsChanged )
+        m_onProjectSettingsChanged( APIPSC_ERC_SEVERITIES );
+
+    if( !saveProjectSettings( project ) )
+    {
+        projectFile.Set<nlohmann::json>( "erc.rule_severities", previous );
+
+        if( m_onProjectSettingsChanged )
+            m_onProjectSettingsChanged( APIPSC_ERC_SEVERITIES );
+
+        const bool rollbackSaved = saveProjectSettings( project );
+        ApiResponseStatus error;
+        error.set_status( ApiStatusCode::AS_NOT_READY );
+        error.set_error_message(
+                rollbackSaved ? "could not save ERC severities"
+                              : "could not save ERC severities or persist rollback" );
+        return tl::unexpected( error );
+    }
+
+    project::SchematicRuleSeverities reply;
+    reply.CopyFrom( aCtx.Request.severities() );
     return reply;
 }

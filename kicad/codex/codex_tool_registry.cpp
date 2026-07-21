@@ -242,7 +242,8 @@ CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPath
                                           std::function<bool( const wxFileName&, std::string& )>
                                                   aSymbolLibraryValidator,
                                           std::function<bool( const wxFileName&, std::string& )>
-                                                  aFootprintLibraryValidator ) :
+                                                  aFootprintLibraryValidator,
+                                          NATIVE_PREVIEW_RUNNER aNativePreviewRunner ) :
         m_projectPathProvider( std::move( aProjectPathProvider ) ),
         m_mutationGuard( std::move( aMutationGuard ) ),
         m_ipcSocketDirectoryProvider( std::move( aIpcSocketDirectoryProvider ) ),
@@ -250,7 +251,8 @@ CODEX_TOOL_REGISTRY::CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPath
         m_nativeCheckRunner( std::move( aNativeCheckRunner ) ),
         m_nativeFabricationRunner( std::move( aNativeFabricationRunner ) ),
         m_symbolLibraryValidator( std::move( aSymbolLibraryValidator ) ),
-        m_footprintLibraryValidator( std::move( aFootprintLibraryValidator ) )
+        m_footprintLibraryValidator( std::move( aFootprintLibraryValidator ) ),
+        m_nativePreviewRunner( std::move( aNativePreviewRunner ) )
 {}
 
 

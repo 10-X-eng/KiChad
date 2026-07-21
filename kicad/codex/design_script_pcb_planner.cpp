@@ -76,6 +76,63 @@ JSON vectorProto( const JSON& aVector )
 }
 
 
+JSON planReferenceImage( const JSON& aStatement, const std::string& aProject )
+{
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "reference_image",
+                                                           logicalId );
+    JSON item = {
+        { "id", { { "value", itemId } } },
+        { "layer", layerEnum( aStatement.at( "layer" ).get<std::string>() ) },
+        { "position", vectorProto( aStatement.at( "position" ) ) },
+        { "transformOriginOffset", vectorProto( aStatement.at( "originOffset" ) ) },
+        { "imageScale", { { "value", aStatement.at( "scale" ).get<double>() } } },
+        { "imageData", aStatement.at( "dataBase64" ).get<std::string>() },
+        { "locked", aStatement.at( "locked" ).get<bool>() ? "LS_LOCKED" : "LS_UNLOCKED" }
+    };
+
+    return { { "action", "upsert" },
+             { "itemType", "reference_image" },
+             { "logicalId", logicalId },
+             { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
+
+JSON planBarcode( const JSON& aStatement, const std::string& aProject )
+{
+    static const std::map<std::string, std::string> KINDS = {
+        { "code_39", "BK_CODE_39" }, { "code_128", "BK_CODE_128" },
+        { "data_matrix", "BK_DATA_MATRIX" }, { "qr_code", "BK_QR_CODE" },
+        { "micro_qr_code", "BK_MICRO_QR_CODE" }
+    };
+    const std::string logicalId = aStatement.at( "logicalId" ).get<std::string>();
+    const std::string itemId =
+            KICHAD::DESIGN_SCRIPT_PCB_PLANNER::StableUuid( aProject, "barcode", logicalId );
+    JSON item = {
+        { "id", { { "value", itemId } } },
+        { "text", aStatement.at( "text" ).get<std::string>() },
+        { "kind", KINDS.at( aStatement.at( "barcodeKind" ).get<std::string>() ) },
+        { "errorCorrection", "BEC_" + aStatement.at( "errorCorrection" ).get<std::string>() },
+        { "position", vectorProto( aStatement.at( "position" ) ) },
+        { "orientation", { { "valueDegrees", aStatement.at( "rotationDegrees" ).get<double>() } } },
+        { "layer", layerEnum( aStatement.at( "layer" ).get<std::string>() ) },
+        { "width", { { "valueNm", std::to_string( aStatement.at( "widthNm" ).get<int64_t>() ) } } },
+        { "height", { { "valueNm", std::to_string( aStatement.at( "heightNm" ).get<int64_t>() ) } } },
+        { "showText", aStatement.at( "showText" ).get<bool>() },
+        { "textHeight", { { "valueNm", std::to_string( aStatement.at( "textHeightNm" ).get<int64_t>() ) } } },
+        { "knockout", aStatement.at( "knockout" ).get<bool>() },
+        { "knockoutMargin", vectorProto( aStatement.at( "knockoutMargin" ) ) },
+        { "locked", aStatement.at( "locked" ).get<bool>() ? "LS_LOCKED" : "LS_UNLOCKED" }
+    };
+
+    return { { "action", "upsert" }, { "itemType", "barcode" },
+             { "logicalId", logicalId }, { "itemId", itemId },
+             { "item", std::move( item ) } };
+}
+
+
 JSON polyLineProto( const JSON& aLine )
 {
     JSON nodes = JSON::array();
@@ -212,6 +269,12 @@ JSON planRules( const JSON& aRules )
     {
         return JSON( { { "valueNm", std::to_string( aRules.at( aName ).get<int64_t>() ) } } );
     };
+    const auto severity = []( const std::string& aSeverity )
+    {
+        return aSeverity == "error" ? "BRS_ERROR"
+               : aSeverity == "warning" ? "BRS_WARNING"
+                                          : "BRS_IGNORE";
+    };
     JSON rules = {
         { "minimumClearance", distance( "minimumClearanceNm" ) },
         { "minimumConnectionWidth", distance( "minimumConnectionWidthNm" ) },
@@ -240,7 +303,44 @@ JSON planRules( const JSON& aRules )
         { "allowFilletsOutsideZoneOutline",
           aRules.at( "allowFilletsOutsideZoneOutline" ) }
     };
+
+    if( aRules.contains( "drcSeverities" ) && !aRules.at( "drcSeverities" ).is_null() )
+    {
+        JSON ruleSeverities = JSON::object();
+
+        for( auto check = aRules.at( "drcSeverities" ).at( "checks" ).begin();
+             check != aRules.at( "drcSeverities" ).at( "checks" ).end(); ++check )
+        {
+            ruleSeverities[check.key()] = severity( check.value().get<std::string>() );
+        }
+
+        rules["defaultRuleSeverity"] = severity(
+                aRules.at( "drcSeverities" ).at( "default" ).get<std::string>() );
+        rules["ruleSeverities"] = std::move( ruleSeverities );
+    }
+
     return { { "action", "update_rules" }, { "rules", std::move( rules ) } };
+}
+
+
+JSON planSchematicRuleSeverities( const JSON& aSeverities )
+{
+    const auto severity = []( const std::string& aSeverity )
+    {
+        return aSeverity == "error" ? "PRS_ERROR"
+               : aSeverity == "warning" ? "PRS_WARNING"
+                                            : "PRS_IGNORE";
+    };
+    JSON severities = JSON::object();
+
+    for( auto check = aSeverities.at( "checks" ).begin();
+         check != aSeverities.at( "checks" ).end(); ++check )
+    {
+        severities[check.key()] = severity( check.value().get<std::string>() );
+    }
+
+    return { { "action", "update_schematic_rule_severities" },
+             { "severities", { { "severities", std::move( severities ) } } } };
 }
 
 
@@ -389,8 +489,40 @@ JSON planLibraryTable( const JSON& aLibraries, const std::string& aKind )
 }
 
 
-JSON planFootprintInstance( const JSON& aCompilerIr, const std::string& aProject,
-                            const std::string& aReference )
+std::string escapedNetName( const std::string& aValue )
+{
+    std::string result;
+    result.reserve( aValue.size() );
+
+    for( char character : aValue )
+    {
+        if( character == '/' )
+            result += "{slash}";
+        else if( character != '\n' && character != '\r' )
+            result += character;
+    }
+
+    return result;
+}
+
+
+std::string letterSubReference( int64_t aUnit )
+{
+    std::string result;
+
+    while( aUnit > 0 )
+    {
+        --aUnit;
+        result.insert( result.begin(), static_cast<char>( 'A' + aUnit % 26 ) );
+        aUnit /= 26;
+    }
+
+    return result;
+}
+
+
+JSON planFootprintInstance( const JSON& aCompilerIr, const JSON& aResolvedSymbols,
+                            const std::string& aProject, const std::string& aReference )
 {
     if( !aCompilerIr.contains( "schematic" ) || !aCompilerIr["schematic"].is_object()
         || !aCompilerIr["schematic"].contains( "components" )
@@ -490,6 +622,7 @@ JSON planFootprintInstance( const JSON& aCompilerIr, const std::string& aProject
             aReference + "/" + std::to_string( unitNumber ) ) );
 
     JSON padNets = JSON::object();
+    JSON fields = component->value( "properties", JSON::object() );
 
     if( aCompilerIr["schematic"].contains( "nets" )
         && aCompilerIr["schematic"]["nets"].is_array() )
@@ -521,6 +654,106 @@ JSON planFootprintInstance( const JSON& aCompilerIr, const std::string& aProject
         }
     }
 
+    if( !aCompilerIr["schematic"].contains( "noConnects" )
+        || !aCompilerIr["schematic"]["noConnects"].is_array() )
+    {
+        return JSON();
+    }
+
+    const std::string libraryId = component->value( "symbol", "" );
+    const JSON* resolved = nullptr;
+
+    if( aResolvedSymbols.is_object() && aResolvedSymbols.contains( libraryId )
+        && aResolvedSymbols[libraryId].is_object() )
+    {
+        resolved = &aResolvedSymbols[libraryId];
+    }
+
+    if( resolved )
+    {
+        const JSON nativeProperties = resolved->value( "properties", JSON::object() );
+        const std::string datasheet = component->contains( "datasheet" )
+                                              ? component->at( "datasheet" ).get<std::string>()
+                                              : nativeProperties.value( "Datasheet", "" );
+        const std::string description = component->contains( "description" )
+                                                ? component->at( "description" ).get<std::string>()
+                                                : nativeProperties.value( "Description", "" );
+
+        if( !datasheet.empty() )
+            fields["Datasheet"] = datasheet;
+
+        if( !description.empty() )
+            fields["Description"] = description;
+    }
+
+    for( const JSON& noConnect : aCompilerIr["schematic"]["noConnects"] )
+    {
+        if( !noConnect.is_object() || noConnect.value( "component", "" ) != aReference )
+            continue;
+
+        if( !resolved || !noConnect.contains( "unit" )
+            || !noConnect["unit"].is_number_integer()
+            || !noConnect.contains( "number" ) || !noConnect["number"].is_string() )
+        {
+            return JSON();
+        }
+
+        const int64_t noConnectUnit = noConnect["unit"].get<int64_t>();
+        const std::string unitKey = std::to_string( noConnectUnit );
+
+        if( !resolved->contains( "units" ) || !( *resolved )["units"].is_object()
+            || !( *resolved )["units"].contains( unitKey )
+            || !( *resolved )["units"][unitKey].is_array() )
+        {
+            return JSON();
+        }
+
+        const std::string pinNumber = noConnect["number"].get<std::string>();
+        const JSON* resolvedPin = nullptr;
+
+        for( const JSON& pin : ( *resolved )["units"][unitKey] )
+        {
+            if( pin.is_object() && pin.value( "number", "" ) == pinNumber )
+            {
+                resolvedPin = &pin;
+                break;
+            }
+        }
+
+        if( !resolvedPin || !resolvedPin->contains( "name" )
+            || !( *resolvedPin )["name"].is_string()
+            || !resolvedPin->contains( "effectivePadNumber" )
+            || !( *resolvedPin )["effectivePadNumber"].is_string() )
+        {
+            return JSON();
+        }
+
+        const std::string pinName = ( *resolvedPin )["name"].get<std::string>();
+        const std::string effectivePad =
+                ( *resolvedPin )["effectivePadNumber"].get<std::string>();
+        std::string netName = "unconnected-(";
+
+        if( !pinName.empty() && pinName != pinNumber )
+        {
+            netName += aReference;
+
+            if( resolved->value( "unitCount", 0 ) > 1 )
+                netName += letterSubReference( noConnectUnit );
+
+            netName += "-" + escapedNetName( pinName ) + "-Pad"
+                       + escapedNetName( effectivePad ) + ")";
+        }
+        else
+        {
+            netName += aReference + "-Pad" + escapedNetName( effectivePad ) + ")";
+        }
+
+        if( padNets.contains( effectivePad ) && padNets[effectivePad] != netName )
+            return JSON();
+
+        padNets[effectivePad] = netName;
+    }
+
     const JSON& linkedSheet = *sheet->second;
     return { { "libraryId", ( *component )["footprint"] },
              { "value", ( *component )["value"] },
@@ -528,6 +761,7 @@ JSON planFootprintInstance( const JSON& aCompilerIr, const std::string& aProject
              { "symbolPath", std::move( symbolPath ) },
              { "symbolSheetName", linkedSheet["title"] },
              { "symbolSheetFilename", linkedSheet["file"] },
+             { "fields", std::move( fields ) },
              { "padNets", std::move( padNets ) } };
 }
 
@@ -1429,7 +1663,8 @@ std::string DESIGN_SCRIPT_PCB_PLANNER::StableUuid( const std::string& aProject,
     return formatted.str();
 }
 
-DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& aCompilerIr )
+DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan(
+        const JSON& aCompilerIr, const JSON& aResolvedSymbols )
 {
     RESULT result;
     result.counts = { { "upserts", 0 }, { "placements", 0 }, { "rules", 0 },
@@ -1438,6 +1673,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                       { "footprintLibraries", 0 }, { "modelLibraries", 0 },
                       { "libraryTables", 0 }, { "stackups", 0 }, { "titleBlocks", 0 },
                       { "textVariables", 0 }, { "fieldTemplates", 0 },
+                      { "referenceImages", 0 }, { "barcodes", 0 },
                       { "unsupported", 0 } };
 
     if( !aCompilerIr.is_object() || aCompilerIr.value( "language", "" ) != "kichad-design"
@@ -1512,6 +1748,16 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
         if( aCompilerIr.contains( "rules" ) && aCompilerIr["rules"].is_object() )
         {
             result.operations.emplace_back( planRules( aCompilerIr["rules"] ) );
+
+            if( aCompilerIr["rules"].contains( "ercSeverities" )
+                && !aCompilerIr["rules"]["ercSeverities"].is_null() )
+            {
+                result.operations.emplace_back( planSchematicRuleSeverities(
+                        aCompilerIr["rules"]["ercSeverities"] ) );
+                result.counts["ercSeverityOverrides"] =
+                        aCompilerIr["rules"]["ercSeverities"]["checks"].size();
+            }
+
             ++result.counts["rules"].get_ref<int64_t&>();
         }
 
@@ -1584,6 +1830,18 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                 result.operations.emplace_back( planDimension( statement, project ) );
                 ++result.counts["upserts"].get_ref<int64_t&>();
             }
+            else if( kind == "reference_image" )
+            {
+                result.operations.emplace_back( planReferenceImage( statement, project ) );
+                ++result.counts["referenceImages"].get_ref<int64_t&>();
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
+            else if( kind == "barcode" )
+            {
+                result.operations.emplace_back( planBarcode( statement, project ) );
+                ++result.counts["barcodes"].get_ref<int64_t&>();
+                ++result.counts["upserts"].get_ref<int64_t&>();
+            }
             else if( kind == "place" )
             {
                 const std::string reference = statement.at( "component" ).get<std::string>();
@@ -1593,7 +1851,8 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                                    { "rotationDegrees", statement.at( "rotationDegrees" ) },
                                    { "side", statement.at( "side" ) },
                                    { "locked", statement.at( "locked" ) } };
-                JSON instance = planFootprintInstance( aCompilerIr, project, reference );
+                JSON instance = planFootprintInstance( aCompilerIr, aResolvedSymbols,
+                                                       project, reference );
 
                 if( instance.is_object() )
                     operation["instance"] = std::move( instance );
@@ -1621,6 +1880,7 @@ DESIGN_SCRIPT_PCB_PLANNER::RESULT DESIGN_SCRIPT_PCB_PLANNER::Plan( const JSON& a
                           { "footprintLibraries", 0 }, { "modelLibraries", 0 },
                           { "libraryTables", 0 }, { "stackups", 0 }, { "titleBlocks", 0 },
                           { "textVariables", 0 }, { "fieldTemplates", 0 },
+                          { "referenceImages", 0 }, { "barcodes", 0 },
                           { "unsupported", 0 } };
         return result;
     }

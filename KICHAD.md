@@ -14,24 +14,27 @@ development branch or release candidates.
 ./tools/bootstrap-kichad-ubuntu.sh
 ./tools/check-codex-app-server.sh
 ./tools/build-kichad.sh
-./tools/fetch-kicad-libraries.sh
 ./tools/run-kichad.sh
 ```
 
 The build and install trees live below the ignored `build/` directory.  Nothing is installed into
 `/usr/local`, and the system KiCad installation is not modified.  The install contains `kichad` and
 `kichad-cli` launchers that configure the local runtime library path while retaining the upstream
-executable names for compatibility.
+executable names for compatibility. They execute the installed native `_kicad` and `_kicad-cli`
+files, so the wrappers cannot recurse into themselves.
 
-The library fetch is optional for compiling and testing, but it supplies the current official
-symbols, footprints, 3D models, and project templates needed for a complete interactive session.
-The repositories are shallow-cloned into `build/libraries/`; rerunning the command updates them with
-fast-forward-only pulls.
+A full build fetches the official symbol, footprint, 3D-model, and template repositories at the
+exact stable version in `.kichad-base-version`, then installs them beside KiChad under
+`build/install/share/kicad`. This keeps the application and its standard libraries on one supported
+version and makes the installed launchers self-contained. `./tools/fetch-kicad-libraries.sh` and
+`./tools/install-kichad-libraries.sh` remain available when only the library runtime needs to be
+refreshed. Neither command tracks the libraries' moving development branch.
 
 ## Useful checks
 
 ```sh
 build/install/bin/kichad-cli version
+./tools/check-kichad-libraries.sh
 ./tools/smoke-codex-app-server-protocol.sh
 ctest --preset kichad-release
 ./tools/run-kichad.sh  # GUI smoke check; close the window after startup.
@@ -56,6 +59,13 @@ the supported KiCad 10 IPC API and KiCad transactions.  Schematic and library wo
 s-expression layer with KiCad validation because KiCad 10's public IPC surface does not cover those
 editors.  Network work stays off the UI thread, and credentials are never stored in the repository
 or compiled defaults.
+
+The read-only `inspect.render` operation plots current schematic and 2D board views through the
+matching `kicad-cli`, renders a native 3D board view when requested, crops blank plot margins, and
+attaches the resulting PNG directly to the Codex tool response. Preview files live only under the
+project's derived `.kichad/previews/` directory. A committed `design.apply` saves the live board and
+returns `verification.status = not_run`; the embedded agent must inspect the rendered result and run
+ERC/DRC before it can describe a design as correct.
 
 ## Syncing upstream
 

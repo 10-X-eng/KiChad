@@ -12,6 +12,8 @@
 #ifndef KICHAD_CODEX_APP_SERVER_CLIENT_H
 #define KICHAD_CODEX_APP_SERVER_CLIENT_H
 
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -55,9 +57,21 @@ public:
     void SetStateHandler( STATE_HANDLER aHandler ) { m_stateHandler = std::move( aHandler ); }
 
 private:
+    struct OUTBOUND_FRAME
+    {
+        std::string                                  payload;
+        size_t                                       offset;
+        std::chrono::steady_clock::time_point        lastProgress;
+    };
+
     static constexpr int POLL_INTERVAL_MS = 25;
+    static constexpr size_t MAX_JSONRPC_MESSAGE_BYTES = 16 * 1024 * 1024;
+    static constexpr size_t MAX_OUTBOUND_QUEUE_BYTES = 64 * 1024 * 1024;
+    static constexpr size_t MAX_WRITE_CHUNK_BYTES = 16 * 1024;
+    static constexpr size_t MAX_WRITE_BYTES_PER_POLL = 64 * 1024;
 
     bool writeMessage( const JSON& aMessage );
+    bool drainOutput();
     void consumeStream( wxInputStream* aStream, std::string& aBuffer, bool aParseJson );
     void dispatchLine( const std::string& aLine );
     void setState( bool aRunning, const wxString& aDetail );
@@ -70,6 +84,9 @@ private:
     int64_t                            m_nextRequestId;
     std::string                        m_stdoutBuffer;
     std::string                        m_stderrBuffer;
+    std::deque<OUTBOUND_FRAME>         m_outboundFrames;
+    size_t                             m_outboundQueuedBytes;
+    bool                               m_outputDeferred;
     std::map<int64_t, RESPONSE_HANDLER> m_pendingRequests;
     MESSAGE_HANDLER                    m_messageHandler;
     STATE_HANDLER                      m_stateHandler;
