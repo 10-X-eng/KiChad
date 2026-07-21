@@ -27,7 +27,7 @@ On Ubuntu 24.04 or KDE neon, run `./tools/bootstrap-kichad-ubuntu.sh` once.  The
 Pass one or more target names to the script for a narrower build.  The equivalent manual preset
 commands are documented in `KICHAD.md`.
 
-Use `build/install/bin/kichad-cli version` as the headless smoke check and
+Use `build/install/bin/kicad-cli version` as the headless smoke check and
 `./tools/run-kichad.sh` for a GUI smoke check.  Run the narrowest relevant CTest/QA target for edited
 code; use `ctest --preset kichad-release` only when broad coverage is warranted.  Report warnings
 separately from failures.

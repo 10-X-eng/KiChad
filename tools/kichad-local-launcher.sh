@@ -7,10 +7,10 @@ install_root="$(cd -- "${launcher_dir}/.." && pwd)"
 launcher_name="$(basename -- "$0")"
 
 case "$launcher_name" in
-    kichad)
+    kicad)
         target_name="kicad"
         ;;
-    kichad-cli)
+    kicad-cli)
         target_name="kicad-cli"
         ;;
     *)

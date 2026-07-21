@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 install_root="${KICHAD_INSTALL_ROOT:-${repo_root}/build/install}"
-kicad_cli="${install_root}/bin/kichad-cli"
+kicad_cli="${install_root}/bin/kicad-cli"
 
 if [[ ! -x "$kicad_cli" ]]; then
     echo "KiChad CLI is missing: ${kicad_cli}" >&2

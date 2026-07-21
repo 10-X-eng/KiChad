@@ -81,10 +81,10 @@ if (( $# == 0 )); then
         install -m 0755 "$built_binary" "$native_binary"
     done
 
-    install -m 0755 "$launcher_template" "$install_dir/bin/kichad"
-    install -m 0755 "$launcher_template" "$install_dir/bin/kichad-cli"
+    install -m 0755 "$launcher_template" "$install_dir/bin/kicad"
+    install -m 0755 "$launcher_template" "$install_dir/bin/kicad-cli"
 
-    built_version="$("$install_dir/bin/kichad-cli" version)"
+    built_version="$("$install_dir/bin/kicad-cli" version)"
 
     if [[ "$built_version" != "$base_version"* ]]; then
         echo "Expected a ${base_version} build, got: ${built_version}" >&2

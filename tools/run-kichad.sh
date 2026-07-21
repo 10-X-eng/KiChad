@@ -4,8 +4,8 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 install_root="${KICHAD_INSTALL_ROOT:-${repo_root}/build/install}"
-kicad_binary="${install_root}/bin/kichad"
-kicad_cli="${install_root}/bin/kichad-cli"
+kicad_binary="${install_root}/bin/kicad"
+kicad_cli="${install_root}/bin/kicad-cli"
 
 if [[ ! -x "$kicad_binary" || ! -x "$kicad_cli" ]]; then
     echo "KiChad is not installed in ${install_root}." >&2

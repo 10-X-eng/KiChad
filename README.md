@@ -27,8 +27,8 @@ The same full build pins, builds, and installs the official symbol, footprint, 3
 template repositories at `.kichad-base-version`; it never combines the stable application with
 the libraries' moving development branch. Run `./tools/check-kichad-libraries.sh` to make KiCad
 parse representative installed standard assets independently of the GUI.
-After a successful build, run `./tools/run-kichad.sh` (or `build/install/bin/kichad`) and use
-`build/install/bin/kichad-cli version` for a headless check; both launchers set the local runtime
+After a successful build, run `./tools/run-kichad.sh` (or `build/install/bin/kicad`) and use
+`build/install/bin/kicad-cli version` for a headless check; both launchers set the local runtime
 and standard-library paths without changing the system installation. The install keeps the native
 executables at `build/install/bin/_kicad` and `build/install/bin/_kicad-cli`; the public names are
 small launchers and never resolve back to themselves.

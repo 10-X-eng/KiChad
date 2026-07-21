@@ -18,8 +18,8 @@ development branch or release candidates.
 ```
 
 The build and install trees live below the ignored `build/` directory.  Nothing is installed into
-`/usr/local`, and the system KiCad installation is not modified.  The install contains `kichad` and
-`kichad-cli` launchers that configure the local runtime library path while retaining the upstream
+`/usr/local`, and the system KiCad installation is not modified.  The install contains `kicad` and
+`kicad-cli` launchers that configure the local runtime library path while retaining the upstream
 executable names for compatibility. They execute the installed native `_kicad` and `_kicad-cli`
 files, so the wrappers cannot recurse into themselves.
 
@@ -33,7 +33,7 @@ refreshed. Neither command tracks the libraries' moving development branch.
 ## Useful checks
 
 ```sh
-build/install/bin/kichad-cli version
+build/install/bin/kicad-cli version
 ./tools/check-kichad-libraries.sh
 ./tools/smoke-codex-app-server-protocol.sh
 ctest --preset kichad-release
