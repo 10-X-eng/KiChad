@@ -13,7 +13,11 @@
 
 #include "codex_tool_internal.h"
 #include "design_script_compiler.h"
+#include "design_script_electrical_analyzer.h"
+#include "design_script_footprint_library_generator.h"
 #include "design_script_layout_analyzer.h"
+#include "design_script_physical_synthesizer.h"
+#include "design_script_simulation_runner.h"
 
 #include <build_version.h>
 
@@ -48,12 +52,13 @@ nlohmann::json VerifySpec()
                               { "required", nlohmann::json::array( { "operation", "path" } ) } };
     schema["properties"]["operation"] =
             { { "type", "string" },
-              { "enum", nlohmann::json::array( { "erc", "drc", "layout", "sourcing" } ) } };
+              { "enum", nlohmann::json::array(
+                                { "erc", "electrical", "drc", "layout", "sourcing" } ) } };
     schema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description",
                 "Project-relative .kicad_sch for ERC, .kicad_pcb for DRC, or .kicad_kds for "
-                "layout and sourcing." } };
+                "electrical, layout, and sourcing." } };
     schema["properties"]["offset"] =
             { { "type", "integer" }, { "minimum", 0 }, { "maximum", 1000000 },
               { "description", "Zero-based violation offset; defaults to 0." } };
@@ -68,7 +73,9 @@ nlohmann::json VerifySpec()
              { "name", "verify" },
              { "description",
                "Run read-only native design gates. ERC and DRC use the matching KiCad 10 "
-               "backend; DRC also checks schematic parity. Layout evaluates the canonical KDS "
+               "backend; DRC also checks schematic parity. Electrical evaluates typed rail, "
+               "rating, thermal, and logic contracts plus declared operating-point, transient, "
+               "DC-sweep, and AC-sweep simulations and numerical assertions. Layout evaluates the canonical KDS "
                "physical acceptance contract. Sourcing checks the single KDS evidence cache "
                "for completeness, orderability, and freshness. Results have complete counts "
                "and bounded pageable issues." },
@@ -76,6 +83,118 @@ nlohmann::json VerifySpec()
 }
 
 } // namespace KICHAD::CODEX_TOOLS
+
+
+CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleElectricalVerify(
+        const JSON& aArguments, const wxString& aProjectPath ) const
+{
+    int offset = 0;
+    int limit = 100;
+
+    for( const auto& [name, minimum, maximum, destination] :
+         std::array<std::tuple<const char*, int64_t, int64_t, int*>, 2>{
+                 std::tuple{ "offset", 0, 1000000, &offset },
+                 std::tuple{ "limit", 1, 200, &limit } } )
+    {
+        if( !aArguments.contains( name ) )
+            continue;
+
+        if( !aArguments[name].is_number_integer() )
+            return failure( "invalid_arguments", std::string( "verify." ) + name
+                                                         + " must be an integer" );
+
+        const int64_t parsed = aArguments[name].get<int64_t>();
+
+        if( parsed < minimum || parsed > maximum )
+            return failure( "invalid_arguments", std::string( "verify." ) + name
+                                                         + " is outside its allowed range" );
+
+        *destination = static_cast<int>( parsed );
+    }
+
+    if( !wxFileName::DirExists( aProjectPath ) )
+        return failure( "project_unavailable", "No readable project directory is active" );
+
+    const std::string relativePath = aArguments["path"].get<std::string>();
+    wxFileName sidecar;
+    std::string pathError;
+
+    if( !KICHAD::CODEX_TOOLS::ResolveProjectSidecar( aProjectPath, relativePath,
+                                                      sidecar, pathError ) )
+    {
+        return failure( "invalid_path", pathError );
+    }
+
+    if( !sidecar.FileExists() )
+        return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
+
+    std::string source;
+
+    if( !KICHAD::CODEX_TOOLS::ReadDesignScriptSidecar( sidecar, source, pathError ) )
+        return failure( "read_failed", pathError );
+
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    if( !compiled.ok )
+    {
+        return failure( "compile_failed",
+                        "KDS must compile before electrical verification; use design.compile "
+                        "for structured diagnostics" );
+    }
+
+    KICHAD::DESIGN_SCRIPT_ELECTRICAL_ANALYZER::RESULT analyzed =
+            KICHAD::DESIGN_SCRIPT_ELECTRICAL_ANALYZER::Analyze( compiled.ir );
+    KICHAD::DESIGN_SCRIPT_SIMULATION_RUNNER::RESULT simulated =
+            KICHAD::DESIGN_SCRIPT_SIMULATION_RUNNER::Run( compiled.ir );
+
+    if( !simulated.ok )
+        return failure( "simulation_failed", simulated.error );
+
+    for( JSON& issue : simulated.issues )
+        analyzed.issues.push_back( std::move( issue ) );
+
+    analyzed.clean = analyzed.clean && simulated.clean;
+    const size_t totalIssues = analyzed.issues.size();
+    JSON page = JSON::array();
+
+    for( size_t index = static_cast<size_t>( offset );
+         index < totalIssues && page.size() < static_cast<size_t>( limit ); ++index )
+    {
+        JSON item = analyzed.issues[index];
+        item["category"] = "electrical";
+        page.push_back( std::move( item ) );
+    }
+
+    const size_t returned = page.size();
+    const bool hasMore = static_cast<size_t>( offset ) + returned < totalIssues;
+    JSON payload = {
+        { "operation", "electrical" },
+        { "path", relativePath },
+        { "sourceSha256", compiled.sourceSha256 },
+        { "clean", analyzed.clean },
+        { "waiversPresent", false },
+        { "counts",
+          { { "total", totalIssues }, { "errors", totalIssues }, { "warnings", 0 },
+            { "exclusions", 0 }, { "other", 0 },
+            { "categories", { { "electrical", totalIssues } } } } },
+        { "electrical",
+          { { "contracts", std::move( analyzed.summary ) },
+            { "simulation", std::move( simulated.summary ) } } },
+        { "ignoredChecksCount", 0 },
+        { "ignoredChecks", JSON::array() },
+        { "ignoredChecksTruncated", false },
+        { "offset", offset },
+        { "returnedViolations", returned },
+        { "violations", std::move( page ) },
+        { "resultTruncated", hasMore }
+    };
+
+    if( hasMore )
+        payload["nextOffset"] = static_cast<size_t>( offset ) + returned;
+
+    return success( payload );
+}
 
 
 CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleLayoutVerify(
@@ -134,6 +253,35 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleLayoutVerify(
         return failure( "compile_failed",
                         "KDS must compile before layout verification; use design.compile "
                         "for structured diagnostics" );
+    }
+
+    if( compiled.ir.contains( "synthesis" ) && compiled.ir["synthesis"].is_object() )
+    {
+        KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::RESULT generated =
+                KICHAD::DESIGN_SCRIPT_FOOTPRINT_LIBRARY_GENERATOR::Generate( compiled.ir );
+        JSON footprintSources;
+
+        if( !generated.ok )
+            return failure( "footprint_generation_failed",
+                            "managed footprints required by physical synthesis could not be generated" );
+
+        if( !KICHAD::CODEX_TOOLS::InventoryProjectFootprints(
+                    aProjectPath, compiled.ir, footprintSources, pathError ) )
+        {
+            return failure( "footprint_inventory_failed", pathError );
+        }
+
+        for( const auto& [id, nativeSource] : generated.sources.items() )
+            footprintSources[id] = nativeSource;
+
+        KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::RESULT synthesized =
+                KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::Synthesize(
+                        compiled.ir, footprintSources );
+
+        if( !synthesized.ok )
+            return failure( "synthesis_failed", synthesized.error );
+
+        compiled.ir = std::move( synthesized.ir );
     }
 
     KICHAD::DESIGN_SCRIPT_LAYOUT_ANALYZER::RESULT analyzed =
@@ -455,19 +603,23 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleVerify(
     const std::string operation = aArguments["operation"].get<std::string>();
     const std::string relativePath = aArguments["path"].get<std::string>();
 
-    if( operation != "erc" && operation != "drc" && operation != "layout"
+    if( operation != "erc" && operation != "electrical" && operation != "drc"
+        && operation != "layout"
         && operation != "sourcing" )
     {
         return failure( "invalid_arguments",
-                        "verify.operation must be 'erc', 'drc', 'layout', or 'sourcing'" );
+                        "verify.operation must be 'erc', 'electrical', 'drc', 'layout', "
+                        "or 'sourcing'" );
     }
 
-    if( operation == "layout" )
+    if( operation == "electrical" || operation == "layout" )
     {
         if( aArguments.contains( "maxAgeDays" ) )
             return failure( "invalid_arguments", "verify.maxAgeDays applies only to sourcing" );
 
-        return handleLayoutVerify( aArguments, aProjectPath );
+        return operation == "electrical"
+                       ? handleElectricalVerify( aArguments, aProjectPath )
+                       : handleLayoutVerify( aArguments, aProjectPath );
     }
 
     if( operation == "sourcing" )

@@ -268,6 +268,61 @@ board text require logical `id` fields. Those IDs are stable across formatting a
 reordering and are the source identity used by transactional backends; component placement uses the
 already-unique reference.
 
+### Electrical qualification and simulation
+
+KDS keeps electrical intent beside the circuit it qualifies. Static contracts cover rail current
+budgets and reserve, component voltage/current/power derating, junction-temperature estimates, and
+logic-level compatibility. A simulation is another declaration inside that same `electrical` form,
+not a second netlist or an opaque SPICE escape hatch:
+
+```scheme
+(electrical
+  (rail logic_5v
+    (net +5V) (voltage 4.75V 5V 5.25V)
+    (source_current 500mA) (reserve 20%)
+    (load U1 30mA) (load A1 20mA))
+  (rating C1
+    (operating_voltage 12.6V) (rated_voltage 50V) (derating 80%))
+  (thermal A1
+    (dissipation 1W) (theta_ja 30C/W)
+    (ambient 50C) (maximum_junction 150C))
+  (logic step_signal (net STEP)
+    (driver U1 1 5) (receiver A1 1 15)
+    (output_low 0.4V) (output_high 4.2V)
+    (input_low 1.5V) (input_high 3V)
+    (signal_min 0V) (signal_max 5V)
+    (absolute_min 0V) (absolute_max 5.5V))
+  (simulation divider_dc
+    (ground GND)
+    (device upper (component R1) (unit 1) (kind resistor)
+      (nodes VIN OUT) (pins 1 2) (value 10kohm))
+    (device lower (component R2) (unit 1) (kind resistor)
+      (nodes OUT GND) (pins 1 2) (value 10kohm))
+    (source supply (kind voltage) (positive VIN) (negative GND) (dc 5V))
+    (analysis nominal (kind operating_point))
+    (assert output_voltage (analysis nominal) (probe voltage OUT)
+      (minimum 2.49V) (maximum 2.51V) (scope all))))
+(check electrical)
+```
+
+Simulation devices explicitly bind an ordered component unit/pin list to an ordered declared-net
+list; compilation rejects any mapping that disagrees with schematic connectivity. Supported primitives
+are resistors, capacitors, inductors, diodes, BJTs, and MOSFETs; semiconductor models are finite,
+typed diode/NPN/PNP/NMOS/PMOS parameter maps. Voltage and current sources support DC, AC, and pulse
+stimulus. Analyses are operating point, transient, DC sweep, and AC sweep. Assertions probe node or
+differential voltage and source current, with typed minimum/maximum bounds evaluated over every
+sample or the final sample.
+
+`verify` operation `electrical` evaluates the deterministic static contracts and runs every declared
+analysis with the installed `ngspice` executable through generated, bounded temporary netlists. It
+returns the numerical assertion extrema and complete pageable issues; arbitrary SPICE directives,
+includes, paths, shell text, and host code are never accepted. A physical design containing
+components or nets must declare `(check electrical)` and a non-empty electrical contract before the
+fabrication plan can be production-ready. Simulation is used where an adequate component model
+exists; modules and digital systems can instead be qualified by explicit rail, rating, thermal,
+logic, firmware, and bring-up contracts. A truly empty mechanical board has no electrical gate to
+run.
+
 ### Sourcing evidence
 
 KDS has one sourcing representation: at most one `(source REF ...)` form for each component. There
@@ -316,6 +371,7 @@ production-ready plan requires all of the following declarations in the same sid
 
 ```scheme
 (check erc)
+(check electrical)
 (check drc)
 (check layout)
 (check sourcing)
@@ -1958,9 +2014,32 @@ intent requires both `(check layout)` and a clean layout result; fabrication pla
 layout failures immediately, so ERC/DRC-clean geometry cannot by itself claim production
 readiness.
 
-The contract qualifies authored geometry; constraint-driven placement and obstacle-aware route
-synthesis remain separate implementation gaps. Exact `place`, `route`, `via`, and zone geometry
-therefore remain the canonical way to express designs beyond an automatic solver's reach.
+The optional `synthesize` policy fills physical details that were not authored exactly:
+
+```scheme
+(synthesize
+  (placement
+    (grid 1mm) (clearance 0.5mm) (edge_clearance 1mm)
+    (rotations 0deg 90deg 180deg 270deg))
+  (routing
+    (grid 0.25mm) (clearance 0.2mm) (width 0.25mm) (layer F.Cu)))
+```
+
+Placement preserves every explicit `place`, sorts remaining components by connectivity and stable
+reference, reads pad bounds plus native front/back courtyard geometry from the exact inventoried
+footprint, and performs a deterministic bounded grid search inside one rectangular board outline. Routing
+preserves every explicitly routed net, maps schematic pin numbers to native footprint pads, and
+uses deterministic Manhattan search around footprint courtyards, track keepouts, previously
+synthesized copper, and existing traces/arcs/vias on the selected layer. It emits ordinary exact
+`place` and `route` IR consumed by the same transactional backend. If no legal result exists it
+fails with corrective steering; it never emits crossing fallback copper or silently moves authored
+geometry.
+
+This is a bounded, deterministic baseline for common rectangular boards rather than a replacement for expert
+RF, impedance, length-tuned, differential, or multilayer routing. Exact `place`, `route`, `via`,
+zone, net-class, custom-rule, and layout-contract forms remain available in the same KDS file for
+those constraints and for curved, cutout, or multi-island outlines. Native DRC/layout verification
+remains mandatory after synthesis.
 
 ### Board outline geometry
 
@@ -2466,15 +2545,19 @@ board, KDS updates position, rotation, front/back side, lock state, Value, DNP, 
 Description, and the exact component-property field set in place. Footprint UUID, symbol path,
 pads, graphics, models, and child UUIDs remain unchanged. Metadata replacement uses the same live
 transaction and exact protobuf readback as geometry, so rollback restores the prior footprint on
-failure. If the footprint is absent, a declared
-project-local `.pretty` library may supply the exact `.kicad_mod`: KiChad parses it with KiCad's
+failure. If the footprint is absent, a declared project-local `.pretty` library or an installed
+KiCad stock global library may supply the exact `.kicad_mod`: KiChad parses it with KiCad's
 native parser and atomically creates a footprint instance with the component reference, value,
 DNP flag, deterministic root UUID and hierarchical symbol path, sheet metadata, placement, and pad
 nets. The sidecar records ownership of only that compiler-created instance. A later apply deletes it
 by exact UUID when the placement is removed and recreates the same UUID when restored; an existing
-user-owned footprint resolved by reference is never adopted or deleted. Source
-files are size-bounded, project-confined regular files; symlinks and path-shaped entry names are
-rejected. Missing global-library content is not loaded by this backend yet. Duplicate references,
+user-owned footprint resolved by reference is never adopted or deleted. Project sources are
+size-bounded, project-confined regular files; stock global sources must resolve inside KiCad's
+installed stock-library root. Path-shaped entry names and undeclared or unavailable content are
+rejected. The resolver is generic by declared library nickname and entry—there is no Arduino,
+Pololu, or board-specific lookup table. User-global and Plugin and Content Manager library tables
+are not silently searched; portable projects should declare project libraries when a part is not
+in the installed stock set. Duplicate references,
 board-only matches, malformed sources, missing connected pads, or unavailable sources abort the
 transaction before commit.
 Any other structurally retained form is refused before mutation until it has its own typed backend
@@ -2522,6 +2605,24 @@ freshness, malformed input, and project confinement. Normal KDS apply does not a
 declared checks; `fabricate.export` is the implemented production boundary that reruns ERC, DRC, and
 sourcing before it generates or installs a package.
 
+## AI source editing
+
+KDS stays as one ordinary project-relative `.kicad_kds` file. The native `design` tool exposes
+focused source operations instead of requiring every change to replace that whole file:
+
+- `design.search` performs bounded, case-insensitive plain-text lookup and returns exact source
+  windows, line/byte locations, the full-source SHA-256, and pagination state.
+- `design.read` returns the whole source for compatibility or an exact bounded line range using
+  `startLine` and `lineCount`.
+- `design.patch` applies up to 128 ordered `{oldText, newText}` edits. Every `oldText` must occur
+  exactly once in the source produced by the preceding edit, and `expectedSha256` must identify the
+  current file. Combined edit text is bounded to 16 MiB.
+
+Patch candidates are bounded, checked for embedded NUL bytes, compiled in memory, revision-checked
+again immediately before commit, and atomically installed only when valid. A stale revision,
+missing or ambiguous context, compilation diagnostic, or write failure leaves the original source
+untouched. `design.save` is reserved for initial creation and deliberate whole-source replacement.
+
 Run `tools/smoke-kichad-fabrication-component.sh --allow-mutation` for the complete component release
 proof. The isolated harness composes only exact 10.0.4 native fixtures, controls the date on clearly
 synthetic `.example.test` sourcing evidence, opens its own PCB Editor, applies and explicitly saves a routed
@@ -2538,6 +2639,9 @@ control surfaces, and KiCad's bundled auxiliary applications as `qualified`, `pa
 `unrepresented`, with the exact remaining gaps attached to every incomplete facet. This inventory
 is compiler introspection for an AI model; it is not another design file or another representation
 of a design. The `.kicad_kds` sidecar remains the only authored source.
+The human-readable implementation summary and prioritized release roadmap are maintained in
+[production-status.md](production-status.md); the runtime capability inventory remains authoritative
+for individual facets.
 
 A form is documented as executable only after it has all of the following coverage:
 

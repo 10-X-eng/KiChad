@@ -46,6 +46,19 @@
     (quantity 1)
     (unit_price "0.01 USD")
     (notes "Synthetic QA evidence; smoke harness controls only its fixture date"))
+  (electrical
+    (rating R1 (operating_power 25mW) (rated_power 100mW) (derating 80%))
+    (rating R2 (operating_power 25mW) (rated_power 100mW) (derating 80%))
+    (simulation resistor_pair_dc
+      (ground TEST_B)
+      (device first (component R1) (unit 1) (kind resistor)
+        (nodes TEST_A TEST_B) (pins 1 2) (value 10kohm))
+      (device second (component R2) (unit 1) (kind resistor)
+        (nodes TEST_A TEST_B) (pins 1 2) (value 10kohm))
+      (source fixture (kind voltage) (positive TEST_A) (negative TEST_B) (dc 1V))
+      (analysis nominal (kind operating_point))
+      (assert supply_current (analysis nominal) (probe current fixture)
+        (minimum -0.201mA) (maximum -0.199mA) (scope all))))
   (board
     (stackup
       (finish "None")
@@ -99,6 +112,7 @@
     (route TEST_B (id test-b-right) (from 11.8mm 3.3mm) (to 11.8mm 2.5mm)
       (width 0.2mm) (layer F.Cu)))
   (check erc)
+  (check electrical)
   (check drc)
   (check layout)
   (check sourcing)

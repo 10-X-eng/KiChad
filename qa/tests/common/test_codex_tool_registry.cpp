@@ -253,18 +253,21 @@ BOOST_AUTO_TEST_CASE( AdvertisesOnlyImplementedNativeTools )
     BOOST_CHECK_EQUAL( inspectOperations[2].get<std::string>(), "render" );
     const JSON& designOperations =
             specs[2]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( designOperations.size(), 7 );
+    BOOST_REQUIRE_EQUAL( designOperations.size(), 9 );
     BOOST_CHECK_EQUAL( designOperations[1].get<std::string>(), "context" );
-    BOOST_CHECK_EQUAL( designOperations[2].get<std::string>(), "read" );
-    BOOST_CHECK_EQUAL( designOperations[4].get<std::string>(), "preview" );
-    BOOST_CHECK_EQUAL( designOperations[6].get<std::string>(), "apply" );
+    BOOST_CHECK_EQUAL( designOperations[2].get<std::string>(), "search" );
+    BOOST_CHECK_EQUAL( designOperations[3].get<std::string>(), "read" );
+    BOOST_CHECK_EQUAL( designOperations[5].get<std::string>(), "preview" );
+    BOOST_CHECK_EQUAL( designOperations[7].get<std::string>(), "patch" );
+    BOOST_CHECK_EQUAL( designOperations[8].get<std::string>(), "apply" );
     const JSON& verifyOperations =
             specs[4]["inputSchema"]["properties"]["operation"]["enum"];
-    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 4 );
+    BOOST_REQUIRE_EQUAL( verifyOperations.size(), 5 );
     BOOST_CHECK_EQUAL( verifyOperations[0].get<std::string>(), "erc" );
-    BOOST_CHECK_EQUAL( verifyOperations[1].get<std::string>(), "drc" );
-    BOOST_CHECK_EQUAL( verifyOperations[2].get<std::string>(), "layout" );
-    BOOST_CHECK_EQUAL( verifyOperations[3].get<std::string>(), "sourcing" );
+    BOOST_CHECK_EQUAL( verifyOperations[1].get<std::string>(), "electrical" );
+    BOOST_CHECK_EQUAL( verifyOperations[2].get<std::string>(), "drc" );
+    BOOST_CHECK_EQUAL( verifyOperations[3].get<std::string>(), "layout" );
+    BOOST_CHECK_EQUAL( verifyOperations[4].get<std::string>(), "sourcing" );
     const JSON& fabricationOperations =
             specs[5]["inputSchema"]["properties"]["operation"]["enum"];
     BOOST_REQUIRE_EQUAL( fabricationOperations.size(), 2 );
@@ -902,6 +905,140 @@ BOOST_AUTO_TEST_CASE( CompilesAndAtomicallySavesReusableDesignSidecars )
                                                  { "source", source } } );
     BOOST_CHECK( !escaped.at( "success" ).get<bool>() );
     BOOST_CHECK_EQUAL( envelope( escaped )["error"]["code"].get<std::string>(), "invalid_path" );
+}
+
+
+BOOST_AUTO_TEST_CASE( SearchesReadsAndAtomicallyPatchesDesignSidecars )
+{
+    TOOL_PROJECT_FIXTURE fixture;
+    CODEX_TOOL_REGISTRY registry( [&fixture]() { return fixture.Root(); }, []() { return true; } );
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project patchable)
+  (component R1
+    (symbol "Device:R")
+    (value "10k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (component R2
+    (symbol "Device:R")
+    (value "10k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (net LINK (pin R1 1 1) (pin R2 1 1))
+  (check erc))
+)KDS";
+
+    JSON saved = registry.Handle( "design", { { "operation", "save" },
+                                               { "path", "patchable.kicad_kds" },
+                                               { "source", source } } );
+    BOOST_REQUIRE_MESSAGE( saved.at( "success" ).get<bool>(), saved.dump() );
+    const std::string firstHash =
+            envelope( saved )["data"]["sourceSha256"].get<std::string>();
+
+    JSON searched = registry.Handle( "design", { { "operation", "search" },
+                                                  { "path", "patchable.kicad_kds" },
+                                                  { "query", "VALUE \"10K\"" },
+                                                  { "contextBytes", 48 } } );
+    BOOST_REQUIRE_MESSAGE( searched.at( "success" ).get<bool>(), searched.dump() );
+    JSON searchData = envelope( searched )["data"];
+    BOOST_CHECK_EQUAL( searchData["sourceSha256"].get<std::string>(), firstHash );
+    BOOST_CHECK_EQUAL( searchData["totalMatches"].get<size_t>(), 2 );
+    BOOST_REQUIRE_EQUAL( searchData["matches"].size(), 2 );
+    BOOST_CHECK_EQUAL( searchData["matches"][0]["matchText"].get<std::string>(),
+                       "value \"10k\"" );
+    BOOST_CHECK_NE( searchData["matches"][0]["source"].get<std::string>().find( "R1" ),
+                    std::string::npos );
+
+    JSON boundedRead = registry.Handle( "design", { { "operation", "read" },
+                                                     { "path", "patchable.kicad_kds" },
+                                                     { "startLine", 4 },
+                                                     { "lineCount", 4 } } );
+    BOOST_REQUIRE_MESSAGE( boundedRead.at( "success" ).get<bool>(), boundedRead.dump() );
+    JSON boundedData = envelope( boundedRead )["data"];
+    BOOST_CHECK_EQUAL( boundedData["range"]["startLine"].get<size_t>(), 4 );
+    BOOST_CHECK_EQUAL( boundedData["range"]["endLine"].get<size_t>(), 7 );
+    BOOST_CHECK( !boundedData["range"]["complete"].get<bool>() );
+    BOOST_CHECK_NE( boundedData["source"].get<std::string>().find( "component R1" ),
+                    std::string::npos );
+    BOOST_CHECK_EQUAL( boundedData["source"].get<std::string>().find( "component R2" ),
+                       std::string::npos );
+    BOOST_CHECK_LT( boundedData["bytes"].get<size_t>(),
+                    boundedData["sourceBytes"].get<size_t>() );
+
+    JSON patched = registry.Handle(
+            "design", { { "operation", "patch" }, { "path", "patchable.kicad_kds" },
+                        { "expectedSha256", firstHash },
+                        { "edits",
+                          JSON::array(
+                                  { { { "oldText", "(project patchable)" },
+                                      { "newText", "(project precisely-patched)" } },
+                                    { { "oldText",
+                                        "(component R1\n    (symbol \"Device:R\")\n    (value \"10k\")" },
+                                      { "newText",
+                                        "(component R1\n    (symbol \"Device:R\")\n    (value \"22k\")" } } } ) } } );
+    BOOST_REQUIRE_MESSAGE( patched.at( "success" ).get<bool>(), patched.dump() );
+    JSON patchData = envelope( patched )["data"];
+    const std::string patchedHash = patchData["sourceSha256"].get<std::string>();
+    BOOST_CHECK_EQUAL( patchData["operation"].get<std::string>(), "patch" );
+    BOOST_CHECK_EQUAL( patchData["previousSha256"].get<std::string>(), firstHash );
+    BOOST_CHECK_EQUAL( patchData["editsApplied"].get<size_t>(), 2 );
+    BOOST_CHECK_NE( patchedHash, firstHash );
+
+    JSON read = registry.Handle( "design", { { "operation", "read" },
+                                              { "path", "patchable.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( read.at( "success" ).get<bool>(), read.dump() );
+    const std::string patchedSource = envelope( read )["data"]["source"].get<std::string>();
+    BOOST_CHECK_NE( patchedSource.find( "(project precisely-patched)" ), std::string::npos );
+    BOOST_CHECK_NE( patchedSource.find( "(value \"22k\")" ), std::string::npos );
+
+    JSON stale = registry.Handle(
+            "design", { { "operation", "patch" }, { "path", "patchable.kicad_kds" },
+                        { "expectedSha256", firstHash },
+                        { "edits", JSON::array( { { { "oldText", "22k" },
+                                                    { "newText", "33k" } } } ) } } );
+    BOOST_REQUIRE( !stale.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( stale )["error"]["code"].get<std::string>(),
+                       "stale_source" );
+
+    JSON missing = registry.Handle(
+            "design", { { "operation", "patch" }, { "path", "patchable.kicad_kds" },
+                        { "expectedSha256", patchedHash },
+                        { "edits", JSON::array( { { { "oldText", "not in this KDS" },
+                                                    { "newText", "replacement" } } } ) } } );
+    BOOST_REQUIRE( !missing.at( "success" ).get<bool>() );
+    JSON missingError = envelope( missing )["error"];
+    BOOST_CHECK_EQUAL( missingError["code"].get<std::string>(),
+                       "patch_context_not_found" );
+    BOOST_CHECK_EQUAL( missingError["stateChanged"].get<std::string>(), "none" );
+    BOOST_CHECK( missingError["retryable"].get<bool>() );
+
+    JSON ambiguous = registry.Handle(
+            "design", { { "operation", "patch" }, { "path", "patchable.kicad_kds" },
+                        { "expectedSha256", patchedHash },
+                        { "edits", JSON::array( { { { "oldText", "(symbol \"Device:R\")" },
+                                                    { "newText", "(symbol \"Device:R_US\")" } } } ) } } );
+    BOOST_REQUIRE( !ambiguous.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( ambiguous )["error"]["code"].get<std::string>(),
+                       "patch_context_ambiguous" );
+    BOOST_CHECK_EQUAL(
+            envelope( ambiguous )["error"]["details"]["matchesAtLeast"].get<size_t>(),
+                       2 );
+
+    JSON invalid = registry.Handle(
+            "design", { { "operation", "patch" }, { "path", "patchable.kicad_kds" },
+                        { "expectedSha256", patchedHash },
+                        { "edits", JSON::array( { { { "oldText", "(check erc)" },
+                                                    { "newText", "(check unsupported)" } } } ) } } );
+    BOOST_REQUIRE( !invalid.at( "success" ).get<bool>() );
+    BOOST_CHECK_EQUAL( envelope( invalid )["error"]["code"].get<std::string>(),
+                       "compile_failed" );
+
+    JSON unchanged = registry.Handle( "design", { { "operation", "read" },
+                                                   { "path", "patchable.kicad_kds" } } );
+    BOOST_REQUIRE_MESSAGE( unchanged.at( "success" ).get<bool>(), unchanged.dump() );
+    BOOST_CHECK_EQUAL( envelope( unchanged )["data"]["sourceSha256"].get<std::string>(),
+                       patchedHash );
+    BOOST_CHECK_EQUAL( envelope( unchanged )["data"]["source"].get<std::string>(),
+                       patchedSource );
 }
 
 

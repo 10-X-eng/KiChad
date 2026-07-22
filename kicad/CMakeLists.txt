@@ -44,6 +44,8 @@ set( KICAD_SRCS
     codex/design_script_capabilities.cpp
     codex/design_script_compiler.cpp
     codex/design_script_context_builder.cpp
+    codex/design_script_electrical_analyzer.cpp
+    codex/design_script_electrical_compiler.cpp
     codex/design_script_custom_pad_proto_generator.cpp
     codex/design_script_device_code_compiler.cpp
     codex/design_release_writer.cpp
@@ -78,9 +80,13 @@ set( KICAD_SRCS
     codex/design_script_layout_compiler.cpp
     codex/design_script_pcb_planner.cpp
     codex/design_script_pcb_reconciler.cpp
+    codex/design_script_physical_synthesis_compiler.cpp
+    codex/design_script_physical_synthesizer.cpp
     codex/design_script_production_compiler.cpp
     codex/design_script_schematic_planner.cpp
     codex/design_script_schematic_reconciler.cpp
+    codex/design_script_simulation_compiler.cpp
+    codex/design_script_simulation_runner.cpp
     codex/design_script_symbol_compiler.cpp
     codex/design_script_symbol_field_compiler.cpp
     codex/design_script_symbol_field_generator.cpp
@@ -112,6 +118,7 @@ set( KICAD_SRCS
     codex/kicad_ipc_transaction.cpp
     codex/project_settings_ipc.cpp
     codex/production_package_writer.cpp
+    codex/codex_agent_policy.cpp
     codex/codex_panel.cpp
     codex/codex_paths.cpp
     codex/codex_thread_store.cpp

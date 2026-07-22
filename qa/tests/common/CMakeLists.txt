@@ -43,6 +43,7 @@ set( QA_COMMON_SRCS
     test_color4d.cpp
     test_commit.cpp
     test_codex_app_server_client.cpp
+    test_codex_agent_policy.cpp
     test_codex_tool_fabricate.cpp
     test_codex_tool_registry.cpp
     test_codex_thread_store.cpp
@@ -147,6 +148,8 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_capabilities.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_context_builder.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_electrical_analyzer.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_electrical_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_custom_pad_proto_generator.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_device_code_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_release_writer.cpp
@@ -181,9 +184,13 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_layout_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_pcb_reconciler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_physical_synthesis_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_physical_synthesizer.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_production_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_planner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_schematic_reconciler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_simulation_compiler.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_simulation_runner.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_field_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_symbol_field_generator.cpp
@@ -199,6 +206,7 @@ set( QA_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_via_padstack_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/design_script_via_protection_compiler.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_registry.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/codex/codex_agent_policy.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/codex_tool_support.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/production_package_writer.cpp
     ${CMAKE_SOURCE_DIR}/kicad/codex/board_render_artifact_validator.cpp

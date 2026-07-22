@@ -305,3 +305,6 @@ USB-C/regulation/custom footprint, and a four-layer fine-pitch board with planes
 Each fixture must finish routed, sourced, clean under ERC/DRC, and produce validated fabrication
 outputs.  Injected auth, sourcing, parser, IPC, validation, cancellation, and export failures must
 leave the project recoverable.
+
+Current implementation status, prioritized remaining work, and milestone exit criteria are tracked
+in [production-status.md](production-status.md).

@@ -95,7 +95,7 @@ BOOST_AUTO_TEST_CASE( ResolvesExactProjectSymbolCacheAndPinsDeterministically )
 }
 
 
-BOOST_AUTO_TEST_CASE( ResolvesDerivedSymbolsAndRejectsUnsafeInheritance )
+BOOST_AUTO_TEST_CASE( ResolvesDerivedSymbolsAndRequiresInventoriedSources )
 {
     const std::string globalProgram = R"KDS((kichad_design
   (version 1) (project global)
@@ -112,7 +112,7 @@ BOOST_AUTO_TEST_CASE( ResolvesDerivedSymbolsAndRejectsUnsafeInheritance )
             KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
                     compiled.ir, nlohmann::json::object() );
     BOOST_CHECK_MESSAGE( !result.ok, result.diagnostics.dump() );
-    BOOST_CHECK_NE( result.diagnostics.dump().find( "global_symbol_resolution_not_supported" ),
+    BOOST_CHECK_NE( result.diagnostics.dump().find( "missing_symbol_library_source" ),
                     std::string::npos );
 
     const std::string projectProgram = R"KDS((kichad_design

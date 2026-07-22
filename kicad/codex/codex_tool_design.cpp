@@ -16,6 +16,7 @@
 #include "design_script_context_builder.h"
 #include "design_script_footprint_library_generator.h"
 #include "design_script_pcb_planner.h"
+#include "design_script_physical_synthesizer.h"
 #include "design_script_pcb_reconciler.h"
 #include "design_script_schematic_planner.h"
 #include "design_script_schematic_reconciler.h"
@@ -54,6 +55,10 @@ using JSON = nlohmann::json;
 constexpr size_t MAX_DESIGN_SCRIPT_BYTES = 16 * 1024 * 1024;
 constexpr size_t MAX_DESIGN_STATE_BYTES = 64 * 1024 * 1024;
 constexpr size_t MAX_SCHEMATIC_INVENTORY_BYTES = 32 * 1024 * 1024;
+constexpr size_t MAX_DESIGN_PATCH_EDITS = 128;
+constexpr size_t MAX_DESIGN_PATCH_BYTES = 16 * 1024 * 1024;
+constexpr size_t MAX_DESIGN_READ_LINES = 1000;
+constexpr size_t MAX_DESIGN_SEARCH_CONTEXT_BYTES = 4096;
 
 
 struct PROJECT_LIBRARY_TABLE_UPDATE
@@ -126,20 +131,42 @@ nlohmann::json DesignSpec()
     schema["properties"]["operation"] =
             { { "type", "string" },
               { "enum", nlohmann::json::array(
-                                { "describe", "context", "read", "compile", "preview", "save", "apply" } ) } };
+                                { "describe", "context", "search", "read", "compile",
+                                  "preview", "save", "patch", "apply" } ) } };
     schema["properties"]["path"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative reusable .kicad_kds sidecar path." } };
     schema["properties"]["source"] =
             { { "type", "string" }, { "maxLength", MAX_DESIGN_SCRIPT_BYTES },
               { "description", "Inline KiChad Design Script s-expression source." } };
+    schema["properties"]["edits"] =
+            { { "type", "array" },
+              { "minItems", 1 },
+              { "maxItems", MAX_DESIGN_PATCH_EDITS },
+              { "description",
+                "Ordered exact-text edits for design.patch. Each oldText must match exactly once "
+                "in the source produced by the preceding edit; combined edit text is limited to "
+                "16 MiB." },
+              { "items",
+                { { "type", "object" },
+                  { "additionalProperties", false },
+                  { "required", nlohmann::json::array( { "oldText", "newText" } ) },
+                  { "properties",
+                    { { "oldText",
+                        { { "type", "string" }, { "minLength", 1 },
+                          { "maxLength", MAX_DESIGN_SCRIPT_BYTES },
+                          { "description", "Exact unique source text to replace." } } },
+                      { "newText",
+                        { { "type", "string" },
+                          { "maxLength", MAX_DESIGN_SCRIPT_BYTES },
+                          { "description", "Replacement text; empty deletes oldText." } } } } } } } };
     schema["properties"]["boardPath"] =
             { { "type", "string" }, { "maxLength", 4096 },
               { "description", "Project-relative .kicad_pcb target required by apply." } };
     schema["properties"]["expectedSha256"] =
             { { "type", "string" }, { "minLength", 64 }, { "maxLength", 64 },
               { "description",
-                "Required for stale-write protection and to apply the exact compiled revision." } };
+                "Required to patch or replace an existing sidecar and to apply the exact compiled revision." } };
     schema["properties"]["domain"] =
             { { "type", "string" },
               { "enum", nlohmann::json::array(
@@ -148,18 +175,31 @@ nlohmann::json DesignSpec()
               { "description", "Optional semantic domain for design.context." } };
     schema["properties"]["query"] =
             { { "type", "string" }, { "maxLength", 256 },
-              { "description", "Optional case-insensitive context item filter." } };
+              { "description",
+                "Case-insensitive semantic filter for design.context or exact-source text for design.search." } };
     schema["properties"]["offset"] =
             { { "type", "integer" }, { "minimum", 0 }, { "maximum", 1000000 },
-              { "description", "Zero-based design.context page offset." } };
+              { "description", "Zero-based design.context item or design.search match offset." } };
     schema["properties"]["limit"] =
             { { "type", "integer" }, { "minimum", 1 }, { "maximum", 200 },
-              { "description", "Maximum design.context semantic items." } };
+              { "description", "Maximum design.context semantic items or design.search matches." } };
+    schema["properties"]["startLine"] =
+            { { "type", "integer" }, { "minimum", 1 }, { "maximum", 1000000 },
+              { "description", "Optional one-based first source line for bounded design.read." } };
+    schema["properties"]["lineCount"] =
+            { { "type", "integer" }, { "minimum", 1 },
+              { "maximum", MAX_DESIGN_READ_LINES },
+              { "description", "Maximum exact source lines returned by bounded design.read." } };
+    schema["properties"]["contextBytes"] =
+            { { "type", "integer" }, { "minimum", 0 },
+              { "maximum", MAX_DESIGN_SEARCH_CONTEXT_BYTES },
+              { "description", "Exact source bytes included on each side of a design.search match." } };
 
     return { { "type", "function" },
              { "name", "design" },
              { "description",
-               "Describe, read bounded semantic context, compile, preview, atomically save, or transactionally apply a "
+               "Describe, search or read bounded exact source and semantic context, compile, "
+               "preview, atomically save or patch, or transactionally apply a "
                "reusable KiChad Design Script sidecar. KDS programs declare the complete "
                "project—schematic, libraries, PCB intent, sourcing, verification, and "
                "fabrication outputs—for deterministic execution by KiChad compiler backends." },
@@ -182,12 +222,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
     const std::string operation = aArguments["operation"].get<std::string>();
 
-    if( operation != "describe" && operation != "context" && operation != "read" && operation != "compile"
-        && operation != "preview" && operation != "save" && operation != "apply" )
+    if( operation != "describe" && operation != "context" && operation != "search"
+        && operation != "read" && operation != "compile" && operation != "preview"
+        && operation != "save" && operation != "patch" && operation != "apply" )
     {
         return failure( "invalid_arguments",
-                        "design.operation must be 'describe', 'context', 'read', 'compile', 'preview', "
-                        "'save', or 'apply'" );
+                        "design.operation must be 'describe', 'context', 'search', 'read', 'compile', 'preview', "
+                        "'save', 'patch', or 'apply'" );
     }
 
     if( operation == "describe" )
@@ -200,15 +241,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         return aValue.is_number_unsigned()
                || ( aValue.is_number_integer() && aValue.get<int64_t>() >= 0 );
     };
+    const auto integerArgument = [&]( const char* aName, uint64_t aDefault )
+    {
+        return aArguments.contains( aName ) ? aArguments[aName].get<uint64_t>() : aDefault;
+    };
 
     if( ( ( operation == "compile" || operation == "preview" ) && hasSource == hasPath )
         || ( operation == "save" && ( !hasSource || !hasPath ) )
-        || ( ( operation == "context" || operation == "read" || operation == "apply" )
+        || ( ( operation == "context" || operation == "search" || operation == "read"
+               || operation == "patch" || operation == "apply" )
              && ( hasSource || !hasPath ) ) )
     {
         std::string message;
 
-        if( operation == "context" || operation == "read" || operation == "apply" )
+        if( operation == "context" || operation == "search" || operation == "read"
+            || operation == "patch" || operation == "apply" )
             message = "design." + operation + " requires path and does not accept inline source";
         else if( operation == "save" )
             message = "design.save requires source and path";
@@ -223,13 +270,74 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         || ( aArguments.contains( "boardPath" ) && !aArguments["boardPath"].is_string() )
         || ( aArguments.contains( "domain" ) && !aArguments["domain"].is_string() )
         || ( aArguments.contains( "query" ) && !aArguments["query"].is_string() )
+        || ( aArguments.contains( "edits" ) && !aArguments["edits"].is_array() )
         || ( aArguments.contains( "offset" )
              && !nonNegativeInteger( aArguments["offset"] ) )
         || ( aArguments.contains( "limit" )
-             && !nonNegativeInteger( aArguments["limit"] ) ) )
+             && !nonNegativeInteger( aArguments["limit"] ) )
+        || ( aArguments.contains( "startLine" )
+             && !nonNegativeInteger( aArguments["startLine"] ) )
+        || ( aArguments.contains( "lineCount" )
+             && !nonNegativeInteger( aArguments["lineCount"] ) )
+        || ( aArguments.contains( "contextBytes" )
+             && !nonNegativeInteger( aArguments["contextBytes"] ) ) )
     {
         return failure( "invalid_arguments",
-                        "design source, path, boardPath, or context filter has the wrong type" );
+                        "design source, path, edits, boardPath, or context filter has the wrong type" );
+    }
+
+    if( operation == "patch"
+        && ( !aArguments.contains( "edits" ) || !aArguments["edits"].is_array()
+             || aArguments["edits"].empty()
+             || aArguments["edits"].size() > MAX_DESIGN_PATCH_EDITS ) )
+    {
+        return failure( "invalid_arguments",
+                        "design.patch requires between 1 and 128 ordered edits" );
+    }
+
+    if( ( operation != "patch" && aArguments.contains( "edits" ) )
+        || ( operation != "read"
+             && ( aArguments.contains( "startLine" )
+                  || aArguments.contains( "lineCount" ) ) )
+        || ( operation != "search" && operation != "context"
+             && ( aArguments.contains( "query" ) || aArguments.contains( "offset" )
+                  || aArguments.contains( "limit" ) ) )
+        || ( operation != "search" && aArguments.contains( "contextBytes" ) )
+        || ( operation != "context" && aArguments.contains( "domain" ) ) )
+    {
+        return failure( "invalid_arguments",
+                        "design received arguments that do not apply to this operation" );
+    }
+
+    if( operation == "search"
+        && ( !aArguments.contains( "query" ) || !aArguments["query"].is_string()
+             || aArguments["query"].get_ref<const std::string&>().empty()
+             || aArguments["query"].get_ref<const std::string&>().size() > 256 ) )
+    {
+        return failure( "invalid_arguments",
+                        "design.search requires a nonempty query of at most 256 bytes" );
+    }
+
+    if( operation == "read"
+        && ( ( aArguments.contains( "startLine" )
+               && ( integerArgument( "startLine", 1 ) == 0
+                    || integerArgument( "startLine", 1 ) > 1000000 ) )
+             || ( aArguments.contains( "lineCount" )
+                  && ( integerArgument( "lineCount", MAX_DESIGN_READ_LINES ) == 0
+                       || integerArgument( "lineCount", MAX_DESIGN_READ_LINES )
+                                  > MAX_DESIGN_READ_LINES ) ) ) )
+    {
+        return failure( "invalid_arguments", "design.read has an invalid source line range" );
+    }
+
+    if( operation == "search"
+        && ( integerArgument( "offset", 0 ) > 1000000
+             || integerArgument( "limit", 20 ) == 0
+             || integerArgument( "limit", 20 ) > 200
+             || integerArgument( "contextBytes", 1024 )
+                        > MAX_DESIGN_SEARCH_CONTEXT_BYTES ) )
+    {
+        return failure( "invalid_arguments", "design.search has an invalid result page" );
     }
 
     std::string source;
@@ -243,7 +351,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         if( !KICHAD::CODEX_TOOLS::ResolveProjectSidecar( aProjectPath, relativePath, sidecar, pathError ) )
             return failure( "invalid_path", pathError );
 
-        if( ( operation == "context" || operation == "read" || operation == "compile" || operation == "preview"
+        if( ( operation == "context" || operation == "search" || operation == "read"
+              || operation == "compile" || operation == "preview" || operation == "patch"
               || operation == "apply" )
             && !sidecar.FileExists() )
             return failure( "read_failed", "KiChad Design Script sidecar does not exist" );
@@ -261,15 +370,131 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                         "KiChad Design Script source must be UTF-8 text containing 1 byte to 16 MiB" );
     }
 
+    std::string previousSha256;
+
+    if( operation == "patch" )
+    {
+        picosha2::hash256_hex_string( source, previousSha256 );
+        size_t patchBytes = 0;
+
+        if( !aArguments.contains( "expectedSha256" )
+            || !aArguments["expectedSha256"].is_string()
+            || aArguments["expectedSha256"].get<std::string>().size() != 64 )
+        {
+            return failure(
+                    "stale_source", "design.patch requires the current 64-character sourceSha256",
+                    { { "expectedSha256", nullptr }, { "actualSha256", previousSha256 } } );
+        }
+
+        if( aArguments["expectedSha256"].get<std::string>() != previousSha256 )
+        {
+            return failure(
+                    "stale_source", "sidecar changed since it was loaded",
+                    { { "expectedSha256", aArguments["expectedSha256"] },
+                      { "actualSha256", previousSha256 } } );
+        }
+
+        for( size_t editIndex = 0; editIndex < aArguments["edits"].size(); ++editIndex )
+        {
+            const JSON& edit = aArguments["edits"][editIndex];
+
+            if( !edit.is_object() || edit.size() != 2 || !edit.contains( "oldText" )
+                || !edit["oldText"].is_string() || !edit.contains( "newText" )
+                || !edit["newText"].is_string() )
+            {
+                return failure(
+                        "invalid_arguments",
+                        "each design.patch edit must contain only string oldText and newText",
+                        { { "editIndex", editIndex } } );
+            }
+
+            const std::string oldText = edit["oldText"].get<std::string>();
+            const std::string newText = edit["newText"].get<std::string>();
+
+            if( oldText.empty() || oldText == newText
+                || oldText.size() > MAX_DESIGN_SCRIPT_BYTES
+                || newText.size() > MAX_DESIGN_SCRIPT_BYTES )
+            {
+                return failure(
+                        "invalid_arguments",
+                        "design.patch oldText must be nonempty and differ from bounded newText",
+                        { { "editIndex", editIndex } } );
+            }
+
+            if( oldText.size() > MAX_DESIGN_PATCH_BYTES - patchBytes )
+            {
+                return failure( "invalid_arguments",
+                                "design.patch exact-text payload exceeds the 16 MiB limit",
+                                { { "editIndex", editIndex } } );
+            }
+
+            patchBytes += oldText.size();
+
+            if( newText.size() > MAX_DESIGN_PATCH_BYTES - patchBytes )
+            {
+                return failure( "invalid_arguments",
+                                "design.patch exact-text payload exceeds the 16 MiB limit",
+                                { { "editIndex", editIndex } } );
+            }
+
+            patchBytes += newText.size();
+
+            const size_t firstMatch = source.find( oldText );
+
+            if( firstMatch == std::string::npos )
+            {
+                std::string oldTextSha256;
+                picosha2::hash256_hex_string( oldText, oldTextSha256 );
+                return failure(
+                        "patch_context_not_found",
+                        "design.patch oldText does not occur in the current KDS source",
+                        { { "editIndex", editIndex }, { "oldTextSha256", oldTextSha256 } } );
+            }
+
+            if( source.find( oldText, firstMatch + 1 ) != std::string::npos )
+            {
+                std::string oldTextSha256;
+                picosha2::hash256_hex_string( oldText, oldTextSha256 );
+                return failure(
+                        "patch_context_ambiguous",
+                        "design.patch oldText must identify exactly one source span",
+                        { { "editIndex", editIndex }, { "matchesAtLeast", 2 },
+                          { "oldTextSha256", oldTextSha256 } } );
+            }
+
+            if( source.size() - oldText.size() > MAX_DESIGN_SCRIPT_BYTES - newText.size() )
+            {
+                return failure(
+                        "invalid_source", "patched KDS source would exceed the 16 MiB limit",
+                        { { "editIndex", editIndex } } );
+            }
+
+            source.replace( firstMatch, oldText.size(), newText );
+        }
+
+        if( source.empty() || source.find( '\0' ) != std::string::npos )
+        {
+            return failure(
+                    "invalid_source",
+                    "patched KiChad Design Script must be UTF-8 text containing 1 byte to 16 MiB" );
+        }
+    }
+
     KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
             KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    const bool invalidUtf8 = std::any_of(
+            compiled.diagnostics.begin(), compiled.diagnostics.end(),
+            []( const JSON& aDiagnostic )
+            {
+                return aDiagnostic.value( "code", "" ) == "invalid_encoding";
+            } );
 
     if( operation == "context" )
     {
         const std::string domain = aArguments.value( "domain", "all" );
         const std::string query = aArguments.value( "query", "" );
-        const size_t offset = aArguments.value( "offset", 0U );
-        const size_t limit = aArguments.value( "limit", 50U );
+        const size_t offset = static_cast<size_t>( integerArgument( "offset", 0 ) );
+        const size_t limit = static_cast<size_t>( integerArgument( "limit", 50 ) );
         static const std::set<std::string> DOMAINS = {
             "all", "project", "libraries", "schematic", "pcb", "manufacturing"
         };
@@ -293,25 +518,179 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
                           { "context", std::move( context ) } } );
     }
 
-    if( operation == "read" )
+    if( operation == "search" )
     {
-        const bool invalidUtf8 = std::any_of(
-                compiled.diagnostics.begin(), compiled.diagnostics.end(),
-                []( const JSON& aDiagnostic )
-                {
-                    return aDiagnostic.value( "code", "" ) == "invalid_encoding";
-                } );
-
         if( invalidUtf8 )
             return failure( "invalid_source", "KiChad Design Script source must be valid UTF-8" );
 
-        return success( { { "operation", "read" },
-                          { "path", aArguments["path"] },
-                          { "source", source },
-                          { "bytes", source.size() },
-                          { "sourceSha256", compiled.sourceSha256 },
-                          { "valid", compiled.ok },
-                          { "diagnostics", compiled.diagnostics } } );
+        const std::string query = aArguments["query"].get<std::string>();
+        const size_t offset = static_cast<size_t>( integerArgument( "offset", 0 ) );
+        const size_t limit = static_cast<size_t>( integerArgument( "limit", 20 ) );
+        const size_t contextBytes =
+                static_cast<size_t>( integerArgument( "contextBytes", 1024 ) );
+        const auto asciiLower = []( std::string aText )
+        {
+            std::transform( aText.begin(), aText.end(), aText.begin(),
+                            []( unsigned char aCharacter )
+                            {
+                                return aCharacter >= 'A' && aCharacter <= 'Z'
+                                               ? static_cast<char>( aCharacter + ( 'a' - 'A' ) )
+                                               : static_cast<char>( aCharacter );
+                            } );
+            return aText;
+        };
+        const std::string searchableSource = asciiLower( source );
+        const std::string searchableQuery = asciiLower( query );
+        std::vector<size_t> lineStarts = { 0 };
+
+        for( size_t index = 0; index < source.size(); ++index )
+        {
+            if( source[index] == '\n' && index + 1 < source.size() )
+                lineStarts.push_back( index + 1 );
+        }
+
+        const auto lineIndexAt = [&]( size_t aByteOffset )
+        {
+            auto after = std::upper_bound( lineStarts.begin(), lineStarts.end(), aByteOffset );
+            return static_cast<size_t>( std::distance( lineStarts.begin(), after ) - 1 );
+        };
+        const auto isUtf8Continuation = []( unsigned char aCharacter )
+        {
+            return ( aCharacter & 0xC0 ) == 0x80;
+        };
+
+        JSON matches = JSON::array();
+        size_t totalMatches = 0;
+        size_t searchFrom = 0;
+
+        while( searchFrom <= searchableSource.size() )
+        {
+            const size_t match = searchableSource.find( searchableQuery, searchFrom );
+
+            if( match == std::string::npos )
+                break;
+
+            const size_t matchIndex = totalMatches++;
+
+            if( matchIndex >= offset && matches.size() < limit )
+            {
+                size_t snippetStart = match > contextBytes ? match - contextBytes : 0;
+                size_t snippetEnd = std::min( source.size(),
+                                              match + query.size() + contextBytes );
+
+                while( snippetStart > 0
+                       && isUtf8Continuation(
+                               static_cast<unsigned char>( source[snippetStart] ) ) )
+                {
+                    --snippetStart;
+                }
+
+                while( snippetEnd < source.size()
+                       && isUtf8Continuation(
+                               static_cast<unsigned char>( source[snippetEnd] ) ) )
+                {
+                    ++snippetEnd;
+                }
+
+                const size_t matchLineIndex = lineIndexAt( match );
+                const size_t snippetStartLineIndex = lineIndexAt( snippetStart );
+                const size_t snippetEndLineIndex = lineIndexAt(
+                        snippetEnd == 0 ? 0 : snippetEnd - 1 );
+                matches.push_back(
+                        { { "matchIndex", matchIndex },
+                          { "line", matchLineIndex + 1 },
+                          { "columnBytes", match - lineStarts[matchLineIndex] + 1 },
+                          { "matchByte", match },
+                          { "matchText", source.substr( match, query.size() ) },
+                          { "source", source.substr( snippetStart,
+                                                      snippetEnd - snippetStart ) },
+                          { "sourceStartByte", snippetStart },
+                          { "sourceEndByte", snippetEnd },
+                          { "sourceStartLine", snippetStartLineIndex + 1 },
+                          { "sourceEndLine", snippetEndLineIndex + 1 } } );
+            }
+
+            searchFrom = match + searchableQuery.size();
+        }
+
+        const size_t nextOffset = offset + matches.size();
+        JSON payload = { { "operation", "search" },
+                         { "path", aArguments["path"] },
+                         { "query", query },
+                         { "offset", offset },
+                         { "limit", limit },
+                         { "totalMatches", totalMatches },
+                         { "matches", std::move( matches ) },
+                         { "sourceBytes", source.size() },
+                         { "sourceLines", lineStarts.size() },
+                         { "sourceSha256", compiled.sourceSha256 },
+                         { "valid", compiled.ok },
+                         { "diagnostics", compiled.diagnostics } };
+
+        if( nextOffset < totalMatches )
+            payload["nextOffset"] = nextOffset;
+        else
+            payload["nextOffset"] = nullptr;
+
+        return success( payload );
+    }
+
+    if( operation == "read" )
+    {
+        if( invalidUtf8 )
+            return failure( "invalid_source", "KiChad Design Script source must be valid UTF-8" );
+
+        std::vector<size_t> lineStarts = { 0 };
+
+        for( size_t index = 0; index < source.size(); ++index )
+        {
+            if( source[index] == '\n' && index + 1 < source.size() )
+                lineStarts.push_back( index + 1 );
+        }
+
+        const bool bounded = aArguments.contains( "startLine" )
+                             || aArguments.contains( "lineCount" );
+        const size_t startLine = static_cast<size_t>( integerArgument( "startLine", 1 ) );
+        const size_t lineCount = static_cast<size_t>(
+                integerArgument( "lineCount", MAX_DESIGN_READ_LINES ) );
+
+        if( startLine > lineStarts.size() )
+        {
+            return failure( "invalid_arguments", "design.read startLine exceeds the KDS source",
+                            { { "startLine", startLine },
+                              { "totalLines", lineStarts.size() } } );
+        }
+
+        const size_t firstLineIndex = startLine - 1;
+        const size_t endLineIndex = bounded
+                                            ? std::min( firstLineIndex + lineCount,
+                                                        lineStarts.size() )
+                                            : lineStarts.size();
+        const size_t firstByte = lineStarts[firstLineIndex];
+        const size_t endByte = endLineIndex < lineStarts.size()
+                                       ? lineStarts[endLineIndex]
+                                       : source.size();
+        const std::string selectedSource = source.substr( firstByte, endByte - firstByte );
+        JSON payload = { { "operation", "read" },
+                         { "path", aArguments["path"] },
+                         { "source", selectedSource },
+                         { "bytes", selectedSource.size() },
+                         { "sourceBytes", source.size() },
+                         { "sourceSha256", compiled.sourceSha256 },
+                         { "valid", compiled.ok },
+                         { "diagnostics", compiled.diagnostics },
+                         { "range",
+                           { { "startLine", startLine },
+                             { "endLine", endLineIndex },
+                             { "totalLines", lineStarts.size() },
+                             { "complete", firstByte == 0 && endByte == source.size() } } } };
+
+        if( endLineIndex < lineStarts.size() )
+            payload["range"]["nextLine"] = endLineIndex + 1;
+        else
+            payload["range"]["nextLine"] = nullptr;
+
+        return success( payload );
     }
 
     if( operation == "compile" )
@@ -386,6 +765,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         for( const auto& [id, nativeSource] : generatedFootprints.sources.items() )
             footprintSources[id] = nativeSource;
+
+        KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::RESULT synthesized =
+                KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::Synthesize(
+                        compiled.ir, footprintSources );
+
+        if( !synthesized.ok )
+            return failure( "synthesis_failed", synthesized.error );
+
+        compiled.ir = std::move( synthesized.ir );
 
         KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
                 KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
@@ -628,6 +1016,15 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
         for( const auto& [id, nativeSource] : generatedFootprints.sources.items() )
             footprintSources[id] = nativeSource;
+
+        KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::RESULT synthesized =
+                KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::Synthesize(
+                        compiled.ir, footprintSources );
+
+        if( !synthesized.ok )
+            return failure( "synthesis_failed", synthesized.error );
+
+        compiled.ir = std::move( synthesized.ir );
 
         KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT resolvedSymbols =
                 KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve(
@@ -2320,7 +2717,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
     }
 
     if( !aMutationAvailable )
-        return failure( "snapshot_required", "A pre-turn project snapshot is required to save KDS" );
+        return failure( "snapshot_required",
+                        "A pre-turn project snapshot is required to save or patch KDS" );
 
     if( !compiled.ok )
     {
@@ -2341,7 +2739,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         {
             return failure(
                     "stale_source",
-                    "expectedSha256 is required when replacing an existing sidecar",
+                    "expectedSha256 is required when replacing or patching an existing sidecar",
                     { { "expectedSha256", nullptr },
                       { "observed", "an existing sidecar requires a revision guard" } } );
         }
@@ -2369,12 +2767,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
         return failure( "write_failed", pathError );
     }
 
-    JSON payload = { { "operation", "save" },
+    JSON payload = { { "operation", operation },
                      { "path", aArguments["path"] },
                      { "bytes", source.size() },
                      { "sourceSha256", compiled.sourceSha256 },
                      { "valid", true },
                      { "plan", compiled.plan },
-                     { "transaction", "snapshot-backed atomic save" } };
+                     { "transaction",
+                       operation == "patch" ? "snapshot-backed atomic patch"
+                                            : "snapshot-backed atomic save" } };
+
+    if( operation == "patch" )
+    {
+        payload["previousSha256"] = previousSha256;
+        payload["editsApplied"] = aArguments["edits"].size();
+    }
+
     return success( payload );
 }

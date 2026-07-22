@@ -17,6 +17,7 @@
 #include "design_script_board_text_box_compiler.h"
 #include "design_script_board_table_compiler.h"
 #include "design_script_layout_compiler.h"
+#include "design_script_physical_synthesis_compiler.h"
 #include "design_script_teardrop_compiler.h"
 #include "design_script_via_backdrill_compiler.h"
 #include "design_script_via_padstack_compiler.h"
@@ -3458,7 +3459,7 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
     std::set<std::string>        placedComponents;
     std::set<std::string>        singletonStatements;
     static const std::set<std::string> known = {
-        "stackup", "outline", "layout", "place", "route", "via",
+        "stackup", "outline", "layout", "synthesize", "place", "route", "via",
         "zone", "text", "text_box", "table", "dimension", "keepout", "image", "barcode",
         "line", "rectangle", "arc", "circle", "polygon", "bezier"
     };
@@ -3475,7 +3476,8 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
             continue;
         }
 
-        if( ( head == "stackup" || head == "outline" || head == "layout" )
+        if( ( head == "stackup" || head == "outline" || head == "layout"
+              || head == "synthesize" )
             && !singletonStatements.emplace( head ).second )
         {
             diagnostic( result, "error", "duplicate_board_statement",
@@ -3507,6 +3509,17 @@ DESIGN_SCRIPT_BOARD_COMPILER::RESULT DESIGN_SCRIPT_BOARD_COMPILER::Compile(
 
             if( compiled.layout.is_object() )
                 result.statements.push_back( std::move( compiled.layout ) );
+        }
+        else if( head == "synthesize" )
+        {
+            KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIS_COMPILER::RESULT compiled =
+                    KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIS_COMPILER::Compile(
+                            aDocument, child );
+
+            for( JSON& entry : compiled.diagnostics )
+                result.diagnostics.push_back( std::move( entry ) );
+
+            result.synthesis = std::move( compiled.synthesis );
         }
         else if( head == "place" )
         {

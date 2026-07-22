@@ -74,9 +74,10 @@ nlohmann::json componentOperation()
                 { "inPosFiles", true } } },
             { "properties", nlohmann::json::object() },
             { "units",
-              { { "1", nlohmann::json::array(
+                               { { "1", nlohmann::json::array(
                                { { { "number", "1" }, { "xNm", 0 },
-                                   { "yNm", 3810000 } } } ) } } } } }
+                                   { "yNm", 3810000 },
+                                   { "rotationDegrees", 270 } } } ) } } } } }
     };
     KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::RESULT plan =
             KICHAD::DESIGN_SCRIPT_SCHEMATIC_PLANNER::Plan(

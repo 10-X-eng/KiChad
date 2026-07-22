@@ -11,6 +11,8 @@
 
 #include "codex_panel.h"
 
+#include "codex_agent_policy.h"
+
 #include <bitmaps.h>
 #include <build_version.h>
 
@@ -39,95 +41,6 @@ namespace
 {
 
 using JSON = nlohmann::json;
-
-
-JSON agentConfig()
-{
-    return {
-        // Keep this narrow capability configuration aligned with VibeCAD's proven app-server
-        // integration.  Dotted keys are app-server config overrides, not nested JSON paths.
-        { "features.apps", false },
-        { "features.browser_use", false },
-        { "features.code_mode", true },
-        { "features.computer_use", false },
-        { "features.enable_mcp_apps", false },
-        { "features.goals", true },
-        { "features.hooks", false },
-        { "features.image_generation", false },
-        { "features.multi_agent", false },
-        { "features.multi_agent_v2", false },
-        { "features.plugins", false },
-        { "features.shell_tool", false },
-        { "features.skill_mcp_dependency_install", false },
-        { "features.tool_suggest", false },
-        { "features.unified_exec", false },
-        { "features.workspace_dependencies", false },
-        { "include_apps_instructions", false },
-        { "include_collaboration_mode_instructions", true },
-        { "include_environment_context", true },
-        { "include_permissions_instructions", true },
-        { "mcp_servers", JSON::object() },
-        { "orchestrator.mcp.enabled", false },
-        { "orchestrator.skills.enabled", false },
-        { "project_doc_fallback_filenames", JSON::array() },
-        { "project_doc_max_bytes", 0 },
-        { "skills.bundled.enabled", false },
-        { "skills.include_instructions", false },
-        { "tools.experimental_request_user_input.enabled", false },
-        { "tools.web_search.context_size", "high" },
-        { "web_search", "live" },
-    };
-}
-
-
-const char* agentInstructions()
-{
-    return "You are the KiChad electronics design agent. Use only the native KiChad dynamic "
-           "tools advertised by the host for design work. The sole exception is Codex's built-in "
-           "live web search, which you must proactively use before selecting or retaining every "
-           "component to verify its manufacturer, exact MPN, primary datasheet, lifecycle, and "
-           "current orderable availability from real distributors. Cache the exact datasheet "
-           "URL, distributor product URL, supplier SKU, reported stock, lifecycle, and verification "
-           "date in that component's KDS source form, then run verify with operation sourcing. "
-           "Never guess "
-           "component facts or treat an unverified component as production-ready. "
-           "Treat the versioned project.kicad_kds KiChad Design Script sidecar as the only "
-           "representation of design intent: use design.context for bounded semantic inventory, "
-           "then read and edit the exact KDS source, describe the language when needed, compile "
-           "before saving, and use native backends to produce KiCad "
-           "artifacts. A successful design.apply means only that the exact revision was committed "
-           "and saved; it is not evidence that the design is correct. After every apply, use "
-           "explicit net presentation intent: use (presentation wired) for same-sheet circuits "
-           "that a reviewer must trace and (presentation labels) only for deliberate global, "
-           "power, or cross-sheet connectivity. Wired nets lower to deterministic orthogonal "
-           "paths anchored at resolved native pin connection points; do not substitute detached "
-           "decorative wire primitives for semantic connectivity. After every apply, use "
-           "inspect render on the schematic, pcb2d, pcblayout, and pcb3d views, review the attached images, "
-           "then run ERC and DRC against the saved files. Repair KDS geometry, labeling, placement, "
-           "routing, and connectivity until the visual review and declared checks are clean. "
-           "When the user asks for a running product rather than fabrication files alone, author "
-           "the KDS production contract: assembly process/acceptance intent, self-contained device code when source is available, exact hash-bound firmware (embedded or confined), typed "
-           "programming connector/signals and mandatory verification, current-limited power, and "
-           "ordered unpowered, power-on, and functional acceptance tests. "
-           "Before a final release, call fabricate plan with the exact compiled KDS "
-           "digest. Treat productionReady as manufacturing readiness and require runningReady for "
-           "a programmed/testable product; request fabricate export only at the appropriate gate. Never set "
-           "allowWaivers unless the user explicitly approved releasing ignored checks or "
-           "exclusions. design.context is compiler introspection, never a second authored file; "
-           "do not create or depend on another design representation. Never use shell, "
-           "arbitrary code execution, GUI automation, MCP, or direct ad-hoc file rewriting.";
-}
-
-
-const char* agentDeveloperInstructions()
-{
-    return "Operate only through the supplied native KiChad dynamic tools for electronics "
-           "design and Codex live web search for component research. Built-in goals, planning, "
-           "and read-only image inspection are available for normal Codex workflows. Do not use "
-           "or propose shell execution, general filesystem mutation, plugins, apps, skills, MCP, "
-           "browser automation, computer control, or multi-agent delegation. KDS changes must go "
-           "through the native design tool, never through generic file editing.";
-}
 
 
 wxString responseErrorMessage( const JSON& aResponse, const wxString& aFallback )
@@ -768,9 +681,9 @@ void CODEX_PANEL::startThread( std::function<void()> aReadyHandler )
         // seeded from that store after each cold launch.
         { "historyMode", "legacy" },
         { "serviceName", "KiChad" },
-        { "baseInstructions", agentInstructions() },
-        { "developerInstructions", agentDeveloperInstructions() },
-        { "config", agentConfig() }
+        { "baseInstructions", KICHAD::CODEX_AGENT_POLICY::BaseInstructions() },
+        { "developerInstructions", KICHAD::CODEX_AGENT_POLICY::DeveloperInstructions() },
+        { "config", KICHAD::CODEX_AGENT_POLICY::ThreadConfig() }
     };
 
     params["dynamicTools"] = m_toolRegistry.Specs();

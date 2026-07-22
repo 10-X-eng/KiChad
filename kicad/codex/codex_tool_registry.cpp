@@ -40,13 +40,16 @@ std::string failureState( const std::string& aCode, const std::string& aTool,
                           const std::string& aOperation )
 {
     const bool mutating = ( aTool == "design"
-                            && ( aOperation == "apply" || aOperation == "save" ) )
+                            && ( aOperation == "apply" || aOperation == "save"
+                                 || aOperation == "patch" ) )
                           || ( aTool == "pcb" && aOperation == "mutate" );
 
     if( !mutating || codeIsOneOf( aCode, { "unknown_tool", "invalid_arguments",
                                            "project_unavailable", "invalid_path", "read_failed",
                                            "file_too_large", "parse_failed", "format_mismatch",
                                            "invalid_source", "compile_failed", "stale_source",
+                                           "patch_context_not_found",
+                                           "patch_context_ambiguous",
                                            "snapshot_required", "dependency_unavailable",
                                            "pcb_editor_unavailable", "backend_incomplete",
                                            "invalid_plan", "symbol_generation_failed",
@@ -62,7 +65,8 @@ std::string failureState( const std::string& aCode, const std::string& aTool,
 
 bool failureIsRetryable( const std::string& aCode )
 {
-    return codeIsOneOf( aCode, { "stale_source", "dependency_unavailable",
+    return codeIsOneOf( aCode, { "stale_source", "patch_context_not_found",
+                                 "patch_context_ambiguous", "dependency_unavailable",
                                  "pcb_editor_unavailable", "ipc_failed", "read_failed",
                                  "write_failed", "check_failed", "transaction_failed" } );
 }
@@ -135,11 +139,28 @@ JSON recoveryFor( const std::string& aCode, const std::string& aTool,
         steps.push_back( retryStep( "design", retryArguments,
                                     "Apply exactly the revision returned by design.compile." ) );
     }
+    else if( aCode == "stale_source" && aTool == "design" && operation == "patch"
+             && !path.empty() )
+    {
+        recovery["summary"] =
+                "Search the current sidecar, reconcile the intended edits, and retry against its digest.";
+        steps.push_back( retryStep(
+                "design",
+                { { "operation", "search" }, { "path", path },
+                  { "query", "$original.arguments.edits[0].oldText" } },
+                "Locate exact current source text and obtain sourceSha256." ) );
+        steps.push_back( { { "action", "retry_tool" }, { "tool", "design" },
+                           { "useOriginalArguments", JSON::array( { "path", "edits" } ) },
+                           { "arguments",
+                             { { "operation", "patch" },
+                               { "expectedSha256", "$previous.data.sourceSha256" } } },
+                           { "purpose", "Patch only after reconciling concurrent changes." } } );
+    }
     else if( aCode == "stale_source" && aTool == "design" && operation == "save"
              && !path.empty() )
     {
         recovery["summary"] =
-                "Read the current sidecar, reconcile the intended edit, and save against its digest.";
+                "Read the current sidecar, reconcile the intended replacement, and save against its digest.";
         steps.push_back( retryStep( "design", { { "operation", "read" }, { "path", path } },
                                     "Obtain the current source and sourceSha256." ) );
         steps.push_back( { { "action", "retry_tool" }, { "tool", "design" },
@@ -148,6 +169,40 @@ JSON recoveryFor( const std::string& aCode, const std::string& aTool,
                              { { "operation", "save" },
                                { "expectedSha256", "$previous.data.sourceSha256" } } },
                            { "purpose", "Save only after reconciling concurrent changes." } } );
+    }
+    else if( codeIsOneOf( aCode,
+                          { "patch_context_not_found", "patch_context_ambiguous" } )
+             && aTool == "design" && operation == "patch" && !path.empty() )
+    {
+        recovery["summary"] =
+                "Search or read the current source and retry with oldText that occurs exactly once.";
+        steps.push_back( retryStep( "design",
+                                    { { "operation", "search" }, { "path", path },
+                                      { "query",
+                                        "$original.arguments.edits[$error.details.editIndex].oldText" } },
+                                    "Locate exact current source text and obtain sourceSha256." ) );
+        steps.push_back( { { "action", "retry_tool" }, { "tool", "design" },
+                           { "useOriginalArguments", JSON::array( { "path", "edits" } ) },
+                           { "arguments",
+                             { { "operation", "patch" },
+                               { "expectedSha256", "$previous.data.sourceSha256" } } },
+                           { "purpose",
+                             "Use enough exact surrounding text to make every edit unique." } } );
+    }
+    else if( codeIsOneOf( aCode, { "compile_failed", "invalid_source" } )
+             && aTool == "design" && operation == "patch" )
+    {
+        recovery["summary"] =
+                "The patch candidate was not committed; correct its edits using the returned diagnostics.";
+        steps.push_back( { { "action", "inspect_failure_details" },
+                           { "purpose",
+                             "Use every returned candidate diagnostic without changing the current file." } } );
+        steps.push_back( { { "action", "retry_tool" }, { "tool", "design" },
+                           { "useOriginalArguments",
+                             JSON::array( { "path", "expectedSha256" } ) },
+                           { "arguments", { { "operation", "patch" } } },
+                           { "purpose",
+                             "Submit corrected ordered edits against the unchanged source revision." } } );
     }
     else if( aCode == "compile_failed" || aCode == "invalid_source" )
     {

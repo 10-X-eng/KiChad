@@ -38,6 +38,7 @@
 #include <build_version.h>
 #include <kiid.h>
 #include <libraries/library_table_parser.h>
+#include <paths.h>
 
 #include <algorithm>
 #include <array>
@@ -588,8 +589,8 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
                                       const nlohmann::json& aCompilerIr,
                                       nlohmann::json& aSources, std::string& aError )
 {
-    constexpr size_t MAX_SYMBOL_LIBRARY_BYTES = 16 * 1024 * 1024;
-    constexpr size_t MAX_SYMBOL_INVENTORY_BYTES = 32 * 1024 * 1024;
+    constexpr size_t MAX_SYMBOL_LIBRARY_BYTES = 32 * 1024 * 1024;
+    constexpr size_t MAX_SYMBOL_INVENTORY_BYTES = 128 * 1024 * 1024;
     aSources = nlohmann::json::object();
     size_t totalBytes = 0;
 
@@ -630,10 +631,11 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
             usedNicknames.emplace( libraryId.substr( 0, separator ) );
     }
 
+    std::set<std::string> inventoriedNicknames;
+
     for( const nlohmann::json& library : aCompilerIr["libraries"] )
     {
         if( !library.is_object() || library.value( "kind", "" ) != "symbol"
-            || library.value( "table", "" ) != "project"
             || library.value( "managed", false )
             || !usedNicknames.contains( library.value( "id", "" ) ) )
         {
@@ -641,31 +643,55 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
         }
 
         const std::string nickname = library.value( "id", "" );
-        const std::string uri = library.value( "uri", "" );
+        const std::string table = library.value( "table", "" );
+        const std::string uri = library.contains( "uri" ) && library["uri"].is_string()
+                                        ? library["uri"].get<std::string>()
+                                        : "";
         constexpr std::string_view prefix = "${KIPRJMOD}/";
+        wxFileName candidate;
 
-        if( nickname.empty() || !uri.starts_with( prefix )
-            || uri.size() <= prefix.size() || !uri.ends_with( ".kicad_sym" ) )
+        if( !inventoriedNicknames.emplace( nickname ).second )
         {
-            aError = "project symbol library declaration is malformed";
+            aError = "symbol library nickname occurs more than once: " + nickname;
             return false;
         }
 
-        const std::string relativePath = uri.substr( prefix.size() );
-        wxFileName candidate( wxString::FromUTF8( relativePath ) );
-
-        if( candidate.IsAbsolute() )
+        if( table == "global" )
         {
-            aError = "project symbol library path must be relative";
+            candidate.Assign( PATHS::GetStockSymbolsPath(),
+                              wxString::FromUTF8( nickname + ".kicad_sym" ) );
+
+            if( !candidate.FileExists() )
+            {
+                aError = "installed global symbol library is unavailable: " + nickname;
+                return false;
+            }
+        }
+        else if( table == "project" && !nickname.empty() && uri.starts_with( prefix )
+                 && uri.size() > prefix.size() && uri.ends_with( ".kicad_sym" ) )
+        {
+            const std::string relativePath = uri.substr( prefix.size() );
+            candidate.Assign( wxString::FromUTF8( relativePath ) );
+
+            if( candidate.IsAbsolute() )
+            {
+                aError = "project symbol library path must be relative";
+                return false;
+            }
+
+            candidate.MakeAbsolute( root.GetFullPath() );
+            candidate.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+        }
+        else
+        {
+            aError = "symbol library declaration is malformed";
             return false;
         }
-
-        candidate.MakeAbsolute( root.GetFullPath() );
-        candidate.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
 
         if( !candidate.FileExists() )
         {
-            aError = "project symbol library does not exist: " + relativePath;
+            aError = "symbol library does not exist: "
+                     + candidate.GetFullPath().ToStdString();
             return false;
         }
 
@@ -673,7 +699,7 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
 
         if( !canonicalizeExisting( canonical ) )
         {
-            aError = "project symbol library could not be resolved: " + relativePath;
+            aError = "symbol library could not be resolved: " + nickname;
             return false;
         }
 
@@ -687,9 +713,32 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
         rootPath.MakeLower();
 #endif
 
-        if( candidatePath != canonicalPath || !canonicalPath.StartsWith( rootPath ) )
+        bool invalidPath = false;
+
+        if( table == "project" )
         {
-            aError = "project symbol library must be a confined regular file, not a symlink";
+            invalidPath = candidatePath != canonicalPath || !canonicalPath.StartsWith( rootPath );
+        }
+        else
+        {
+            wxFileName stockRoot = wxFileName::DirName( PATHS::GetStockSymbolsPath() );
+
+            if( !canonicalizeExisting( stockRoot, true ) )
+            {
+                aError = "installed stock symbol library root could not be resolved";
+                return false;
+            }
+
+            wxString stockPath = stockRoot.GetPathWithSep();
+#ifdef __WXMSW__
+            stockPath.MakeLower();
+#endif
+            invalidPath = !canonicalPath.StartsWith( stockPath );
+        }
+
+        if( invalidPath )
+        {
+            aError = "symbol library must resolve to a regular file inside its declared library root";
             return false;
         }
 
@@ -697,7 +746,7 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
 
         if( !input.Open( candidate.GetFullPath() ) )
         {
-            aError = "could not open project symbol library: " + relativePath;
+            aError = "could not open symbol library: " + nickname;
             return false;
         }
 
@@ -706,7 +755,7 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
         if( length <= 0 || length > static_cast<wxFileOffset>( MAX_SYMBOL_LIBRARY_BYTES )
             || static_cast<size_t>( length ) > MAX_SYMBOL_INVENTORY_BYTES - totalBytes )
         {
-            aError = "project symbol library inventory exceeds bounded size limits";
+            aError = "symbol library inventory exceeds bounded size limits";
             return false;
         }
 
@@ -716,7 +765,7 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
 
         if( bytesRead < 0 || static_cast<size_t>( bytesRead ) != source.size() )
         {
-            aError = "could not read complete project symbol library: " + relativePath;
+            aError = "could not read complete symbol library: " + nickname;
             return false;
         }
 
@@ -724,7 +773,7 @@ bool inventoryProjectSymbolLibraries( const wxString& aProjectPath,
 
         if( aSources.contains( nickname ) )
         {
-            aError = "project symbol library nickname occurs more than once: " + nickname;
+            aError = "symbol library nickname occurs more than once: " + nickname;
             return false;
         }
 
@@ -739,8 +788,8 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
                                  const nlohmann::json& aCompilerIr,
                                  nlohmann::json& aSources, std::string& aError )
 {
-    constexpr size_t MAX_FOOTPRINT_BYTES = 4 * 1024 * 1024;
-    constexpr size_t MAX_FOOTPRINT_INVENTORY_BYTES = 32 * 1024 * 1024;
+    constexpr size_t MAX_FOOTPRINT_BYTES = 8 * 1024 * 1024;
+    constexpr size_t MAX_FOOTPRINT_INVENTORY_BYTES = 64 * 1024 * 1024;
     aSources = nlohmann::json::object();
 
     if( !aCompilerIr.is_object() || !aCompilerIr.contains( "libraries" )
@@ -762,6 +811,19 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
             && statement.contains( "component" ) && statement["component"].is_string() )
         {
             placedReferences.emplace( statement["component"].get<std::string>() );
+        }
+    }
+
+    if( aCompilerIr.contains( "synthesis" ) && aCompilerIr["synthesis"].is_object() )
+    {
+        for( const nlohmann::json& component : aCompilerIr["schematic"]["components"] )
+        {
+            if( component.is_object() && component.contains( "reference" )
+                && component["reference"].is_string() && component.contains( "footprint" )
+                && component["footprint"].is_string() )
+            {
+                placedReferences.emplace( component["reference"].get<std::string>() );
+            }
         }
     }
 
@@ -820,14 +882,16 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
     for( const nlohmann::json& library : aCompilerIr["libraries"] )
     {
         if( !library.is_object() || library.value( "kind", "" ) != "footprint"
-            || library.value( "table", "" ) != "project"
             || !usedEntries.contains( library.value( "id", "" ) ) )
         {
             continue;
         }
 
         const std::string nickname = library.value( "id", "" );
-        const std::string uri = library.value( "uri", "" );
+        const std::string table = library.value( "table", "" );
+        const std::string uri = library.contains( "uri" ) && library["uri"].is_string()
+                                        ? library["uri"].get<std::string>()
+                                        : "";
         constexpr std::string_view prefix = "${KIPRJMOD}/";
 
         if( !inventoriedNicknames.emplace( nickname ).second )
@@ -841,28 +905,38 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
         if( library.value( "managed", false ) )
             continue;
 
-        if( nickname.empty() || !uri.starts_with( prefix )
-            || uri.size() <= prefix.size() || !uri.ends_with( ".pretty" ) )
+        wxFileName directory;
+
+        if( table == "global" )
         {
-            aError = "project footprint library declaration is malformed";
+            directory.AssignDir( PATHS::GetStockFootprintsPath()
+                                 + wxString::FromUTF8( nickname + ".pretty" ) );
+        }
+        else if( table == "project" && !nickname.empty() && uri.starts_with( prefix )
+                 && uri.size() > prefix.size() && uri.ends_with( ".pretty" ) )
+        {
+            const std::string relativePath = uri.substr( prefix.size() );
+            directory.AssignDir( wxString::FromUTF8( relativePath ) );
+
+            if( directory.IsAbsolute() )
+            {
+                aError = "project footprint library path must be relative";
+                return false;
+            }
+
+            directory.MakeAbsolute( root.GetFullPath() );
+            directory.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+        }
+        else
+        {
+            aError = "footprint library declaration is malformed";
             return false;
         }
-
-        const std::string relativePath = uri.substr( prefix.size() );
-        wxFileName directory = wxFileName::DirName( wxString::FromUTF8( relativePath ) );
-
-        if( directory.IsAbsolute() )
-        {
-            aError = "project footprint library path must be relative";
-            return false;
-        }
-
-        directory.MakeAbsolute( root.GetFullPath() );
-        directory.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
 
         if( !directory.DirExists() )
         {
-            aError = "project footprint library does not exist: " + relativePath;
+            aError = "footprint library does not exist: "
+                     + directory.GetFullPath().ToStdString();
             return false;
         }
 
@@ -870,7 +944,7 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
 
         if( !canonicalizeExisting( canonicalDirectory, true ) )
         {
-            aError = "project footprint library could not be resolved: " + relativePath;
+            aError = "footprint library could not be resolved: " + nickname;
             return false;
         }
 
@@ -884,10 +958,37 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
         rootPath.MakeLower();
 #endif
 
-        if( directoryPath != canonicalDirectoryPath
-            || !( canonicalDirectoryPath + wxFileName::GetPathSeparator() ).StartsWith( rootPath ) )
+        bool invalidDirectory = false;
+
+        if( table == "project" )
         {
-            aError = "project footprint library must be a confined directory, not a symlink";
+            invalidDirectory = directoryPath != canonicalDirectoryPath
+                               || !( canonicalDirectoryPath
+                                     + wxFileName::GetPathSeparator() )
+                                           .StartsWith( rootPath );
+        }
+        else
+        {
+            wxFileName stockRoot = wxFileName::DirName( PATHS::GetStockFootprintsPath() );
+
+            if( !canonicalizeExisting( stockRoot, true ) )
+            {
+                aError = "installed stock footprint library root could not be resolved";
+                return false;
+            }
+
+            wxString stockPath = stockRoot.GetPathWithSep();
+#ifdef __WXMSW__
+            stockPath.MakeLower();
+#endif
+            invalidDirectory = !( canonicalDirectoryPath
+                                  + wxFileName::GetPathSeparator() )
+                                       .StartsWith( stockPath );
+        }
+
+        if( invalidDirectory )
+        {
+            aError = "footprint library must resolve to a directory inside its declared library root";
             return false;
         }
 
@@ -898,7 +999,7 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
 
             if( !candidate.FileExists() )
             {
-                aError = "project footprint does not exist: " + nickname + ":" + entry;
+                aError = "declared footprint does not exist: " + nickname + ":" + entry;
                 return false;
             }
 
@@ -906,7 +1007,7 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
 
             if( !canonicalizeExisting( canonical ) )
             {
-                aError = "project footprint could not be resolved: " + nickname + ":" + entry;
+                aError = "declared footprint could not be resolved: " + nickname + ":" + entry;
                 return false;
             }
 
@@ -920,9 +1021,10 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
             libraryPath.MakeLower();
 #endif
 
-            if( candidatePath != canonicalPath || !canonicalPath.StartsWith( libraryPath ) )
+            if( ( table == "project" && candidatePath != canonicalPath )
+                || !canonicalPath.StartsWith( libraryPath ) )
             {
-                aError = "project footprint must be a confined regular file, not a symlink";
+                aError = "footprint must resolve to a regular file inside its declared library";
                 return false;
             }
 
@@ -930,7 +1032,7 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
 
             if( !input.Open( candidate.GetFullPath() ) )
             {
-                aError = "could not open project footprint: " + nickname + ":" + entry;
+                aError = "could not open declared footprint: " + nickname + ":" + entry;
                 return false;
             }
 
@@ -940,7 +1042,7 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
                 || static_cast<size_t>( length )
                            > MAX_FOOTPRINT_INVENTORY_BYTES - totalBytes )
             {
-                aError = "project footprint inventory exceeds bounded size limits";
+                aError = "footprint inventory exceeds bounded size limits";
                 return false;
             }
 
@@ -948,7 +1050,7 @@ bool inventoryProjectFootprints( const wxString& aProjectPath,
 
             if( input.Read( source.data(), source.size() ) != length )
             {
-                aError = "could not read complete project footprint: " + nickname + ":" + entry;
+                aError = "could not read complete declared footprint: " + nickname + ":" + entry;
                 return false;
             }
 
@@ -1921,7 +2023,7 @@ bool runNativeKiCadFabrication( const wxFileName& aBoard,
 JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
 {
     static constexpr const char* CHECK_ORDER[] = {
-        "erc", "drc", "layout", "sourcing", "fabrication"
+        "erc", "electrical", "drc", "layout", "sourcing", "fabrication"
     };
     static constexpr const char* OUTPUT_ORDER[] = {
         "gerbers", "drill", "ipcd356", "netlist", "ipc2581", "odbpp", "pick_place", "bom",
@@ -1936,6 +2038,9 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
     };
     std::set<std::string> checks;
     std::set<std::string> outputs;
+    const bool hasElectricalDesign =
+            !aIr.at( "schematic" ).at( "components" ).empty()
+            || !aIr.at( "schematic" ).at( "nets" ).empty();
 
     for( const JSON& check : aIr.at( "checks" ) )
         checks.emplace( check.value( "kind", "" ) );
@@ -1947,6 +2052,9 @@ JSON buildFabricationPlan( const JSON& aIr, const std::string& aFileStem )
 
     for( const char* required : CHECK_ORDER )
     {
+        if( std::string_view( required ) == "electrical" && !hasElectricalDesign )
+            continue;
+
         if( !checks.contains( required ) )
         {
             issues.push_back( { { "type", "missing_check" },

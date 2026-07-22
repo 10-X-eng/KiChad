@@ -626,10 +626,10 @@ BOOST_AUTO_TEST_CASE( GeneratesOneStableReviewableWireDirectlyBetweenResolvedNet
     BOOST_CHECK_EQUAL( first.counts["generatedJunctions"].get<int>(), 0 );
     const std::string native = first.operations[0]["files"][0]["newDocumentSource"];
     BOOST_CHECK_NE( native.find( "(wire\n    (pts\n      (xy 42.54 40)\n"
-                                 "      (xy 47.513333 40)" ),
+                                 "      (xy 46.35 40)" ),
                     std::string::npos );
-    BOOST_CHECK_NE( native.find( "(wire\n    (pts\n      (xy 47.513333 40)\n"
-                                 "      (xy 52.486667 40)" ),
+    BOOST_CHECK_NE( native.find( "(wire\n    (pts\n      (xy 46.35 40)\n"
+                                 "      (xy 53.65 40)" ),
                     std::string::npos );
     const size_t firstLabel = native.find( "(global_label \"SIGNAL\"" );
     BOOST_REQUIRE_NE( firstLabel, std::string::npos );

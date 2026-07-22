@@ -32,6 +32,7 @@ public:
     struct RESULT
     {
         JSON                     statements = JSON::array();
+        JSON                     synthesis = nullptr;
         JSON                     diagnostics = JSON::array();
         std::vector<std::string> componentReferences;
         std::vector<std::string> netReferences;

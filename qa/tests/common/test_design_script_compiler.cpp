@@ -22,6 +22,8 @@
 #include <kicad/codex/design_script_compiler.h>
 #include <kicad/codex/design_script_context_builder.h>
 #include <kicad/codex/design_script_layout_analyzer.h>
+#include <kicad/codex/design_script_physical_synthesizer.h>
+#include <kicad/codex/design_script_simulation_runner.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 
@@ -2459,6 +2461,110 @@ BOOST_AUTO_TEST_CASE( MinimalNewProjectSidecarIsAValidReusableProgram )
     BOOST_REQUIRE_MESSAGE( result.ok, result.diagnostics.dump() );
     BOOST_CHECK_EQUAL( result.ir["project"]["name"].get<std::string>(), "My Project" );
     BOOST_CHECK_EQUAL( result.plan["counts"]["components"].get<size_t>(), 0 );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompilesAndExecutesTypedElectricalSimulationContracts )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project divider)
+  (library symbol Device (table global))
+  (component R1 (symbol "Device:R") (value "10k") (footprint none))
+  (component R2 (symbol "Device:R") (value "10k") (footprint none))
+  (component R3 (symbol "Device:R") (value "test fixture") (footprint none))
+  (net VIN (pin R1 1 1) (pin R3 1 1))
+  (net OUT (pin R1 1 2) (pin R2 1 1))
+  (net GND (pin R2 1 2) (pin R3 1 2))
+  (electrical
+    (simulation divider_dc
+      (ground GND)
+      (device upper (component R1) (unit 1) (kind resistor)
+        (nodes VIN OUT) (pins 1 2) (value 10kohm))
+      (device lower (component R2) (unit 1) (kind resistor)
+        (nodes OUT GND) (pins 1 2) (value 10kohm))
+      (source supply (kind voltage) (positive VIN) (negative GND) (dc 5V))
+      (analysis nominal (kind operating_point))
+      (assert output_voltage (analysis nominal) (probe voltage OUT)
+        (minimum 2.49V) (maximum 2.51V) (scope all))))
+  (check electrical)
+))KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+    BOOST_CHECK_EQUAL( compiled.plan["counts"]["electricalSimulations"].get<size_t>(), 1 );
+    KICHAD::DESIGN_SCRIPT_SIMULATION_RUNNER::RESULT simulated =
+            KICHAD::DESIGN_SCRIPT_SIMULATION_RUNNER::Run( compiled.ir );
+    BOOST_REQUIRE_MESSAGE( simulated.ok, simulated.error );
+    BOOST_CHECK_MESSAGE( simulated.clean, simulated.issues.dump() );
+    BOOST_CHECK_EQUAL( simulated.summary["analyses"].get<size_t>(), 1 );
+    BOOST_CHECK_EQUAL( simulated.summary["assertions"].get<size_t>(), 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( SynthesizesDeterministicCourtyardAwarePlacementAndOrthogonalCopper )
+{
+    const std::string source = R"KDS((kichad_design
+  (version 1)
+  (project synthesized_board)
+  (library symbol Device (table global))
+  (library footprint Resistor_SMD (table global))
+  (component R1 (symbol "Device:R") (value "10k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (component R2 (symbol "Device:R") (value "10k")
+    (footprint "Resistor_SMD:R_0603_1608Metric"))
+  (net N1 (pin R1 1 1) (pin R2 1 1))
+  (net N2 (pin R1 1 2) (pin R2 1 2))
+  (board
+    (outline
+      (rectangle edge (start 0mm 0mm) (end 20mm 12mm)
+        (stroke 0.05mm solid) (layers Edge.Cuts) (fill none)))
+    (synthesize
+      (placement (grid 1mm) (clearance 0.5mm) (edge_clearance 1mm)
+        (rotations 0deg 90deg))
+      (routing (grid 0.5mm) (clearance 0.2mm) (width 0.25mm) (layer F.Cu)))))
+)KDS";
+    KICHAD::DESIGN_SCRIPT_COMPILER::RESULT compiled =
+            KICHAD::DESIGN_SCRIPT_COMPILER::Compile( source );
+    BOOST_REQUIRE_MESSAGE( compiled.ok, compiled.diagnostics.dump() );
+
+    const std::string footprint = R"FP((footprint "R_0603_1608Metric"
+  (version 20260206)
+  (generator "pcbnew")
+  (layer "F.Cu")
+  (fp_rect (start -1.5 -1) (end 1.5 1)
+    (stroke (width 0.05) (type default)) (fill none) (layer "F.CrtYd"))
+  (pad "1" smd roundrect (at -0.75 0) (size 0.8 0.9)
+    (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))
+  (pad "2" smd roundrect (at 0.75 0) (size 0.8 0.9)
+    (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))))FP";
+    const nlohmann::json sources = {
+        { "Resistor_SMD:R_0603_1608Metric", footprint }
+    };
+    KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::RESULT synthesized =
+            KICHAD::DESIGN_SCRIPT_PHYSICAL_SYNTHESIZER::Synthesize( compiled.ir, sources );
+    BOOST_REQUIRE_MESSAGE( synthesized.ok, synthesized.error );
+    BOOST_CHECK_EQUAL( synthesized.summary["placements"].get<size_t>(), 2 );
+    BOOST_CHECK_GT( synthesized.summary["routes"].get<size_t>(), 0 );
+
+    size_t placements = 0;
+    size_t traces = 0;
+
+    for( const nlohmann::json& statement : synthesized.ir["pcb"] )
+    {
+        if( statement.value( "kind", "" ) == "place" )
+            ++placements;
+        else if( statement.value( "kind", "" ) == "trace" )
+        {
+            ++traces;
+            BOOST_CHECK( statement["start"]["xNm"] == statement["end"]["xNm"]
+                         || statement["start"]["yNm"] == statement["end"]["yNm"] );
+        }
+    }
+
+    BOOST_CHECK_EQUAL( placements, 2 );
+    BOOST_CHECK_EQUAL( traces, synthesized.summary["routes"].get<size_t>() );
 }
 
 

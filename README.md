@@ -10,6 +10,10 @@ upstream development branch are intentionally excluded.  The pinned version is r
 
 See [KICHAD.md](KICHAD.md) for the Linux quick start, repository layout, runtime libraries, and
 upstream-sync workflow.  KiChad is an independent project and is not an official KiCad build.
+The consolidated [production status and roadmap](docs/production-status.md) records what is
+implemented, what has been qualified, the remaining production blockers, and the release exit
+criteria. The detailed language reference remains in
+[docs/kichad-design-script.md](docs/kichad-design-script.md).
 
 On Ubuntu 24.04 or KDE neon, the repeatable local build is:
 
@@ -62,11 +66,20 @@ live board but explicitly reports verification as `not_run`; Codex must render t
 and then repair KDS until ERC, DRC, and physical-layout acceptance are clean. The read-only `verify` call runs the
 matching sibling KiCad 10.0.4 ERC or DRC engine (including DRC schematic parity), rejects reports
 from any other KiCad version, and returns complete counts plus bounded pageable violations. Its
+`electrical` evaluates typed rail budgets, component derating, thermal and logic contracts, plus
+bounded operating-point, transient, DC-sweep, and AC-sweep simulations through `ngspice`. Its
 `layout` operation evaluates the single KDS file's maximum board dimensions, semantic component
 relationships, routing geometry, per-net via/length limits, and bundle skew with measured failure
 details; the same result gates fabrication readiness. Its
 `sourcing` operation compiles the project's one KDS sidecar and fails physical components whose
 cached evidence is incomplete, stale, unavailable, or not active.
+
+An optional KDS `synthesize` policy deterministically fills missing placement and single-layer
+orthogonal routing for rectangular boards from the outline, native footprint pads/courtyards, clearances,
+existing copper, and keepouts. It emits the same exact placement/route IR as authored geometry and
+fails with corrective steering when no legal path exists. Declared KiCad stock global symbol and
+footprint libraries are resolved generically from the installed stock set; portable custom parts
+remain project libraries rather than hidden component-specific exceptions.
 
 Native tool failures use a versioned, model-readable error contract rather than a generic failure
 flag. Codex receives the failed stage, stable error code, safe request context, expected/observed
@@ -76,7 +89,8 @@ why a turn is still running or what blocked it.
 
 The native `fabricate` call plans and exports the fixed `kichad-production-10.0.4-v17` release
 profile. It accepts only the current KiCad 10.0.4 board and schematic formats, binds the request to
-the exact compiled KDS SHA-256, and requires KDS declarations for ERC, DRC, layout, sourcing, fabrication,
+the exact compiled KDS SHA-256, and requires electrical designs to declare typed qualification plus
+KDS declarations for ERC, electrical, DRC, layout, sourcing, fabrication,
 Gerber, drill, IPC-D-356 electrical-test, placement, and BOM intent plus an explicit physical
 stackup. Every schematic net must explicitly select `wired` or `labels` presentation, and a design
 with electrical connectivity cannot pass the release plan as an implicit or entirely label-only
@@ -148,6 +162,15 @@ The native `design.describe` operation also returns the authoritative AI-readabl
 every design, verification, manufacturing, interchange, editor, and auxiliary-application facet is
 marked `qualified`, `partial`, or `unrepresented` with explicit remaining gaps. The catalog is
 compiler introspection, not a second design representation.
+
+Codex can locate exact source with `design.search`, page only the required lines with bounded
+`design.read`, and update an existing sidecar with `design.patch` instead of retransmitting the
+whole KDS. Each ordered edit supplies exact `oldText` and `newText`, and the request includes the
+`sourceSha256` returned by `design.search` or `design.read`. KiChad rejects stale revisions, missing or
+ambiguous edit contexts, oversized output, embedded NUL bytes, and any candidate that does not
+compile. Only a valid candidate is atomically installed, so a failed edit leaves the original
+sidecar untouched. `design.save` remains available for initial creation or an intentional
+whole-source replacement; KDS remains the single authored representation in both workflows.
 
 For an opt-in transaction proof, first open a disposable project copy in the installed PCB Editor,
 then run `tools/smoke-kichad-live-ipc.sh --allow-mutation PROJECT_DIRECTORY BOARD_FILE`.  The smoke

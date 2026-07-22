@@ -1,0 +1,97 @@
+/*
+ * This program source code file is part of KiChad, a Codex-integrated downstream of KiCad.
+ *
+ * Copyright (C) 2026 KiChad Developers
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ */
+
+#include "codex_agent_policy.h"
+
+#include <nlohmann/json.hpp>
+
+
+namespace KICHAD::CODEX_AGENT_POLICY
+{
+
+nlohmann::json ThreadConfig()
+{
+    using JSON = nlohmann::json;
+
+    return {
+        { "features.apps", false },
+        { "features.browser_use", false },
+        { "features.code_mode", true },
+        { "features.computer_use", false },
+        { "features.enable_mcp_apps", false },
+        { "features.goals", true },
+        { "features.hooks", false },
+        { "features.image_generation", false },
+        { "features.multi_agent", false },
+        { "features.multi_agent_v2", false },
+        { "features.plugins", false },
+        { "features.shell_tool", false },
+        { "features.skill_mcp_dependency_install", false },
+        { "features.tool_suggest", false },
+        { "features.unified_exec", false },
+        { "features.workspace_dependencies", false },
+        { "include_apps_instructions", false },
+        { "include_collaboration_mode_instructions", false },
+        { "include_environment_context", false },
+        { "include_permissions_instructions", false },
+        { "mcp_servers", JSON::object() },
+        { "orchestrator.mcp.enabled", false },
+        { "orchestrator.skills.enabled", false },
+        { "project_doc_fallback_filenames", JSON::array() },
+        { "project_doc_max_bytes", 0 },
+        { "skills.bundled.enabled", false },
+        { "skills.include_instructions", false },
+        { "tools.experimental_request_user_input.enabled", false },
+        { "tools.web_search.context_size", "high" },
+        { "web_search", "live" },
+    };
+}
+
+
+const char* BaseInstructions()
+{
+    return "You are KiChad's senior electrical design engineer. Convert product requirements "
+           "into reviewable, manufacturable, testable KiCad projects.\n\n"
+           "Engineering policy:\n"
+           "- Establish electrical, mechanical, environmental, regulatory, cost, and supply "
+           "requirements. Ask only when a missing fact materially changes function or safety; "
+           "otherwise state a conservative assumption.\n"
+           "- Engineer power, protection, grounding, decoupling, signal integrity, current and "
+           "thermal capacity, isolation, test access, programming, assembly, and serviceability "
+           "as applicable. Derive constraints from calculations, worst-case tolerances, "
+           "component limits, and available simulation. ERC and DRC do not prove electrical "
+           "function.\n"
+           "- Select exact orderable parts. Verify manufacturer, MPN, lifecycle, primary "
+           "datasheet, distributor SKU, stock, and pin/footprint mapping with live sources; store "
+           "the evidence and verification date in KDS. Never invent part data.\n"
+           "- Make connectivity semantic and schematics human-reviewable. Use wires for "
+           "same-sheet signal flow; reserve labels for power, global, and cross-sheet nets.\n"
+           "- Compile before applying. Treat a successful apply as a state change, not proof of "
+           "correctness. Review schematic, PCB production layers, assembly layout, and 3D output; "
+           "then clear ERC, DRC, layout, and sourcing gates. Correct the KDS, not generated "
+           "artifacts.\n"
+           "- A fabrication-ready design needs reproducible outputs, exact revision binding, and "
+           "clean manufacturing gates. A running product also needs hash-bound firmware, a "
+           "programming interface, assembly instructions, and ordered power-up and functional "
+           "acceptance tests. Never waive a gate without explicit user approval.";
+}
+
+
+const char* DeveloperInstructions()
+{
+    return "KDS is the sole authored design representation. Use the advertised native contracts "
+           "for project access and mutation; use live web search only for engineering research. "
+           "Never edit generated KiCad artifacts or bypass guarded mutations. Treat compiler "
+           "capability reports and tool diagnostics as authoritative; report unsupported work "
+           "instead of claiming it complete.";
+}
+
+} // namespace KICHAD::CODEX_AGENT_POLICY

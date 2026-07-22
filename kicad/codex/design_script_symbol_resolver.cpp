@@ -33,7 +33,7 @@ using DOCUMENT = KICHAD::LOSSLESS_SEXPR_DOCUMENT;
 using JSON = nlohmann::json;
 using RESULT = KICHAD::DESIGN_SCRIPT_SYMBOL_RESOLVER::RESULT;
 
-constexpr size_t MAX_LIBRARY_BYTES = 16 * 1024 * 1024;
+constexpr size_t MAX_LIBRARY_BYTES = 32 * 1024 * 1024;
 constexpr size_t MAX_RESOLVED_SYMBOLS = 4096;
 constexpr size_t MAX_PINS_PER_UNIT = 1024;
 constexpr size_t MAX_INHERITANCE_DEPTH = 64;
@@ -631,20 +631,10 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
             continue;
         }
 
-        const JSON& declaration = declarations.at( nickname );
-
-        if( declaration.value( "table", "" ) != "project" )
-        {
-            diagnostic( result, "global_symbol_resolution_not_supported",
-                        "executable schematic symbols require a confined project library; "
-                        + libraryId + " uses a global library" );
-            continue;
-        }
-
         if( !aLibrarySources.contains( nickname ) || !aLibrarySources[nickname].is_string() )
         {
             diagnostic( result, "missing_symbol_library_source",
-                        "project symbol library " + nickname + " was not inventoried" );
+                        "symbol library " + nickname + " was not inventoried" );
             continue;
         }
 
@@ -657,7 +647,7 @@ DESIGN_SCRIPT_SYMBOL_RESOLVER::Resolve( const JSON& aCompilerIr, const JSON& aLi
             {
                 diagnostic( result, "invalid_symbol_library",
                             "project symbol library " + nickname
-                                    + " must contain 1 byte to 16 MiB" );
+                                    + " must contain 1 byte to 32 MiB" );
                 continue;
             }
 

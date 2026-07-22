@@ -341,14 +341,21 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
         return true;
     };
     JSON checks = JSON::object();
+    const bool hasElectricalDesign =
+            !compiled.ir.at( "schematic" ).at( "components" ).empty()
+            || !compiled.ir.at( "schematic" ).at( "nets" ).empty();
 
     for( const auto& [kind, path] :
-        std::array<std::pair<const char*, std::string>, 4>{
+        std::array<std::pair<const char*, std::string>, 5>{
                  std::pair{ "erc", schematicRelativePath },
+                 std::pair{ "electrical", sourceRelativePath },
                  std::pair{ "drc", boardRelativePath },
                  std::pair{ "layout", sourceRelativePath },
                  std::pair{ "sourcing", sourceRelativePath } } )
     {
+        if( kind == std::string_view( "electrical" ) && !hasElectricalDesign )
+            continue;
+
         JSON result = handleVerify( { { "operation", kind }, { "path", path } },
                                     verificationProjectPath );
         JSON data;
@@ -357,11 +364,13 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleFabricate(
         if( !decodeResult( result, data, checkError ) )
             return failure( std::string( kind ) + "_check_failed", checkError );
 
-        if( ( kind == std::string_view( "layout" )
+        if( ( kind == std::string_view( "electrical" )
+              || kind == std::string_view( "layout" )
               || kind == std::string_view( "sourcing" ) )
             && data.value( "sourceSha256", "" ) != compiled.sourceSha256 )
         {
-            return failure( "stale_source", "sourcing gate checked a different KDS revision" );
+            return failure( "stale_source", std::string( kind )
+                                                    + " gate checked a different KDS revision" );
         }
 
         const bool clean = data.value( "clean", false );

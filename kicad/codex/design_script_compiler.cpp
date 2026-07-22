@@ -14,6 +14,7 @@
 #include "design_script_capabilities.h"
 
 #include "design_script_board_compiler.h"
+#include "design_script_electrical_compiler.h"
 #include "design_script_footprint_compiler.h"
 #include "design_script_production_compiler.h"
 #include "design_script_symbol_compiler.h"
@@ -7188,6 +7189,11 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(net NET [(geometry ...)] [(maximum_vias UINT)] "
                       "[(maximum_length D)]) ...] "
                       "[(bundle ID (nets NET...) (maximum_skew D)) ...]))) "
+                      "[(synthesize "
+                      "[(placement [(grid D)] [(clearance D)] [(edge_clearance D)] "
+                      "[(rotations 0deg|90deg|180deg|270deg ...)])] "
+                      "[(routing [(grid D)] [(clearance D)] [(width D)] "
+                      "[(layer F.Cu|B.Cu)])])] "
                       "(place REF (at X Y) [(rotation A)] [(side front|back)] [(locked BOOL)] "
                       "[(reference|value [(visible BOOL)] [(layer F.SilkS|B.SilkS|F.Fab|B.Fab)] "
                       "[(at X Y)] [(size W H)] [(stroke D)] [(angle A)] "
@@ -7304,6 +7310,34 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "(sku PART) (product_url HTTPS_URL) (available N) "
                       "(verified_on YYYY-MM-DD) (quantity N) [(unit_price TEXT) (notes TEXT)])" } },
                   { { "form",
+                      "(electrical "
+                      "(rail ID (net NET) (voltage MIN NOMINAL MAX) "
+                      "(source_current CURRENT) (reserve PERCENT) "
+                      "(load COMPONENT CURRENT) ...) "
+                      "(rating COMPONENT [(operating_voltage V) (rated_voltage V)] "
+                      "[(operating_current A) (rated_current A)] "
+                      "[(operating_power W) (rated_power W)] (derating PERCENT)) ... "
+                      "(thermal COMPONENT (dissipation W) (theta_ja C/W) "
+                      "(ambient C) (maximum_junction C)) ... "
+                      "(logic ID (net NET) (driver COMPONENT UNIT PIN) "
+                      "(receiver COMPONENT UNIT PIN) ... (output_low V) "
+                      "(output_high V) (input_low V) (input_high V) "
+                      "(signal_min V) (signal_max V) "
+                      "[(absolute_min V) (absolute_max V)]) ... "
+                      "(simulation ID (ground NET) "
+                      "(device ID (component REF) (unit NUMBER) "
+                      "(kind resistor|capacitor|inductor|diode|bjt|mosfet) "
+                      "(nodes NET...) (pins PIN...) [(value QUANTITY)] [(model ID)]) ... "
+                      "[(model ID (kind diode|npn|pnp|nmos|pmos) "
+                      "(parameter NAME NUMBER) ...)] ... "
+                      "(source ID (kind voltage|current) (positive NET) (negative NET) "
+                      "(dc QUANTITY) [(ac MAGNITUDE PHASE)] "
+                      "[(pulse INITIAL PULSED DELAY RISE FALL WIDTH PERIOD)]) ... "
+                      "(analysis ID (kind operating_point|transient|dc_sweep|ac_sweep) ...) ... "
+                      "(assert ID (analysis ID) "
+                      "(probe voltage NET [RETURN_NET]|current SOURCE) "
+                      "[(minimum QUANTITY)] [(maximum QUANTITY)] [(scope all|final)]) ...)) ...)" } },
+                  { { "form",
                       "(production "
                       "(assembly (acceptance ipc-a-610-class-1|ipc-a-610-class-2|ipc-a-610-class-3) "
                       "(process lead_free_reflow|leaded_reflow|hand|mixed) (solder_alloy TEXT) "
@@ -7334,7 +7368,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
                       "[(testpoint REF)] [(power ID)] [(program ID)] "
                       "(after_ms N) (timeout_ms N) (required true) "
                       "[(procedure TEXT)]) ... )" } },
-                  { { "form", "(check erc|drc|layout|sourcing|footprints|fabrication)" } },
+                  { { "form",
+                      "(check erc|electrical|drc|layout|sourcing|footprints|fabrication)" } },
                   { { "form",
                       "(output gerbers|drill|ipcd356|netlist|ipc2581|odbpp|pick_place|bom|step|"
                       "stepz|brep|glb|stl|u3d|xao|3d_pdf|pdf|board_ps|"
@@ -7344,8 +7379,8 @@ DESIGN_SCRIPT_COMPILER::JSON DESIGN_SCRIPT_COMPILER::Describe()
           } ) },
         { "compilerPasses",
           JSON::array( { "parse", "typecheck", "resolve", "plan", "snapshot", "schematic",
-                         "libraries", "pcb", "layout", "sourcing", "production_handoff", "erc",
-                         "drc", "fabrication" } ) },
+                         "libraries", "pcb", "electrical", "layout", "sourcing",
+                         "production_handoff", "erc", "drc", "fabrication" } ) },
         { "example",
           "(kichad_design\n"
           "  (version 1)\n"
@@ -7466,9 +7501,11 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "drawings", JSON::array() }, { "busAliases", JSON::array() },
             { "groups", JSON::array() } } },
         { "pcb", JSON::array() },
+        { "synthesis", nullptr },
         { "rules", nullptr },
         { "netClasses", nullptr },
         { "customRules", nullptr },
+        { "electrical", nullptr },
         { "sourcing", JSON::array() },
         { "production", nullptr },
         { "checks", JSON::array() },
@@ -7489,6 +7526,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     bool                     sawRules = false;
     bool                     sawNetClasses = false;
     bool                     sawCustomRules = false;
+    bool                     sawElectrical = false;
     bool                     sawProduction = false;
     std::set<std::string>    sourceIds;
     std::set<std::string>    checkKinds;
@@ -7827,6 +7865,7 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             referencedNets.insert( referencedNets.end(), board.netReferences.begin(),
                                    board.netReferences.end() );
             boardFullyTyped = boardFullyTyped && board.fullyTyped;
+            result.ir["synthesis"] = std::move( board.synthesis );
 
             sawBoard = true;
         }
@@ -7866,6 +7905,33 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             }
 
             sawCustomRules = true;
+        }
+        else if( form == "electrical" )
+        {
+            if( sawElectrical )
+            {
+                diagnostic( result, "error", "duplicate_electrical",
+                            "electrical occurs more than once" );
+            }
+            else
+            {
+                KICHAD::DESIGN_SCRIPT_ELECTRICAL_COMPILER::RESULT electrical =
+                        KICHAD::DESIGN_SCRIPT_ELECTRICAL_COMPILER::Compile( *document,
+                                                                           formNode );
+
+                for( JSON& electricalDiagnostic : electrical.diagnostics )
+                    result.diagnostics.emplace_back( std::move( electricalDiagnostic ) );
+
+                referencedComponents.insert( referencedComponents.end(),
+                                             electrical.referencedComponents.begin(),
+                                             electrical.referencedComponents.end() );
+                referencedNets.insert( referencedNets.end(),
+                                      electrical.referencedNets.begin(),
+                                      electrical.referencedNets.end() );
+                result.ir["electrical"] = std::move( electrical.electrical );
+            }
+
+            sawElectrical = true;
         }
         else if( form == "source" )
         {
@@ -7910,7 +7976,8 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
         else if( form == "check" )
         {
             static const std::set<std::string> allowed = {
-                "erc", "drc", "layout", "sourcing", "footprints", "fabrication"
+                "erc", "electrical", "drc", "layout", "sourcing", "footprints",
+                "fabrication"
             };
             JSON check = compileEnumeratedFacet( *document, formNode, "check", allowed, result );
             const std::string kind = check.value( "kind", "" );
@@ -7956,6 +8023,12 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
 
     if( !sawProject )
         diagnostic( result, "error", "missing_project", "script is missing project metadata" );
+
+    if( checkKinds.contains( "electrical" ) && !result.ir["electrical"].is_object() )
+    {
+        diagnostic( result, "error", "missing_electrical_contract",
+                    "check electrical requires one electrical contract" );
+    }
 
     const JSON& sheets = result.ir["schematic"]["sheets"];
 
@@ -8256,6 +8329,33 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     for( const JSON& noConnect : result.ir["schematic"]["noConnects"] )
         validateEndpointUnit( noConnect );
 
+    if( result.ir["electrical"].is_object() )
+    {
+        for( const JSON& logic : result.ir["electrical"].value( "logic", JSON::array() ) )
+        {
+            if( logic.is_object() && logic.contains( "driver" ) )
+                validateEndpointUnit( logic["driver"] );
+
+            for( const JSON& receiver : logic.value( "receivers", JSON::array() ) )
+                validateEndpointUnit( receiver );
+        }
+
+        for( const JSON& simulation :
+             result.ir["electrical"].value( "simulations", JSON::array() ) )
+        {
+            for( const JSON& device : simulation.value( "devices", JSON::array() ) )
+            {
+                for( const JSON& pin : device.value( "pins", JSON::array() ) )
+                {
+                    validateEndpointUnit(
+                            { { "component", device.value( "component", "" ) },
+                              { "unit", device.value( "unit", int64_t( 0 ) ) },
+                              { "pin", pin } } );
+                }
+            }
+        }
+    }
+
     for( const JSON& statement : result.ir["pcb"] )
     {
         if( !statement.is_object() || statement.value( "kind", "" ) != "place"
@@ -8443,6 +8543,84 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
                                      + pin["component"].get<std::string>() + "/"
                                      + std::to_string( pin["unit"].get<int64_t>() ) + "/"
                                      + pin["number"].get<std::string>() );
+            }
+        }
+    }
+
+    if( result.ir["electrical"].is_object() )
+    {
+        const auto validateLogicNetEndpoint = [&]( const JSON& aLogic,
+                                                   const JSON& aEndpoint,
+                                                   const char* aRole )
+        {
+            if( !aLogic.is_object() || !aLogic.contains( "net" )
+                || !aLogic["net"].is_string() || !aEndpoint.is_object()
+                || !aEndpoint.contains( "component" )
+                || !aEndpoint["component"].is_string() || !aEndpoint.contains( "unit" )
+                || !aEndpoint["unit"].is_number_integer() || !aEndpoint.contains( "pin" )
+                || !aEndpoint["pin"].is_string() )
+            {
+                return;
+            }
+
+            const std::string key = aLogic["net"].get<std::string>() + "\n"
+                                    + aEndpoint["component"].get<std::string>() + "/"
+                                    + std::to_string( aEndpoint["unit"].get<int64_t>() ) + "/"
+                                    + aEndpoint["pin"].get<std::string>();
+
+            if( !netEndpoints.contains( key ) )
+            {
+                diagnostic( result, "error", "logic_endpoint_not_on_net",
+                            "logic " + aLogic.value( "id", "" ) + " " + aRole + " "
+                                    + aEndpoint["component"].get<std::string>() + ":"
+                                    + aEndpoint["pin"].get<std::string>()
+                                    + " is not connected to declared net "
+                                    + aLogic["net"].get<std::string>() );
+            }
+        };
+
+        for( const JSON& logic : result.ir["electrical"].value( "logic", JSON::array() ) )
+        {
+            if( logic.contains( "driver" ) )
+                validateLogicNetEndpoint( logic, logic["driver"], "driver" );
+
+            for( const JSON& receiver : logic.value( "receivers", JSON::array() ) )
+                validateLogicNetEndpoint( logic, receiver, "receiver" );
+        }
+
+        for( const JSON& simulation :
+             result.ir["electrical"].value( "simulations", JSON::array() ) )
+        {
+            for( const JSON& device : simulation.value( "devices", JSON::array() ) )
+            {
+                const JSON nodes = device.value( "nodes", JSON::array() );
+                const JSON pins = device.value( "pins", JSON::array() );
+
+                if( nodes.size() != pins.size() )
+                    continue;
+
+                for( size_t index = 0; index < nodes.size(); ++index )
+                {
+                    if( !nodes[index].is_string() || !pins[index].is_string() )
+                        continue;
+
+                    const std::string key = nodes[index].get<std::string>() + "\n"
+                                            + device.value( "component", "" ) + "/"
+                                            + std::to_string(
+                                                      device.value( "unit", int64_t( 0 ) ) )
+                                            + "/" + pins[index].get<std::string>();
+
+                    if( !netEndpoints.contains( key ) )
+                    {
+                        diagnostic( result, "error", "simulation_device_pin_not_on_net",
+                                    "simulation " + simulation.value( "id", "" )
+                                            + " device " + device.value( "id", "" )
+                                            + " maps " + device.value( "component", "" )
+                                            + ":" + pins[index].get<std::string>()
+                                            + " to net " + nodes[index].get<std::string>()
+                                            + " but the schematic does not" );
+                    }
+                }
             }
         }
     }
@@ -9009,8 +9187,14 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
     if( !result.ir["pcb"].empty() )
         passes.emplace_back( "pcb" );
 
+    if( result.ir["synthesis"].is_object() )
+        passes.emplace_back( "physical_synthesis" );
+
     if( result.ir["customRules"].is_object() )
         passes.emplace_back( "custom_rules" );
+
+    if( result.ir["electrical"].is_object() )
+        passes.emplace_back( "electrical" );
 
     if( !result.ir["sourcing"].empty() )
         passes.emplace_back( "sourcing" );
@@ -9058,6 +9242,21 @@ DESIGN_SCRIPT_COMPILER::RESULT DESIGN_SCRIPT_COMPILER::Compile( const std::strin
             { "customRules", result.ir["customRules"].is_object()
                                      ? result.ir["customRules"]["rules"].size()
                                      : 0 },
+            { "electricalRails", result.ir["electrical"].is_object()
+                                           ? result.ir["electrical"]["rails"].size()
+                                           : 0 },
+            { "electricalRatings", result.ir["electrical"].is_object()
+                                             ? result.ir["electrical"]["ratings"].size()
+                                             : 0 },
+            { "electricalThermalModels", result.ir["electrical"].is_object()
+                                                  ? result.ir["electrical"]["thermal"].size()
+                                                  : 0 },
+            { "electricalLogicInterfaces", result.ir["electrical"].is_object()
+                                                    ? result.ir["electrical"]["logic"].size()
+                                                    : 0 },
+            { "electricalSimulations", result.ir["electrical"].is_object()
+                                               ? result.ir["electrical"]["simulations"].size()
+                                               : 0 },
             { "sourcingRecords", result.ir["sourcing"].size() },
             { "firmwareImages", result.ir["production"].is_object()
                                           ? result.ir["production"]["firmware"].size()
