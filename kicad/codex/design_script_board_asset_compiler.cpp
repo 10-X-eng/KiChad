@@ -10,6 +10,7 @@
  */
 
 #include "design_script_board_asset_compiler.h"
+#include "kichad_from_chars.h"
 
 #include <algorithm>
 #include <cctype>
@@ -88,7 +89,7 @@ bool parseDistance( const std::string& aText, int64_t& aNanometers )
 {
     long double value = 0.0L;
     const std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), value );
 
     if( converted.ec != std::errc() || converted.ptr == aText.data()
         || !std::isfinite( value ) )
@@ -163,7 +164,7 @@ bool parseBoolean( const DOCUMENT& aDocument, size_t aNode, bool& aValue )
 bool parseDecimal( const std::string& aText, double& aValue )
 {
     const std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), aValue );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), aValue );
     return converted.ec == std::errc() && converted.ptr == aText.data() + aText.size()
            && std::isfinite( aValue );
 }
@@ -172,7 +173,7 @@ bool parseDecimal( const std::string& aText, double& aValue )
 bool parseAngle( const std::string& aText, double& aDegrees )
 {
     const std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), aDegrees );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), aDegrees );
 
     return converted.ec == std::errc() && converted.ptr != aText.data()
            && std::string_view( converted.ptr,

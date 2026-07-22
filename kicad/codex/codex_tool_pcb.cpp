@@ -9,6 +9,7 @@
  * any later version.
  */
 
+#include "kichad_protobuf_compat.h"
 #include "codex_tool_registry.h"
 
 #include "codex_tool_internal.h"
@@ -320,7 +321,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handlePcb(
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
             std::string serialized;
-            google::protobuf::util::Status status =
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString( *message, &serialized, options );
 
             if( !status.ok() )

@@ -10,6 +10,7 @@
  */
 
 #include "design_script_symbol_resolver.h"
+#include "kichad_from_chars.h"
 
 #include "lossless_sexpr_document.h"
 
@@ -212,7 +213,7 @@ bool millimetresToNanometres( const std::string& aText, int64_t& aValue )
     long double value = 0.0L;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    std::from_chars_result converted = std::from_chars( begin, end, value );
+    std::from_chars_result converted = KICHAD::FromChars( begin, end, value );
 
     if( converted.ec != std::errc() || converted.ptr != end || !std::isfinite( value ) )
         return false;
@@ -265,7 +266,7 @@ bool directPropertyLayout( const DOCUMENT& aDocument, size_t aProperty, JSON& aL
         const std::string angleText = aDocument.AtomText( position.children[3] );
         const char* begin = angleText.data();
         const char* end = begin + angleText.size();
-        const std::from_chars_result converted = std::from_chars( begin, end, angle );
+        const std::from_chars_result converted = KICHAD::FromChars( begin, end, angle );
 
         if( converted.ec != std::errc() || converted.ptr != end || !std::isfinite( angle )
             || angle < 0.0 || angle >= 360.0 )

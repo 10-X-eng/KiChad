@@ -10,6 +10,7 @@
  */
 
 #include "design_script_simulation_compiler.h"
+#include "kichad_from_chars.h"
 
 #include "lossless_sexpr_document.h"
 
@@ -93,7 +94,7 @@ bool quantity( const std::string& aText,
     long double value = 0.0L;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    const std::from_chars_result parsed = std::from_chars( begin, end, value );
+    const std::from_chars_result parsed = KICHAD::FromChars( begin, end, value );
 
     if( parsed.ec != std::errc() || parsed.ptr == begin || !std::isfinite( value )
         || ( aPositive && value <= 0.0L ) )
@@ -190,7 +191,7 @@ bool frequency( const std::string& aText, double& aValue )
 bool finiteNumber( const std::string& aText, double& aValue )
 {
     const std::from_chars_result parsed =
-            std::from_chars( aText.data(), aText.data() + aText.size(), aValue );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), aValue );
     return parsed.ec == std::errc() && parsed.ptr == aText.data() + aText.size()
            && std::isfinite( aValue ) && std::abs( aValue ) <= 1.0e300;
 }

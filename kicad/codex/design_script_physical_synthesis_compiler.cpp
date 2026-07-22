@@ -10,6 +10,7 @@
  */
 
 #include "design_script_physical_synthesis_compiler.h"
+#include "kichad_from_chars.h"
 
 #include "lossless_sexpr_document.h"
 
@@ -55,7 +56,7 @@ bool distance( const std::string& aText, int64_t& aNanometers )
     long double value = 0.0L;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    const std::from_chars_result parsed = std::from_chars( begin, end, value );
+    const std::from_chars_result parsed = KICHAD::FromChars( begin, end, value );
 
     if( parsed.ec != std::errc() || parsed.ptr == begin || !std::isfinite( value ) )
         return false;

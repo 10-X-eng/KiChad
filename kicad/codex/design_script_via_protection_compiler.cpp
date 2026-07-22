@@ -10,6 +10,7 @@
  */
 
 #include "design_script_via_protection_compiler.h"
+#include "kichad_from_chars.h"
 
 #include <charconv>
 #include <cmath>
@@ -63,7 +64,7 @@ bool distance( const std::string& aText, int64_t& aNanometers )
     long double value = 0.0L;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    const std::from_chars_result converted = std::from_chars( begin, end, value );
+    const std::from_chars_result converted = KICHAD::FromChars( begin, end, value );
 
     if( converted.ec != std::errc() || converted.ptr == begin || !std::isfinite( value ) )
         return false;
@@ -105,7 +106,7 @@ bool angle( const std::string& aText, int64_t& aTenths )
     const std::string_view number( aText.data(), aText.size() - 3 );
     long double degrees = 0.0L;
     const std::from_chars_result converted =
-            std::from_chars( number.data(), number.data() + number.size(), degrees );
+            KICHAD::FromChars( number.data(), number.data() + number.size(), degrees );
 
     if( converted.ec != std::errc() || converted.ptr != number.data() + number.size()
         || !std::isfinite( degrees ) )
