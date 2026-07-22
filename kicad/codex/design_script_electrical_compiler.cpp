@@ -10,6 +10,7 @@
  */
 
 #include "design_script_electrical_compiler.h"
+#include "kichad_from_chars.h"
 
 #include "design_script_simulation_compiler.h"
 #include "lossless_sexpr_document.h"
@@ -78,7 +79,7 @@ bool numberWithUnit( const std::string& aText,
     double value = 0.0;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    const std::from_chars_result converted = std::from_chars( begin, end, value );
+    const std::from_chars_result converted = KICHAD::FromChars( begin, end, value );
 
     if( converted.ec != std::errc() || converted.ptr == begin || !std::isfinite( value )
         || ( !aAllowNegative && value < 0.0 ) )

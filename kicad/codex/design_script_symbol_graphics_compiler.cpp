@@ -10,6 +10,7 @@
  */
 
 #include "design_script_symbol_graphics_compiler.h"
+#include "kichad_from_chars.h"
 
 #include <algorithm>
 #include <cctype>
@@ -95,7 +96,7 @@ bool distance( const std::string& aText, int64_t& aNanometers )
     long double value = 0.0L;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    const std::from_chars_result converted = std::from_chars( begin, end, value );
+    const std::from_chars_result converted = KICHAD::FromChars( begin, end, value );
 
     if( converted.ec != std::errc() || converted.ptr == begin || !std::isfinite( value ) )
         return false;
@@ -185,7 +186,7 @@ bool color( const DOCUMENT& aDocument, size_t aNode, JSON& aColor )
 
     const char* begin = alphaText.data();
     const char* end = begin + alphaText.size();
-    const std::from_chars_result converted = std::from_chars( begin, end, alpha );
+    const std::from_chars_result converted = KICHAD::FromChars( begin, end, alpha );
 
     if( converted.ec != std::errc() || converted.ptr != end || !std::isfinite( alpha )
         || alpha < 0.0L || alpha > 1.0L )

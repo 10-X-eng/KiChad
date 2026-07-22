@@ -10,6 +10,7 @@
  */
 
 #include "design_script_physical_synthesizer.h"
+#include "kichad_from_chars.h"
 
 #include "lossless_sexpr_document.h"
 
@@ -121,7 +122,7 @@ bool nativeMillimetres( const std::string& aText, int64_t& aNanometers )
 {
     long double value = 0.0L;
     const std::from_chars_result parsed =
-            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), value );
 
     if( parsed.ec != std::errc() || parsed.ptr != aText.data() + aText.size()
         || !std::isfinite( value ) )

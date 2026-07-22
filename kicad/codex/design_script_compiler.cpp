@@ -10,6 +10,7 @@
  */
 
 #include "design_script_compiler.h"
+#include "kichad_from_chars.h"
 
 #include "design_script_capabilities.h"
 
@@ -314,7 +315,7 @@ bool parseDistance( const std::string& aText, int64_t& aNanometers )
 {
     long double value = 0.0L;
     std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), value );
 
     if( converted.ec != std::errc() || converted.ptr == aText.data()
         || !std::isfinite( value ) )
@@ -357,7 +358,7 @@ bool parseTime( const std::string& aText, int64_t& aFemtoseconds )
 {
     long double value = 0.0L;
     std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), value );
 
     if( converted.ec != std::errc() || converted.ptr == aText.data()
         || !std::isfinite( value ) )
@@ -394,7 +395,7 @@ bool parseFiniteDecimal( const std::string& aText, double& aValue,
                          const std::string_view aRequiredSuffix = {} )
 {
     std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), aValue );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), aValue );
 
     if( converted.ec != std::errc() || converted.ptr == aText.data()
         || !std::isfinite( aValue ) )

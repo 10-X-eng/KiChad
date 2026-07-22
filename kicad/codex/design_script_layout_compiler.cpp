@@ -10,6 +10,7 @@
  */
 
 #include "design_script_layout_compiler.h"
+#include "kichad_from_chars.h"
 
 #include <algorithm>
 #include <array>
@@ -76,7 +77,7 @@ bool distance( const std::string& aText, int64_t& aNanometers )
     long double value = 0.0L;
     const char* begin = aText.data();
     const char* end = begin + aText.size();
-    const std::from_chars_result converted = std::from_chars( begin, end, value );
+    const std::from_chars_result converted = KICHAD::FromChars( begin, end, value );
 
     if( converted.ec != std::errc() || converted.ptr == begin || !std::isfinite( value ) )
         return false;

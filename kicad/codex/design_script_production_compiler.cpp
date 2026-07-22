@@ -9,6 +9,7 @@
  * any later version.
  */
 
+#include "kichad_from_chars.h"
 #include "design_script_production_compiler.h"
 
 #include "design_script_assembly_compiler.h"
@@ -129,7 +130,7 @@ bool finiteNumber( const std::string& aText, double aMinimum, double aMaximum,
     const char* begin = aText.data();
     const char* end = begin + aText.size();
     double value = 0.0;
-    const auto converted = std::from_chars( begin, end, value, std::chars_format::general );
+    const auto converted = KICHAD::FromChars( begin, end, value );
 
     if( converted.ec != std::errc() || converted.ptr != end || !std::isfinite( value )
         || value < aMinimum || value > aMaximum )

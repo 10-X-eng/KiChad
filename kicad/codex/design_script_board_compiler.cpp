@@ -10,6 +10,7 @@
  */
 
 #include "design_script_board_compiler.h"
+#include "kichad_from_chars.h"
 
 #include "design_script_board_asset_compiler.h"
 #include "design_script_board_graphic_compiler.h"
@@ -140,7 +141,7 @@ bool parseDistance( const std::string& aText, int64_t& aNanometers )
 {
     long double value = 0.0L;
     std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), value );
 
     if( converted.ec != std::errc() || converted.ptr == aText.data()
         || !std::isfinite( value ) )
@@ -185,7 +186,7 @@ bool parseArea( const std::string& aText, int64_t& aSquareNanometers )
 {
     long double value = 0.0L;
     std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), value );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), value );
 
     if( converted.ec != std::errc() || converted.ptr == aText.data()
         || !std::isfinite( value ) || value < 0.0L )
@@ -225,7 +226,7 @@ bool parseArea( const std::string& aText, int64_t& aSquareNanometers )
 bool parseAngle( const std::string& aText, double& aDegrees )
 {
     std::from_chars_result converted =
-            std::from_chars( aText.data(), aText.data() + aText.size(), aDegrees );
+            KICHAD::FromChars( aText.data(), aText.data() + aText.size(), aDegrees );
 
     return converted.ec == std::errc() && converted.ptr != aText.data()
            && std::string_view( converted.ptr,
@@ -337,7 +338,7 @@ bool parseRatioForm( const DOCUMENT& aDocument, size_t aNode, double& aValue )
     }
 
     std::from_chars_result converted =
-            std::from_chars( text.data(), text.data() + text.size(), aValue );
+            KICHAD::FromChars( text.data(), text.data() + text.size(), aValue );
     return converted.ec == std::errc() && converted.ptr == text.data() + text.size()
            && std::isfinite( aValue ) && aValue >= 0.0 && aValue <= 1.0;
 }
@@ -355,7 +356,7 @@ bool parseNumberForm( const DOCUMENT& aDocument, size_t aNode, double& aValue )
     }
 
     std::from_chars_result converted =
-            std::from_chars( text.data(), text.data() + text.size(), aValue );
+            KICHAD::FromChars( text.data(), text.data() + text.size(), aValue );
     return converted.ec == std::errc() && converted.ptr == text.data() + text.size()
            && std::isfinite( aValue );
 }

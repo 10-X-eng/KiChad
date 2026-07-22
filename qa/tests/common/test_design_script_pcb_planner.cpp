@@ -21,6 +21,7 @@
 #include <api/board/board_types.pb.h>
 #include <api/common/types/base_types.pb.h>
 #include <api/common/types/project_settings.pb.h>
+#include <kicad/codex/kichad_protobuf_compat.h>
 #include <google/protobuf/util/json_util.h>
 #include <libraries/library_table_parser.h>
 
@@ -88,7 +89,7 @@ void checkProtobufJson( const nlohmann::json& aJson )
     Message message;
     google::protobuf::util::JsonParseOptions options;
     options.ignore_unknown_fields = false;
-    google::protobuf::util::Status status =
+    KICHAD::PROTOBUF_STATUS status =
             google::protobuf::util::JsonStringToMessage( aJson.dump(), &message, options );
     BOOST_CHECK_MESSAGE( status.ok(), status.ToString() );
 }

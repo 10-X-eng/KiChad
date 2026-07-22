@@ -9,6 +9,7 @@
  * any later version.
  */
 
+#include "kichad_protobuf_compat.h"
 #include "codex_tool_internal.h"
 #include "board_render_artifact_validator.h"
 #include "board_ps_artifact_validator.h"
@@ -5020,9 +5021,10 @@ nlohmann::json describePcbMessage( const std::string& aItemType,
         if( field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE )
         {
             fieldDescription["messageType"] = field->message_type()->full_name();
-            fieldDescription["expandWith"] = normalizedPath.empty()
-                                                     ? field->json_name()
-                                                     : normalizedPath + '.' + field->json_name();
+            fieldDescription["expandWith"] =
+                    normalizedPath.empty()
+                            ? std::string( field->json_name() )
+                            : normalizedPath + '.' + std::string( field->json_name() );
         }
         else if( field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_ENUM )
         {
@@ -5078,7 +5080,7 @@ bool parsePcbItem( const std::string& aItemType, const nlohmann::json& aJson,
 
     google::protobuf::util::JsonParseOptions options;
     options.ignore_unknown_fields = false;
-    google::protobuf::util::Status status =
+    KICHAD::PROTOBUF_STATUS status =
             google::protobuf::util::JsonStringToMessage( aJson.dump(), aMessage.get(), options );
 
     if( !status.ok() )

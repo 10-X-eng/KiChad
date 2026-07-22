@@ -9,6 +9,7 @@
  * any later version.
  */
 
+#include "kichad_protobuf_compat.h"
 #include "codex_tool_registry.h"
 
 #include "codex_tool_internal.h"
@@ -1170,7 +1171,7 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
 
             google::protobuf::util::JsonParseOptions options;
             options.ignore_unknown_fields = false;
-            google::protobuf::util::Status status;
+            KICHAD::PROTOBUF_STATUS status;
 
             if( plannedAction == "update_stackup" )
             {
@@ -1711,8 +1712,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousStackup, &serializedPrevious, options );
 
@@ -1727,8 +1728,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousTitleBlock, &serializedPrevious, options );
 
@@ -1746,8 +1747,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousRules, &serializedPrevious, options );
 
@@ -1762,8 +1763,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousNetClasses, &serializedPrevious, options );
 
@@ -1781,8 +1782,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousTextVariables, &serializedPrevious, options );
 
@@ -1800,8 +1801,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousFieldTemplates, &serializedPrevious, options );
 
@@ -1820,8 +1821,8 @@ CODEX_TOOL_REGISTRY::JSON CODEX_TOOL_REGISTRY::handleDesign(
             std::string serializedPrevious;
             google::protobuf::util::JsonPrintOptions options;
             options.preserve_proto_field_names = false;
-            options.always_print_primitive_fields = true;
-            google::protobuf::util::Status status =
+            KICHAD::SetAlwaysPrintDefaultValuedFields( options, true );
+            KICHAD::PROTOBUF_STATUS status =
                     google::protobuf::util::MessageToJsonString(
                             previousSchematicRuleSeverities, &serializedPrevious, options );
 
