@@ -20,6 +20,7 @@
 #include <wx/filename.h>
 #include <wx/log.h>
 #include <wx/intl.h>
+#include <wx/stdpaths.h>
 #include <wx/utils.h>
 
 
@@ -76,7 +77,23 @@ bool CODEX_APP_SERVER_CLIENT::Start()
     wxString executable;
 
     if( !wxGetEnv( wxS( "KICHAD_CODEX_EXECUTABLE" ), &executable ) || executable.IsEmpty() )
-        executable = wxS( "codex" );
+    {
+#ifdef __WXMSW__
+        const wxString codexName = wxS( "codex.exe" );
+#else
+        const wxString codexName = wxS( "codex" );
+#endif
+        wxFileName runningExecutable( wxStandardPaths::Get().GetExecutablePath() );
+        wxFileName bundledCodex( runningExecutable.GetPath(), codexName );
+
+        // Distribution packages place Codex next to the real KiChad executable.  Prefer that
+        // exact executable over PATH so another Codex installation cannot silently change the
+        // app-server protocol underneath KiChad.  Developer builds retain the PATH fallback.
+        if( bundledCodex.FileExists() && bundledCodex.IsFileExecutable() )
+            executable = bundledCodex.GetFullPath();
+        else
+            executable = codexName;
+    }
 
     wxString codexHome;
 

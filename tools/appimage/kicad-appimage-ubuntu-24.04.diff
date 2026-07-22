@@ -1,0 +1,113 @@
+diff --git a/scripts/build_appimage.sh b/scripts/build_appimage.sh
+index 9b3e4c0..01ca35c 100644
+--- a/scripts/build_appimage.sh
++++ b/scripts/build_appimage.sh
+@@ -6,6 +6,7 @@ set -euo pipefail
+ 
+ APPDIR=${APPDIR:-/tmp/AppDir}
+ OUTPUT_DIR=${OUTPUT_DIR:-/tmp}
++APPIMAGE_TOOL_DIR=${APPIMAGE_TOOL_DIR:-/usr/local/bin}
+ ARCH=${ARCH:-x86_64}
+ APP_VERSION=${APP_VERSION:-${KICAD_BUILD_RELEASE:-dev}}
+ EXTRACT_DBGSYM=${EXTRACT_DBGSYM:-0}
+@@ -42,16 +43,16 @@ fetch_sharun_tools(){
+ 
+   wget -q "${sharun_url}" -O /tmp/sharun
+   echo "${SHARUN_SHA256}  /tmp/sharun" | sha256sum -c -
+-  install -m 0755 /tmp/sharun /usr/local/bin/sharun
++  install -m 0755 /tmp/sharun "${APPIMAGE_TOOL_DIR}/sharun"
+ 
+   wget -q "${uruntime_url}" -O /tmp/uruntime
+   echo "${URUNTIME_SHA256}  /tmp/uruntime" | sha256sum -c -
+-  install -m 0755 /tmp/uruntime /usr/local/bin/uruntime
++  install -m 0755 /tmp/uruntime "${APPIMAGE_TOOL_DIR}/uruntime"
+ 
+   wget -q "${dwarfs_url}" -O /tmp/dwarfs-universal
+   echo "${DWARFS_SHA256}  /tmp/dwarfs-universal" | sha256sum -c -
+-  install -m 0755 /tmp/dwarfs-universal /usr/local/bin/dwarfs-universal
+-  ln -sf dwarfs-universal /usr/local/bin/mkdwarfs
++  install -m 0755 /tmp/dwarfs-universal "${APPIMAGE_TOOL_DIR}/dwarfs-universal"
++  ln -sf dwarfs-universal "${APPIMAGE_TOOL_DIR}/mkdwarfs"
+ 
+   echo "[build_appimage] Installed sharun ${SHARUN_VERSION}, uruntime ${URUNTIME_VERSION}, dwarfs ${DWARFS_VERSION}" >&2
+ }
+@@ -140,16 +141,22 @@ bundle_ngspice(){
+   local appdir="$1"
+   local shared_lib="${appdir}/shared/lib"
+ 
++  local ngspice_library
++  ngspice_library=$(ldconfig -p 2>/dev/null \
++    | awk '$1 == "libngspice.so.0" { print $NF; exit }')
++  local ngspice_lib_dir=""
++  [[ -n "${ngspice_library}" ]] && ngspice_lib_dir=$(dirname "${ngspice_library}")
++
+   # libngspice is dlopen'd at runtime by KiCad's simulator (eeschema/sim/ngspice.cpp
+   # calls m_dll.Load("libngspice.so.0", ...)) so lib4bin's ldd-based discovery never
+   # sees it. Bundle the .so files and code models explicitly, mirroring the
+   # bundle_pixbuf_loaders pattern.
+-  if ! ls /usr/lib/libngspice.so* >/dev/null 2>&1; then
+-    echo "[build_appimage] WARNING: libngspice not found at /usr/lib/, simulator will not work" >&2
++  if [[ -z "${ngspice_lib_dir}" ]] || ! ls "${ngspice_lib_dir}"/libngspice.so* >/dev/null 2>&1; then
++    echo "[build_appimage] WARNING: libngspice not found, simulator will not work" >&2
+     return 0
+   fi
+ 
+-  cp -a /usr/lib/libngspice.so* "${shared_lib}/"
++  cp -a "${ngspice_lib_dir}"/libngspice.so* "${shared_lib}/"
+   local lib_count
+   lib_count=$(find "${shared_lib}" -maxdepth 1 -name 'libngspice.so*' | wc -l)
+ 
+@@ -176,14 +183,17 @@ bundle_ngspice(){
+   # KiCad's findCmPath() in ngspice.cpp searches "../lib/ngspice" relative to the
+   # CWD it sets to the executable's directory. With the sharun layout the kicad
+   # binary resolves to bin/kicad, so this path becomes ${appdir}/lib/ngspice.
+-  if [[ -d /usr/lib/ngspice ]]; then
++  local code_model_dir
++  code_model_dir=$(find /usr/lib -maxdepth 3 -type d -name ngspice 2>/dev/null | head -1)
++
++  if [[ -n "${code_model_dir}" ]]; then
+     mkdir -p "${appdir}/lib/ngspice"
+-    cp -a /usr/lib/ngspice/. "${appdir}/lib/ngspice/"
++    cp -a "${code_model_dir}/." "${appdir}/lib/ngspice/"
+     local cm_count
+     cm_count=$(find "${appdir}/lib/ngspice" -name '*.cm' | wc -l)
+     echo "[build_appimage] Bundled ${cm_count} ngspice code model(s) into lib/ngspice/" >&2
+   else
+-    echo "[build_appimage] WARNING: /usr/lib/ngspice not found, ngspice code models unavailable" >&2
++    echo "[build_appimage] WARNING: ngspice code models not found" >&2
+   fi
+ 
+   echo "[build_appimage] Bundled libngspice (${lib_count} files) into shared/lib/" >&2
+@@ -565,8 +575,8 @@ restructure_appdir(){
+   # Copy KiCad data files (symbols, footprints, 3dmodels, templates)
+   mkdir -p "${new_appdir}/share"
+ 
+   if [[ -d "${APPDIR}/usr/share/kicad" ]]; then
+-    cp -a "${APPDIR}/usr/share/kicad" "${new_appdir}/share/kicad"
++    cp -al "${APPDIR}/usr/share/kicad" "${new_appdir}/share/kicad"
+   fi
+ 
+   # Copy desktop entries and icons
+@@ -640,8 +650,22 @@ restructure_appdir(){
+   # Bundle ODBC drivers for database libraries. The unixODBC driver manager
+   # dlopen's the concrete drivers at runtime, so lib4bin never sees them and the
+   # AppImage would otherwise fail with "Can't open lib 'libsqlite3odbc.so'".
+   bundle_odbc_drivers "${new_appdir}"
+ 
++  # Preserve KiChad's pinned, self-contained Codex package as a unit.  Codex resolves helper
++  # programs and resources relative to its own executable, so flattening it through lib4bin
++  # would make app-server startup appear healthy while later tool execution failed.
++  if [[ -x "${APPDIR}/usr/lib/kichad/codex/bin/codex" ]]; then
++    mkdir -p "${new_appdir}/shared/codex"
++    cp -a "${APPDIR}/usr/lib/kichad/codex/." "${new_appdir}/shared/codex/"
++    ln -sf ../codex/bin/codex "${new_appdir}/shared/bin/codex"
++    ln -f "${new_appdir}/sharun" "${new_appdir}/bin/codex"
++    echo "[build_appimage] Bundled KiChad-owned Codex standalone package" >&2
++  else
++    echo "[build_appimage] ERROR: staged Codex standalone package is missing" >&2
++    return 1
++  fi
++
+   # Copy update script (shell script, not an ELF binary — goes to shared/bin/).
+   # Also symlink into bin/ so $APPDIR/usr/bin/kicad-appimage-update.sh resolves
+   # (usr/bin -> ../bin, and the shell script doesn't get a sharun hardlink).

@@ -22,6 +22,7 @@ the runtime inventory wins.
 | Fabrication profile | `kichad-production-10.0.4-v17` |
 | Authored representation | One project-relative `.kicad_kds` sidecar |
 | Local release build | `build/install/bin/kicad` |
+| Linux distribution | Ubuntu 24.04 x86_64 AppImage with pinned Codex app-server |
 
 The capability ledger currently contains 103 facets: 51 qualified, 32 partial, and 20
 unrepresented. Those counts are inventory counts, not a completion percentage: a multilayer router
@@ -53,6 +54,9 @@ exist.
   than exposing process IDs.
 - `inspect.render` attaches bounded schematic, PCB production, PCB assembly/layout, and 3D views to
   the model so it can visually review generated work.
+- The Ubuntu 24.04 AppImage includes the complete checksum-pinned Codex standalone package and
+  runtime helpers. KiChad prefers that sibling executable, so end users do not install Codex or
+  Node separately; credentials and durable user state remain outside the immutable image.
 
 The embedded design agent is intentionally narrower than a general shell agent. Arbitrary shell,
 GUI automation, inherited MCP servers, plugins, apps, browser control, image generation, and
@@ -281,6 +285,12 @@ The 2026-07-21 P0 qualification run produced:
 - a successful `RelWithDebInfo` build and install through `tools/build-kichad.sh`; and
 - installed KiCad 10.0.4 application, schema, symbol, footprint, 3D-model, and template packages,
   with representative stock symbols and footprints parsed and rendered through the installed CLI.
+
+The 2026-07-22 distribution qualification produced one 583 MiB full Ubuntu 24.04 AppImage
+containing KiChad 10.0.4, Codex 0.144.4, stock symbols/footprints/templates/3D models, ngspice,
+and runtime-loaded GUI, OpenGL, and database components. Its clean-profile bundled app-server
+completed initialize, account/model discovery, thread start/resume, goal lifecycle, and
+dynamic-tool registration. The exact same repeatable full build is the GitHub Actions job.
 
 This evidence qualifies the implemented P0 slice. It is not a substitute for the three unattended
 reference-board release proofs above.

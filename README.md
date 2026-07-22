@@ -24,6 +24,25 @@ On Ubuntu 24.04 or KDE neon, the repeatable local build is:
 ./tools/build-kichad.sh             # Configure, compile, install, and smoke-check.
 ```
 
+For the distributable Ubuntu 24.04 AppImage, use the same path locally that GitHub Actions uses:
+
+```sh
+./tools/bootstrap-kichad-appimage-ubuntu.sh  # Run once.
+./tools/build-kichad-appimage.sh
+```
+
+The verified image and its portable SHA-256 file are written to `build/appimage/artifacts/`.
+The single image includes KiChad, the complete pinned Codex standalone package, KDS/native
+tools, schemas, symbols, footprints, templates, ngspice, database drivers, and GUI/3D runtime. It
+also includes the complete official KiCad 3D-model library and does not require a host Codex or
+Node installation. Local builds and GitHub Actions produce the same full artifact; there is no
+reduced variant with a different capability boundary.
+
+The AppImage contains executable code, never user credentials. ChatGPT authentication, durable
+Codex state, model/effort preferences, and project conversation indices remain in the user's
+KiChad configuration directory. KiChad resolves its bundled Codex beside the application and owns
+the `codex app-server` child; `KICHAD_CODEX_EXECUTABLE` remains an explicit developer override.
+
 Build products stay in `build/`, and the runnable installation is written to `build/install/`.
 Rerun `tools/build-kichad.sh` after source changes; it uses the tracked CMake preset, defaults to
 one build job per CPU, and accepts `KICHAD_BUILD_JOBS` when you need to cap parallelism.
@@ -41,8 +60,9 @@ The project manager includes a native docked Codex panel with ChatGPT sign-in, a
 model catalog, reasoning selection, streaming conversations, and visible app-server status.
 Launching KiChad directly starts and owns one `codex app-server` child process and communicates
 with it over redirected stdio; no wrapper daemon, MCP server, or separate tool server is involved.
-Closing KiChad terminates that owned child.  If Codex is not on `PATH`, set
-`KICHAD_CODEX_EXECUTABLE` to its absolute path before launching.  The panel's ChatGPT sign-in is
+Closing KiChad terminates that owned child. Distribution packages include and prefer their pinned
+Codex executable; developer builds use `PATH` unless `KICHAD_CODEX_EXECUTABLE` selects an absolute
+executable. The panel's ChatGPT sign-in is
 stored by Codex in an isolated KiChad Codex home, not in the project; set `KICHAD_CODEX_HOME` only
 when you intentionally want a different state location.  The design-tool boundary and safety model
 are documented in [docs/kichad-codex-architecture.md](docs/kichad-codex-architecture.md).  Each

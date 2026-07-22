@@ -1,0 +1,81 @@
+name: Ubuntu 24.04 AppImage
+
+on:
+  push:
+    branches:
+      - master
+      - 'feature/**'
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kichad-appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Build self-contained x86_64 AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      KICHAD_BUILD_JOBS: 4
+      KICHAD_CCACHE_SIZE: 4G
+
+    steps:
+      - name: Check out KiChad and stable tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Restore compiler and stable-library caches
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/appimage/ccache
+            build/appimage/libraries
+          key: ubuntu-24.04-kichad-appimage-${{ hashFiles('.kichad-base-version', 'tools/fetch-kicad-libraries.sh', 'tools/install-kichad-libraries.sh') }}-${{ github.sha }}
+          restore-keys: |
+            ubuntu-24.04-kichad-appimage-${{ hashFiles('.kichad-base-version', 'tools/fetch-kicad-libraries.sh', 'tools/install-kichad-libraries.sh') }}-
+
+      - name: Install Ubuntu 24.04 build and packaging dependencies
+        run: ./tools/bootstrap-kichad-appimage-ubuntu.sh
+
+      - name: Build and verify the AppImage
+        run: ./tools/build-kichad-appimage.sh
+
+      - name: Verify distributable checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/appimage/artifacts
+          mapfile -t images < <(find . -maxdepth 1 -type f -name 'KiChad-*.AppImage' -printf '%f\n' | sort)
+          if (( ${#images[@]} != 1 )); then
+            echo "Expected one AppImage, found ${#images[@]}." >&2
+            exit 1
+          fi
+          sha256sum --check "${images[0]}.sha256"
+
+      - name: Upload verified AppImage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: KiChad-Ubuntu-24.04-x86_64-${{ github.sha }}
+          path: |
+            build/appimage/artifacts/KiChad-*.AppImage
+            build/appimage/artifacts/KiChad-*.AppImage.sha256
+            build/appimage/artifacts/build.log
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Reclaim transient runner space before cache upload
+        if: always()
+        run: |
+          rm -rf -- \
+            build/appimage/library-release \
+            build/appimage/package \
+            build/appimage/release \
+            build/appimage/stage

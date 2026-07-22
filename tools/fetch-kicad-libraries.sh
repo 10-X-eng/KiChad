@@ -20,6 +20,44 @@ fi
 
 mkdir -p "$library_root"
 
+default_projects=(
+    kicad-symbols
+    kicad-footprints
+    kicad-packages3D
+    kicad-templates
+)
+
+if [[ -n "${KICHAD_LIBRARY_PROJECTS:-}" ]]; then
+    read -r -a library_projects <<<"$KICHAD_LIBRARY_PROJECTS"
+else
+    library_projects=( "${default_projects[@]}" )
+fi
+
+if (( ${#library_projects[@]} == 0 )); then
+    echo "KICHAD_LIBRARY_PROJECTS must select at least one official library project." >&2
+    exit 2
+fi
+
+declare -A seen_projects=()
+
+for project in "${library_projects[@]}"; do
+    case "$project" in
+        kicad-symbols|kicad-footprints|kicad-packages3D|kicad-templates)
+            ;;
+        *)
+            echo "Unsupported KiCad library project: ${project}" >&2
+            exit 2
+            ;;
+    esac
+
+    if [[ -n "${seen_projects[$project]:-}" ]]; then
+        echo "Duplicate KiCad library project: ${project}" >&2
+        exit 2
+    fi
+
+    seen_projects[$project]=1
+done
+
 sync_library() {
     local name="$1"
     local url="$2"
@@ -55,9 +93,8 @@ sync_library() {
     printf '%s: %s (%s)\n' "$name" "$base_version" "$tagged_commit"
 }
 
-sync_library kicad-symbols https://gitlab.com/kicad/libraries/kicad-symbols.git
-sync_library kicad-footprints https://gitlab.com/kicad/libraries/kicad-footprints.git
-sync_library kicad-packages3D https://gitlab.com/kicad/libraries/kicad-packages3D.git
-sync_library kicad-templates https://gitlab.com/kicad/libraries/kicad-templates.git
+for project in "${library_projects[@]}"; do
+    sync_library "$project" "https://gitlab.com/kicad/libraries/${project}.git"
+done
 
 echo "KiCad ${base_version} libraries are available in ${library_root}"

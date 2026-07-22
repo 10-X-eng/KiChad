@@ -17,6 +17,26 @@ development branch or release candidates.
 ./tools/run-kichad.sh
 ```
 
+## Ubuntu 24.04 AppImage
+
+Build the distributable image locally before changing or diagnosing CI:
+
+```sh
+./tools/bootstrap-kichad-appimage-ubuntu.sh
+./tools/build-kichad-appimage.sh
+build/appimage/artifacts/KiChad-*.AppImage
+```
+
+This invokes the same build script as `.github/workflows/linux-appimage.yml`, pins the official
+KiCad AppImage packager and every downloaded packaging tool by commit or SHA-256, downloads the
+complete official Codex standalone package at its pinned version and checksum, and then verifies
+both KiCad CLI and the Codex app-server protocol from the assembled package. It always installs the
+complete official symbols, footprints, templates, and 3D-model libraries; there is one artifact
+with one capability boundary.
+
+No credentials are copied into the image. At runtime KiChad stores its isolated Codex state below
+the user's KiChad configuration directory and launches the bundled app-server as its own child.
+
 The build and install trees live below the ignored `build/` directory.  Nothing is installed into
 `/usr/local`, and the system KiCad installation is not modified.  The install contains `kicad` and
 `kicad-cli` launchers that configure the local runtime library path while retaining the upstream
@@ -51,9 +71,11 @@ CMake always exports `build/release/compile_commands.json` for language tooling.
 
 ## Codex integration seam
 
-KiChad embeds a native Codex app-server client in the KiCad process.  When KiChad starts, the
-application directly launches and owns one `codex app-server` child over redirected stdio; closing
-the application terminates that exact child.  App-server dynamic-tool calls are dispatched by the
+KiChad embeds a native Codex app-server client in the KiCad process. Distribution packages carry
+the complete pinned Codex standalone runtime; developer builds may use a Codex on `PATH`. When
+KiChad starts, the application directly launches and owns one `codex app-server` child over
+redirected stdio; closing the application terminates that exact child. App-server dynamic-tool
+calls are dispatched by the
 host itself, so there is no wrapper daemon, MCP service, or separate tool server.  PCB mutations use
 the supported KiCad 10 IPC API and KiCad transactions.  Schematic and library work uses a lossless
 s-expression layer with KiCad validation because KiCad 10's public IPC surface does not cover those

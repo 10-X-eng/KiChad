@@ -33,12 +33,43 @@ if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
-library_projects=(
+default_projects=(
     kicad-symbols
     kicad-footprints
     kicad-packages3D
     kicad-templates
 )
+
+if [[ -n "${KICHAD_LIBRARY_PROJECTS:-}" ]]; then
+    read -r -a library_projects <<<"$KICHAD_LIBRARY_PROJECTS"
+else
+    library_projects=( "${default_projects[@]}" )
+fi
+
+if (( ${#library_projects[@]} == 0 )); then
+    echo "KICHAD_LIBRARY_PROJECTS must select at least one official library project." >&2
+    exit 2
+fi
+
+declare -A seen_projects=()
+
+for project in "${library_projects[@]}"; do
+    case "$project" in
+        kicad-symbols|kicad-footprints|kicad-packages3D|kicad-templates)
+            ;;
+        *)
+            echo "Unsupported KiCad library project: ${project}" >&2
+            exit 2
+            ;;
+    esac
+
+    if [[ -n "${seen_projects[$project]:-}" ]]; then
+        echo "Duplicate KiCad library project: ${project}" >&2
+        exit 2
+    fi
+
+    seen_projects[$project]=1
+done
 
 for project in "${library_projects[@]}"; do
     source_dir="${library_root}/${project}"
