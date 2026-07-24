@@ -15,6 +15,7 @@
 #include <chrono>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <wx/filename.h>
@@ -49,16 +50,19 @@ public:
                                 const wxFileName&, std::string& )>;
     using NATIVE_PREVIEW_RUNNER =
             std::function<bool( const std::string&, const wxFileName&,
-                                const wxFileName&, int, std::string& )>;
+                                const std::vector<int>&, const std::vector<wxFileName>&,
+                                std::string& )>;
+    using NATIVE_SCHEMATIC_VALIDATOR =
+            std::function<bool( const wxFileName&, const JSON&, const JSON&,
+                                std::string& )>;
     // Bump whenever the model-visible tool or capability contract changes so a project cannot
     // resume a persistent thread created with a broader or incompatible surface.
-    static constexpr int SCHEMA_VERSION = 13;
+    static constexpr int SCHEMA_VERSION = 16;
 
     explicit CODEX_TOOL_REGISTRY( std::function<wxString()> aProjectPathProvider,
                                   std::function<bool()> aMutationGuard = {},
                                   std::function<wxString()> aIpcSocketDirectoryProvider = {},
-                                  std::function<bool( const wxFileName&, std::string& )>
-                                          aSchematicValidator = {},
+                                  NATIVE_SCHEMATIC_VALIDATOR aSchematicValidator = {},
                                   NATIVE_CHECK_RUNNER aNativeCheckRunner = {},
                                   NATIVE_FABRICATION_RUNNER aNativeFabricationRunner = {},
                                   std::function<bool( const wxFileName&, std::string& )>
@@ -108,7 +112,7 @@ private:
     std::function<wxString()> m_projectPathProvider;
     std::function<bool()>     m_mutationGuard;
     std::function<wxString()> m_ipcSocketDirectoryProvider;
-    std::function<bool( const wxFileName&, std::string& )> m_schematicValidator;
+    NATIVE_SCHEMATIC_VALIDATOR m_schematicValidator;
     NATIVE_CHECK_RUNNER m_nativeCheckRunner;
     NATIVE_FABRICATION_RUNNER m_nativeFabricationRunner;
     std::function<bool( const wxFileName&, std::string& )> m_symbolLibraryValidator;

@@ -120,6 +120,7 @@ set( KICAD_SRCS
     codex/production_package_writer.cpp
     codex/codex_agent_policy.cpp
     codex/codex_panel.cpp
+    codex/codex_user_input_dialog.cpp
     codex/codex_paths.cpp
     codex/codex_thread_store.cpp
     codex/codex_tool_registry.cpp
@@ -257,6 +258,8 @@ if( UNIX )
         COMMAND ${CMAKE_COMMAND} -E create_symlink "${CMAKE_BINARY_DIR}/cvpcb/_cvpcb.kiface" "${CMAKE_BINARY_DIR}/kicad/_cvpcb.kiface"
         COMMENT "Making <build-dir>/kicad/<kiface.symlinks>"
         )
+    add_dependencies( kicad kiface_sym_links )
+    add_dependencies( kicad-cli kiface_sym_links )
 endif()
 
 if( APPLE )

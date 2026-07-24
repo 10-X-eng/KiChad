@@ -2650,6 +2650,7 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
                                         bool resetFabricationAttrs,
                                         bool resetClearanceOverrides,
                                         bool reset3DModels,
+                                        bool aPreserveInstanceUuid,
                                         bool* aUpdated )
 {
     EDA_GROUP* parentGroup = aExisting->GetParentGroup();
@@ -2677,7 +2678,9 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
 
     aNew->SetLocked( aExisting->IsLocked() );
 
-    const_cast<KIID&>( aNew->m_Uuid ) = aExisting->m_Uuid;
+    if( aPreserveInstanceUuid )
+        const_cast<KIID&>( aNew->m_Uuid ) = aExisting->m_Uuid;
+
     const_cast<KIID&>( aNew->Reference().m_Uuid ) = aExisting->Reference().m_Uuid;
     const_cast<KIID&>( aNew->Value().m_Uuid ) = aExisting->Value().m_Uuid;
 
